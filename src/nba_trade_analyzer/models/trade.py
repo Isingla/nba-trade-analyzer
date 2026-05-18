@@ -4,18 +4,24 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nba_trade_analyzer.models.player import Player
-from nba_trade_analyzer.models.team import Team
+from nba_trade_analyzer.models.team import RosterEntry, Team
 
 
 class TradeAssets(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    players: list[Player] = Field(default_factory=list)
+    players: list[RosterEntry] = Field(
+        default_factory=list,
+        description="Players being sent, each paired with their contract.",
+    )
     picks: list[str] = Field(
         default_factory=list,
         description="Draft pick identifiers, e.g. '2027 LAL 1st (top-4 protected)'.",
     )
+
+    @property
+    def total_salary(self) -> int:
+        return sum(entry.contract.salary for entry in self.players)
 
 
 class Trade(BaseModel):
