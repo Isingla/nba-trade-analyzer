@@ -111,16 +111,20 @@ def test_roster_holds_players_with_contracts():
 
 
 def test_trade_construction_with_assets_each_side():
+    lebron_entry = RosterEntry(player=_lebron(), contract=_max_contract())
     trade = Trade(
         team_a=_lakers(),
         team_b=_nuggets(),
-        team_a_sends=TradeAssets(players=[_lebron()], picks=["2027 LAL 1st"]),
+        team_a_sends=TradeAssets(players=[lebron_entry], picks=["2027 LAL 1st"]),
         team_b_sends=TradeAssets(picks=["2028 DEN 1st (top-4 prot)"]),
     )
     assert trade.team_a.abbreviation == "LAL"
     assert trade.team_b.abbreviation == "DEN"
-    assert trade.team_a_sends.players[0].name == "LeBron James"
+    assert trade.team_a_sends.players[0].player.name == "LeBron James"
+    assert trade.team_a_sends.players[0].contract.salary == 52_627_153
+    assert trade.team_a_sends.total_salary == 52_627_153
     assert trade.team_b_sends.players == []
+    assert trade.team_b_sends.total_salary == 0
     assert trade.team_b_sends.picks == ["2028 DEN 1st (top-4 prot)"]
 
 
