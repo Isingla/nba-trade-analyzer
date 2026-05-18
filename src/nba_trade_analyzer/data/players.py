@@ -2,10 +2,6 @@
 
 Pulls per-game and advanced league dashboards from NBA.com, merges them,
 and returns the columns the rest of the engine needs.
-
-Note: PER / BPM / VORP / WS are Basketball Reference metrics and are not
-exposed by nba_api. They are included as NaN columns here so downstream
-code has a stable schema; a later BR scraper will populate them.
 """
 
 from __future__ import annotations
@@ -24,10 +20,10 @@ EXPECTED_COLUMNS: tuple[str, ...] = (
     "age",
     "GP",
     "MPG",
-    "PER",
-    "BPM",
-    "VORP",
-    "WS",
+    "PIE",
+    "USG_PCT",
+    "NET_RATING",
+    "OFF_RATING",
 )
 
 
@@ -54,10 +50,10 @@ def _shape(base: pd.DataFrame, advanced: pd.DataFrame) -> pd.DataFrame:
             "age": merged["AGE"],
             "GP": merged["GP"],
             "MPG": merged["MIN"],
-            "PER": pd.NA,
-            "BPM": pd.NA,
-            "VORP": pd.NA,
-            "WS": pd.NA,
+            "PIE": merged["PIE"],
+            "USG_PCT": merged["USG_PCT"],
+            "NET_RATING": merged["NET_RATING"],
+            "OFF_RATING": merged["OFF_RATING"],
         }
     )
     return out

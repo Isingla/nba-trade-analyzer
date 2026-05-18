@@ -25,8 +25,10 @@ def _fake_advanced() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "PLAYER_ID": [1, 2, 3],
-            "USG_PCT": [0.30, 0.31, 0.29],
             "PIE": [0.18, 0.17, 0.22],
+            "USG_PCT": [0.30, 0.31, 0.29],
+            "NET_RATING": [8.2, 9.5, 11.3],
+            "OFF_RATING": [118.4, 121.0, 124.7],
         }
     )
 
