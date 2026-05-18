@@ -11,6 +11,8 @@ dependencies = [
     "httpx>=0.28.1",
     "nba-api>=1.11.4",
     "pandas>=3.0.3",
+    "pip-system-certs>=5.3",
+    "pydantic>=2.13.4",
 ]
 
 [project.scripts]
