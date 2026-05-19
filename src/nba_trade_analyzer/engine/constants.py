@@ -66,7 +66,7 @@ WIN_CURVE_MAX_MULTIPLIER = 2.0  # contender ceiling
 # acquiring team's core. Exponential decay so a 3-year gap is a soft nudge
 # and a 10-year gap is a real penalty. Capped at TIMELINE_MAX_ADJUSTMENT
 # percent of context_value.
-TIMELINE_LAMBDA = 0.12  # decay rate — gap=3 ≈ 70% alignment, gap=10 ≈ 30%
+TIMELINE_LAMBDA = 0.16  # decay rate — gap=3 ≈ 62% alignment, gap=10 ≈ 20%
 TIMELINE_MAX_ADJUSTMENT = 0.15  # ±15% of context_value
 TIMELINE_CORE_SIZE = 5  # top-N players by minutes that define team core
 

@@ -31,6 +31,7 @@ from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
     LEAGUE_AVG_3PT_PCT,
     LEAGUE_AVG_3PT_RATE,
+    MAX_WINS_ADDED,
     POSITIONAL_MAX_ADJUSTMENT,
     POSITIONAL_MINUTES_THRESHOLD_HIGH,
     POSITIONAL_MINUTES_THRESHOLD_LOW,
@@ -97,6 +98,25 @@ def _coarse_position(label: str | None) -> tuple[tuple[str, float], ...]:
     return ((_COARSE_POSITION.get(label, label), 1.0),)
 
 
+def _trim_outgoing(
+    roster: list[dict], outgoing_names: list[str] | None
+) -> list[dict]:
+    """Drop outgoing players from the roster by case-insensitive name match.
+
+    Used by the positional-fit calc so an incoming player is scored against
+    the gap the trade creates, not the roster that still includes the guy
+    being moved.
+    """
+    if not outgoing_names:
+        return roster
+    excluded = {n.casefold().strip() for n in outgoing_names}
+    return [
+        entry
+        for entry in roster
+        if str(entry.get("player_name", "")).casefold().strip() not in excluded
+    ]
+
+
 # --- Win curve ------------------------------------------------------------
 
 
@@ -113,6 +133,22 @@ def calculate_win_curve_multiplier(team_projected_wins: float) -> float:
     # Clamp the exponent to keep math.exp away from overflow at extreme inputs.
     exponent = max(-50.0, min(50.0, exponent))
     return WIN_CURVE_MIN_MULTIPLIER + span / (1.0 + math.exp(exponent))
+
+
+def _effective_win_curve(win_curve: float, wins_added: float) -> float:
+    """Damp the win curve for negative-impact players.
+
+    The raw win curve treats every player as equally rescalable: a contender
+    multiplier of 1.5 would make a -5-win player worth -7.5 in context_value
+    terms, which double-counts the badness for teams that should care
+    *less*, not more, about marginal negatives. Instead, lerp toward 1.0 as
+    ``abs(wins_added)`` grows: lightly-negative guys still feel some team
+    context, deeply-negative guys converge on the flat unit.
+    """
+    if wins_added >= 0:
+        return win_curve
+    damping = max(0.0, 1.0 - abs(wins_added) / MAX_WINS_ADDED)
+    return 1.0 + (win_curve - 1.0) * damping
 
 
 # --- Timeline -------------------------------------------------------------
@@ -331,6 +367,7 @@ def evaluate_player_in_team_context(
     acquiring_team_roster: list[dict],
     epm_df: pd.DataFrame | None = None,
     player_stats_df: pd.DataFrame | None = None,
+    outgoing_player_names: list[str] | None = None,
 ) -> TeamContextValuation:
     """Apply the four Phase 5 adjustments to a base player valuation.
 
@@ -339,18 +376,25 @@ def evaluate_player_in_team_context(
     Required keys: ``MPG``, ``GP``, ``age``; optional: ``position``,
     ``FG3_RATE``, ``FG3_PCT``. Missing optional fields fall back to league
     averages so the function never crashes on partial data.
+
+    ``outgoing_player_names`` lists players the acquiring team is sending
+    out in the same trade. They are stripped from the roster *only* for
+    the positional-fit calc, so incoming players are scored against the
+    gap the trade creates rather than the pre-trade roster.
     """
     win_curve = calculate_win_curve_multiplier(acquiring_team_wins)
 
     # Rescale base value through the win curve. context_value is the new
     # "starting point" against which the three additive adjustments apply.
-    context_value = wins_added * (DOLLARS_PER_WIN * win_curve)
+    effective_multiplier = _effective_win_curve(win_curve, wins_added)
+    context_value = wins_added * (DOLLARS_PER_WIN * effective_multiplier)
 
     core_ages = _team_core_ages(acquiring_team_roster)
     timeline_mod = calculate_timeline_modifier(player.age, core_ages)
 
+    positional_roster = _trim_outgoing(acquiring_team_roster, outgoing_player_names)
     position = _player_position(player, epm_df, player_stats_df)
-    positional_mod = calculate_positional_modifier(position, acquiring_team_roster)
+    positional_mod = calculate_positional_modifier(position, positional_roster)
 
     player_rate, player_pct = _player_3pt_profile(player, player_stats_df)
     team_rate, team_pct = _team_3pt_profile(acquiring_team_roster)
