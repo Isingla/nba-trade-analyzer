@@ -51,6 +51,40 @@ MAX_WINS_ADDED = 20.0
 # second-tier max guys (Cade, Brunson, LeBron) back toward breakeven.
 EPM_TO_WINS_FACTOR = 4.2
 
+# ---- Team Context Constants (Phase 5) ----
+# Win curve: sigmoid on projected team wins that rescales DOLLARS_PER_WIN.
+# Marginal wins are most valuable near the playoff cutoff (where they swing
+# postseason eligibility) and least valuable for teams locked into the lottery
+# or a top seed. Multiplies DOLLARS_PER_WIN — applied before the additive
+# timeline/positional/spacing adjustments.
+WIN_CURVE_MIDPOINT = 42.0  # approximate playoff cutoff (historical avg 41-43 wins)
+WIN_CURVE_STEEPNESS = 0.15  # how sharply value ramps around the cutoff
+WIN_CURVE_MIN_MULTIPLIER = 0.4  # tanking-team floor (~20-win team)
+WIN_CURVE_MAX_MULTIPLIER = 2.0  # contender ceiling
+
+# Timeline alignment: penalize age gaps between an incoming player and the
+# acquiring team's core. Exponential decay so a 3-year gap is a soft nudge
+# and a 10-year gap is a real penalty. Capped at TIMELINE_MAX_ADJUSTMENT
+# percent of context_value.
+TIMELINE_LAMBDA = 0.12  # decay rate — gap=3 ≈ 70% alignment, gap=10 ≈ 30%
+TIMELINE_MAX_ADJUSTMENT = 0.15  # ±15% of context_value
+TIMELINE_CORE_SIZE = 5  # top-N players by minutes that define team core
+
+# Positional fit: bonus when an incoming player addresses a thin position,
+# penalty when they pile onto a logjam. Linear scaling between the two
+# minute-load thresholds.
+POSITIONAL_MAX_ADJUSTMENT = 0.10  # ±10% of context_value
+POSITIONAL_MINUTES_THRESHOLD_HIGH = 40.0  # above this = logjam penalty
+POSITIONAL_MINUTES_THRESHOLD_LOW = 25.0  # below this = positional need bonus
+
+# Spacing fit: small additive modifier when a shooter joins a spacing-poor
+# team (or a non-shooter joins one that needs spacing). Effect shrinks when
+# the acquiring team already has elite spacing, since spacing isn't the
+# binding constraint there.
+SPACING_MAX_ADJUSTMENT = 0.08  # ±8% — weakest signal of the four
+LEAGUE_AVG_3PT_PCT = 0.363  # 2024-25 league average 3P%; refresh annually
+LEAGUE_AVG_3PT_RATE = 0.40  # 2024-25 league average 3PA/FGA; refresh annually
+
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
 # Fitted conceptually to EPM-based draft value research (Sports Appeal / Pelton).
