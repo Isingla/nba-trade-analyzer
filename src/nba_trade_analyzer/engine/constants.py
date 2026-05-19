@@ -41,10 +41,24 @@ TEAM_ADJUSTMENT_WEIGHT = 0.5
 # Jordan) are roughly 15-18 WAR.
 MAX_WINS_ADDED = 20.0
 
+# Conversion factor: EPM (or DARKO DPM) points per 100 possessions to wins,
+# scaled by minutes fraction. EPM already isolates individual impact via
+# RAPM, so no team adjustment is applied. Calibrated 2026-05-19 against the
+# top-30 EPM players: 5.0 compressed the top five to 17-18 tanh_wins (tanh
+# was acting as a wall, not an outlier cap); 3.8 spread them but pulled
+# mid-tier max contracts too far underwater. 4.2 keeps the top tier below
+# the tanh ceiling while leaving room for Phase 5 team context to lift the
+# second-tier max guys (Cade, Brunson, LeBron) back toward breakeven.
+EPM_TO_WINS_FACTOR = 4.2
+
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
 # Fitted conceptually to EPM-based draft value research (Sports Appeal / Pelton).
 # pick_value = PICK_VALUE_SCALE * exp(-PICK_VALUE_DECAY * (pick_number - 1))
-PICK_VALUE_SCALE = 80_000_000    # ~$80M surplus value for pick 1 (over full rookie contract)
-PICK_VALUE_DECAY = 0.065         # decay rate — pick 14 ≈ $33M, pick 30 ≈ $12M, pick 45 ≈ $4M
-PICK_VALUE_SECOND_ROUND_PENALTY = 0.4  # second round picks (31-60) get 40% of curve value
+PICK_VALUE_SCALE = (
+    80_000_000  # ~$80M surplus value for pick 1 (over full rookie contract)
+)
+PICK_VALUE_DECAY = 0.065  # decay rate — pick 14 ≈ $33M, pick 30 ≈ $12M, pick 45 ≈ $4M
+PICK_VALUE_SECOND_ROUND_PENALTY = (
+    0.4  # second round picks (31-60) get 40% of curve value
+)

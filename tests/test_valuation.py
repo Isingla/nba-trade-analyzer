@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 
+import pandas as pd
 import pytest
 
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
+    EPM_TO_WINS_FACTOR,
     MAX_WINS_ADDED,
     NET_RATING_TO_WINS_FACTOR,
 )
@@ -14,12 +16,85 @@ from nba_trade_analyzer.engine.valuation import (
     calculate_player_value,
     calculate_surplus_value,
     calculate_wins_added,
+    calculate_wins_added_from_impact,
     evaluate_player,
     evaluate_trade_assets,
 )
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team import RosterEntry
 from nba_trade_analyzer.models.trade import TradeAssets
+
+
+def _empty_epm() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "player_name",
+            "player_name_normalized",
+            "team",
+            "epm",
+            "epm_off",
+            "epm_def",
+            "mpg",
+            "position",
+            "age",
+        ]
+    )
+
+
+def _empty_darko() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "player_name",
+            "player_name_normalized",
+            "dpm",
+            "dpm_off",
+            "dpm_def",
+            "box_dpm_off",
+            "box_dpm_def",
+            "onoff_dpm_off",
+            "onoff_dpm_def",
+            "position",
+            "age",
+        ]
+    )
+
+
+def _epm_with(name: str, epm: float) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "player_name": name,
+                "player_name_normalized": name.casefold(),
+                "team": "TST",
+                "epm": epm,
+                "epm_off": epm * 0.6,
+                "epm_def": epm * 0.4,
+                "mpg": 36.0,
+                "position": "F",
+                "age": 27,
+            }
+        ]
+    )
+
+
+def _darko_with(name: str, dpm: float) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "player_name": name,
+                "player_name_normalized": name.casefold(),
+                "dpm": dpm,
+                "dpm_off": dpm * 0.5,
+                "dpm_def": dpm * 0.5,
+                "box_dpm_off": dpm * 0.5,
+                "box_dpm_def": dpm * 0.5,
+                "onoff_dpm_off": dpm * 0.5,
+                "onoff_dpm_def": dpm * 0.5,
+                "position": "G",
+                "age": 27,
+            }
+        ]
+    )
 
 
 # ----- adjusted net rating ------------------------------------------------
@@ -151,26 +226,26 @@ def _contract(salary: int = 5_000_000) -> Contract:
 
 def test_confidence_full_at_2500_minutes():
     p = _player_with_minutes(mpg=31.25, gp=80)  # 31.25 * 80 = 2500
-    v = evaluate_player(p, _contract())
+    v = evaluate_player(p, _contract(), epm_df=_empty_epm(), darko_df=_empty_darko())
     assert v.confidence == pytest.approx(1.0)
 
 
 def test_confidence_half_at_1000_minutes():
     p = _player_with_minutes(mpg=20.0, gp=50)  # 20 * 50 = 1000
-    v = evaluate_player(p, _contract())
+    v = evaluate_player(p, _contract(), epm_df=_empty_epm(), darko_df=_empty_darko())
     assert v.confidence == pytest.approx(0.5)
 
 
 def test_confidence_floor_at_200_minutes():
     p = _player_with_minutes(mpg=10.0, gp=20)  # 10 * 20 = 200
-    v = evaluate_player(p, _contract())
+    v = evaluate_player(p, _contract(), epm_df=_empty_epm(), darko_df=_empty_darko())
     assert v.confidence == pytest.approx(0.1)
 
 
 # ----- end-to-end ---------------------------------------------------------
 
 
-def test_evaluate_player_realistic_stat_line():
+def test_evaluate_player_realistic_stat_line_net_rating_fallback():
     # NET_RATING +4.0 on a +1.0 team, partial team adjustment → adjusted 3.5.
     # 34 MPG × 75 GP = 2550 minutes → confidence 1.0, scaling 2550/2952.
     player = Player(
@@ -180,7 +255,13 @@ def test_evaluate_player_realistic_stat_line():
         stats={"NET_RATING": 4.0, "GP": 75, "MPG": 34.0},
     )
     contract = Contract(salary=40_000_000, years_remaining=4)
-    valuation = evaluate_player(player, contract, team_net_rating=1.0)
+    valuation = evaluate_player(
+        player,
+        contract,
+        team_net_rating=1.0,
+        epm_df=_empty_epm(),
+        darko_df=_empty_darko(),
+    )
 
     assert valuation.player_name == "Anthony Edwards"
     assert valuation.team == "MIN"
@@ -192,12 +273,10 @@ def test_evaluate_player_realistic_stat_line():
     assert valuation.player_value == pytest.approx(
         valuation.wins_added * DOLLARS_PER_WIN
     )
-    assert valuation.surplus_value == pytest.approx(
-        valuation.player_value - 40_000_000
-    )
+    assert valuation.surplus_value == pytest.approx(valuation.player_value - 40_000_000)
     assert valuation.confidence == pytest.approx(1.0)
     assert valuation.salary == 40_000_000
-    assert valuation.metric_source == "net_rating_adjusted"
+    assert valuation.metric_source == "net_rating"
 
 
 def test_evaluate_trade_assets_sums_surplus_across_players():
@@ -215,21 +294,178 @@ def test_evaluate_trade_assets_sums_surplus_across_players():
     )
     assets = TradeAssets(
         players=[
-            RosterEntry(player=p1, contract=Contract(salary=20_000_000, years_remaining=2)),
-            RosterEntry(player=p2, contract=Contract(salary=8_000_000, years_remaining=1)),
+            RosterEntry(
+                player=p1, contract=Contract(salary=20_000_000, years_remaining=2)
+            ),
+            RosterEntry(
+                player=p2, contract=Contract(salary=8_000_000, years_remaining=1)
+            ),
         ]
     )
 
+    epm = _empty_epm()
+    darko = _empty_darko()
     expected = (
         evaluate_player(
-            p1, Contract(salary=20_000_000, years_remaining=2)
+            p1,
+            Contract(salary=20_000_000, years_remaining=2),
+            epm_df=epm,
+            darko_df=darko,
         ).surplus_value
         + evaluate_player(
-            p2, Contract(salary=8_000_000, years_remaining=1)
+            p2,
+            Contract(salary=8_000_000, years_remaining=1),
+            epm_df=epm,
+            darko_df=darko,
         ).surplus_value
     )
-    assert evaluate_trade_assets(assets) == pytest.approx(expected)
+    assert evaluate_trade_assets(assets, epm_df=epm, darko_df=darko) == pytest.approx(
+        expected
+    )
 
 
 def test_evaluate_trade_assets_empty_is_zero():
-    assert evaluate_trade_assets(TradeAssets()) == 0
+    assert (
+        evaluate_trade_assets(
+            TradeAssets(), epm_df=_empty_epm(), darko_df=_empty_darko()
+        )
+        == 0
+    )
+
+
+# ----- EPM path -----------------------------------------------------------
+
+
+def test_evaluate_with_epm_sets_metric_source_and_skips_team_adjustment():
+    player = Player(
+        name="Nikola Jokic",
+        team="DEN",
+        age=31,
+        stats={"NET_RATING": 11.0, "GP": 78, "MPG": 38.0},
+    )
+    contract = Contract(salary=55_200_000, years_remaining=3)
+    epm = _epm_with("Nikola Jokic", 7.4)
+
+    v = evaluate_player(
+        player,
+        contract,
+        team_net_rating=8.0,  # would normally drag NET_RATING down — must be ignored
+        epm_df=epm,
+        darko_df=_empty_darko(),
+    )
+
+    assert v.metric_source == "epm"
+    # adjusted_net_rating field now stores the raw EPM impact on this path.
+    assert v.adjusted_net_rating == pytest.approx(7.4)
+    minutes = 78 * 38
+    expected_raw = 7.4 * (minutes / 2952) * EPM_TO_WINS_FACTOR
+    assert v.wins_added == pytest.approx(
+        MAX_WINS_ADDED * math.tanh(expected_raw / MAX_WINS_ADDED)
+    )
+
+
+def test_epm_supermax_star_has_positive_surplus():
+    # Jokić on the supermax should still be net-positive once EPM drives the calc.
+    player = Player(
+        name="Nikola Jokic",
+        team="DEN",
+        age=31,
+        stats={"NET_RATING": 11.0, "GP": 78, "MPG": 38.0},
+    )
+    contract = Contract(salary=55_200_000, years_remaining=3)
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_epm_with("Nikola Jokic", 7.4),
+        darko_df=_empty_darko(),
+    )
+    assert v.surplus_value > 0
+
+
+def test_epm_path_applies_tanh_compression():
+    # An absurdly high EPM should still be bounded under MAX_WINS_ADDED.
+    player = Player(
+        name="Extreme",
+        team="TST",
+        age=27,
+        stats={"NET_RATING": 0.0, "GP": 82, "MPG": 36.0},
+    )
+    contract = Contract(salary=10_000_000, years_remaining=1)
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_epm_with("Extreme", 30.0),
+        darko_df=_empty_darko(),
+    )
+    assert 0 < v.wins_added < MAX_WINS_ADDED
+
+
+def test_calculate_wins_added_from_impact_no_replacement_subtraction():
+    # Zero-impact player gets zero wins added — no implicit floor.
+    assert calculate_wins_added_from_impact(0.0, minutes_played=2952) == pytest.approx(
+        0.0
+    )
+
+
+# ----- DARKO path ---------------------------------------------------------
+
+
+def test_evaluate_with_darko_when_epm_missing():
+    player = Player(
+        name="Bench Guy",
+        team="TST",
+        age=24,
+        stats={"NET_RATING": -1.0, "GP": 60, "MPG": 20.0},
+    )
+    contract = Contract(salary=3_000_000, years_remaining=1)
+
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_empty_epm(),
+        darko_df=_darko_with("Bench Guy", 1.5),
+    )
+    assert v.metric_source == "darko"
+    assert v.adjusted_net_rating == pytest.approx(1.5)
+
+
+def test_darko_skipped_when_epm_present():
+    # When both sources have the player, EPM wins.
+    player = Player(
+        name="Both",
+        team="TST",
+        age=25,
+        stats={"NET_RATING": 0.0, "GP": 70, "MPG": 30.0},
+    )
+    contract = Contract(salary=5_000_000, years_remaining=1)
+
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_epm_with("Both", 4.0),
+        darko_df=_darko_with("Both", -2.0),  # would be very different if used
+    )
+    assert v.metric_source == "epm"
+    assert v.adjusted_net_rating == pytest.approx(4.0)
+
+
+# ----- Fallback ladder ----------------------------------------------------
+
+
+def test_falls_back_to_net_rating_when_no_impact_data():
+    player = Player(
+        name="Unknown",
+        team="TST",
+        age=27,
+        stats={"NET_RATING": 2.0, "GP": 60, "MPG": 25.0},
+    )
+    contract = Contract(salary=4_000_000, years_remaining=1)
+
+    v = evaluate_player(
+        player,
+        contract,
+        team_net_rating=0.0,
+        epm_df=_empty_epm(),
+        darko_df=_empty_darko(),
+    )
+    assert v.metric_source == "net_rating"
