@@ -13,6 +13,7 @@ from nba_trade_analyzer.engine.constants import (
     FULL_SEASON_MINUTES,
     NET_RATING_TO_WINS_FACTOR,
     REPLACEMENT_LEVEL_NET_RATING,
+    TEAM_ADJUSTMENT_WEIGHT,
 )
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.trade import TradeAssets
@@ -25,8 +26,8 @@ MIN_CONFIDENCE = 0.1
 def calculate_adjusted_net_rating(
     player_net_rating: float, team_net_rating: float
 ) -> float:
-    """Strip out team context: a +3 on a +5 team is actually -2."""
-    return player_net_rating - team_net_rating
+    """Partially strip out team context, weighted by TEAM_ADJUSTMENT_WEIGHT."""
+    return player_net_rating - (team_net_rating * TEAM_ADJUSTMENT_WEIGHT)
 
 
 def calculate_wins_added(

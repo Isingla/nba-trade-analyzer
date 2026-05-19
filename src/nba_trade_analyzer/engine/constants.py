@@ -30,6 +30,12 @@ NET_RATING_TO_WINS_FACTOR = 2.75
 # Used to scale part-time players proportionally.
 FULL_SEASON_MINUTES = 82 * 36  # 82 games × 36 minutes = 2,952
 
+# Controls how much of the team's net rating is subtracted from the player's.
+# 1.0 = full subtraction (overcorrects for stars on good teams), 0.0 = no
+# adjustment (ignores team context). 0.5 is a compromise until EPM integration
+# replaces this approach.
+TEAM_ADJUSTMENT_WEIGHT = 0.5
+
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
 # Fitted conceptually to EPM-based draft value research (Sports Appeal / Pelton).

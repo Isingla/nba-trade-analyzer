@@ -20,13 +20,21 @@ from nba_trade_analyzer.models.trade import TradeAssets
 
 
 def test_adjusted_net_rating_good_player_on_better_team():
-    # +3 on a +5 team is actually carrying -2 relative to teammates.
-    assert calculate_adjusted_net_rating(3.0, 5.0) == pytest.approx(-2.0)
+    # +3 on a +5 team, with 50% team adjustment: 3 - (5 * 0.5) = 0.5.
+    assert calculate_adjusted_net_rating(3.0, 5.0) == pytest.approx(0.5)
 
 
 def test_adjusted_net_rating_decent_player_on_bad_team():
-    # +1 on a -4 team is doing the heavy lifting → +5.
-    assert calculate_adjusted_net_rating(1.0, -4.0) == pytest.approx(5.0)
+    # +1 on a -4 team, with 50% team adjustment: 1 - (-4 * 0.5) = 3.0.
+    assert calculate_adjusted_net_rating(1.0, -4.0) == pytest.approx(3.0)
+
+
+def test_partial_adjustment_higher_than_full_subtraction_for_good_team():
+    # Partial (50%) subtraction leaves more of the player's raw rating
+    # intact than the old full-subtraction approach would.
+    partial = calculate_adjusted_net_rating(3.0, 5.0)
+    full_subtraction = 3.0 - 5.0
+    assert partial > full_subtraction
 
 
 # ----- wins added ---------------------------------------------------------
@@ -131,9 +139,8 @@ def test_confidence_floor_at_200_minutes():
 
 
 def test_evaluate_player_realistic_stat_line():
-    # NET_RATING +4.0 on a +1.0 team → adjusted +3.0.
+    # NET_RATING +4.0 on a +1.0 team, partial team adjustment → adjusted 3.5.
     # 34 MPG × 75 GP = 2550 minutes → confidence 1.0, scaling 2550/2952.
-    # Value above replacement = 3 - (-2) = 5 → 5 × 2.75 × (2550/2952) = ~11.88 wins.
     player = Player(
         name="Anthony Edwards",
         team="MIN",
@@ -145,8 +152,8 @@ def test_evaluate_player_realistic_stat_line():
 
     assert valuation.player_name == "Anthony Edwards"
     assert valuation.team == "MIN"
-    assert valuation.adjusted_net_rating == pytest.approx(3.0)
-    assert valuation.wins_added == pytest.approx(5.0 * 2.75 * (34 * 75 / 2952))
+    assert valuation.adjusted_net_rating == pytest.approx(3.5)
+    assert valuation.wins_added == pytest.approx(5.5 * 2.75 * (34 * 75 / 2952))
     assert valuation.player_value == pytest.approx(
         valuation.wins_added * DOLLARS_PER_WIN
     )
