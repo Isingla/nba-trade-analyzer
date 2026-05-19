@@ -77,3 +77,24 @@ def fetch_player_stats(
     # NaN survives a JSON round-trip as null; pd.DataFrame restores it.
     cache.set(cache_key, df.to_dict(orient="records"), ttl_hours=_CACHE_TTL_HOURS)
     return df
+
+
+def get_team_net_rating(df: pd.DataFrame, team_abbr: str) -> float:
+    """Minutes-weighted average NET_RATING for all players on `team_abbr`.
+
+    Weighting by total minutes (GP × MPG) means a starter playing 2,500 minutes
+    contributes far more to the team average than a bench player who logged 50.
+    """
+    team_df = df[df["team"] == team_abbr]
+    if team_df.empty:
+        return 0.0
+    minutes = team_df["GP"] * team_df["MPG"]
+    total_minutes = minutes.sum()
+    if total_minutes <= 0:
+        return 0.0
+    return float((team_df["NET_RATING"] * minutes).sum() / total_minutes)
+
+
+def get_all_team_net_ratings(df: pd.DataFrame) -> dict[str, float]:
+    """Map every team abbreviation to its minutes-weighted NET_RATING."""
+    return {team: get_team_net_rating(df, team) for team in df["team"].unique()}
