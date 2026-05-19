@@ -83,11 +83,17 @@ uv run ruff format               # format
 
 ## Phases
 
-- [ ] 1. Data pipeline — fetch player stats + salaries, cache locally
-- [ ] 2. Domain models — Player, Contract, Team, Trade (pydantic)
-- [ ] 3. Salary rules — CBA trade legality checker (basic matching)
+- [x] 1. Data pipeline — fetch player stats + salaries, cache locally
+- [x] 2. Domain models — Player, Contract, Team, Trade (pydantic)
+- [x] 3. Salary rules — CBA trade legality checker (all four apron tiers)
 - [ ] 4. Valuation — surplus value per player, draft pick value curves
 - [ ] 5. Team context — win curve, roster fit, timeline scoring
-- [ ] 6. Trade grader — combine everything into letter grades per team
-- [ ] 7. CLI — typer interface: input teams + assets, get grades
-- [ ] 8. Web app (future phase)
+- [ ] 6. Trade history model — train on historical trades to learn market
+       realism and predicted surplus
+- [ ] 7. Trade grader — combine heuristic valuation, team context, and
+       model predictions into letter grades per team
+- [ ] 8. Trade builder — given a target player and your team, find the
+       optimal legal package that minimizes your cost while maximizing
+       likelihood the other team accepts
+- [ ] 9. CLI — typer interface: grade trades + build trades
+- [ ] 10. Web app (future phase)
