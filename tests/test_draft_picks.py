@@ -42,9 +42,9 @@ def test_protection_swallows_pick_inside_top_n():
 
 def test_protection_does_not_affect_pick_outside_top_n():
     # Top-4 protected, lands at pick 5 → conveys at full value.
-    assert calculate_pick_value_with_protections(
-        5, protection_top=4
-    ) == pytest.approx(calculate_pick_value(5))
+    assert calculate_pick_value_with_protections(5, protection_top=4) == pytest.approx(
+        calculate_pick_value(5)
+    )
 
 
 def test_protection_none_returns_full_value():
