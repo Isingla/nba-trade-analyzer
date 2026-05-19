@@ -20,6 +20,7 @@ All three paths share the same downstream pipeline:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -34,9 +35,26 @@ from nba_trade_analyzer.engine.constants import (
     REPLACEMENT_LEVEL_NET_RATING,
     TEAM_ADJUSTMENT_WEIGHT,
 )
+from nba_trade_analyzer.engine.team_context import evaluate_player_in_team_context
 from nba_trade_analyzer.models.player import Contract, Player
+from nba_trade_analyzer.models.team_context import TeamContextValuation
 from nba_trade_analyzer.models.trade import TradeAssets
 from nba_trade_analyzer.models.valuation import PlayerValuation
+
+
+@dataclass(frozen=True)
+class TeamContext:
+    """Bundle of acquiring-team info needed for Phase 5 adjustments.
+
+    Pass to ``evaluate_trade_assets`` to switch from base surplus to
+    team-context-adjusted surplus. ``roster`` is a list of dicts (typically
+    rows of ``fetch_player_stats``) for the acquiring team.
+    """
+
+    projected_wins: float
+    roster: list[dict]
+    player_stats_df: pd.DataFrame | None = None
+
 
 FULL_CONFIDENCE_MINUTES = 2000.0
 MIN_CONFIDENCE = 0.1
@@ -201,15 +219,80 @@ def evaluate_trade_assets(
     team_net_rating: float = 0.0,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
+    team_context: TeamContext | None = None,
 ) -> float:
-    """Sum surplus value across the player package. Draft picks are scored separately."""
-    return sum(
-        evaluate_player(
+    """Sum surplus value across the player package.
+
+    Without ``team_context``, returns the base (team-agnostic) surplus —
+    same behavior as before Phase 5. With ``team_context``, runs each
+    player through ``evaluate_player_in_team_context`` and sums the
+    team-adjusted surplus instead. Draft picks are scored separately.
+    """
+    if team_context is None:
+        return sum(
+            evaluate_player(
+                entry.player,
+                entry.contract,
+                team_net_rating,
+                epm_df=epm_df,
+                darko_df=darko_df,
+            ).surplus_value
+            for entry in trade_assets.players
+        )
+
+    total = 0.0
+    for entry in trade_assets.players:
+        base = evaluate_player(
             entry.player,
             entry.contract,
             team_net_rating,
             epm_df=epm_df,
             darko_df=darko_df,
-        ).surplus_value
-        for entry in trade_assets.players
-    )
+        )
+        adjusted = evaluate_player_in_team_context(
+            player_value=base.player_value,
+            wins_added=base.wins_added,
+            player=entry.player,
+            contract=entry.contract,
+            acquiring_team_wins=team_context.projected_wins,
+            acquiring_team_roster=team_context.roster,
+            epm_df=epm_df,
+            player_stats_df=team_context.player_stats_df,
+        )
+        total += adjusted.team_surplus
+    return total
+
+
+def evaluate_trade_assets_detailed(
+    trade_assets: TradeAssets,
+    team_context: TeamContext,
+    team_net_rating: float = 0.0,
+    epm_df: pd.DataFrame | None = None,
+    darko_df: pd.DataFrame | None = None,
+) -> list[tuple[PlayerValuation, TeamContextValuation]]:
+    """Per-player breakdown of base valuation and team-adjusted valuation.
+
+    Useful for the trade grader and for eyeballing Phase 5 outputs against
+    real player/team pairs.
+    """
+    out: list[tuple[PlayerValuation, TeamContextValuation]] = []
+    for entry in trade_assets.players:
+        base = evaluate_player(
+            entry.player,
+            entry.contract,
+            team_net_rating,
+            epm_df=epm_df,
+            darko_df=darko_df,
+        )
+        adjusted = evaluate_player_in_team_context(
+            player_value=base.player_value,
+            wins_added=base.wins_added,
+            player=entry.player,
+            contract=entry.contract,
+            acquiring_team_wins=team_context.projected_wins,
+            acquiring_team_roster=team_context.roster,
+            epm_df=epm_df,
+            player_stats_df=team_context.player_stats_df,
+        )
+        out.append((base, adjusted))
+    return out
