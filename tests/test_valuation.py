@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
-from nba_trade_analyzer.engine.constants import DOLLARS_PER_WIN
+from nba_trade_analyzer.engine.constants import (
+    DOLLARS_PER_WIN,
+    MAX_WINS_ADDED,
+    NET_RATING_TO_WINS_FACTOR,
+)
 from nba_trade_analyzer.engine.valuation import (
     calculate_adjusted_net_rating,
     calculate_player_value,
@@ -42,33 +48,59 @@ def test_partial_adjustment_higher_than_full_subtraction_for_good_team():
 
 def test_wins_added_full_season_starter():
     # 82 GP × 36 MPG = 2952 total minutes = full season scaling of 1.0.
-    # Adjusted +5.0 → above replacement by 7.0 → 7.0 × 2.75 = 19.25 wins.
+    # Adjusted +5.0 → above replacement 7.0 → raw 19.25 wins, compressed by tanh.
     wins = calculate_wins_added(
         adjusted_net_rating=5.0, minutes_played=36 * 82, games_played=82
     )
-    assert wins == pytest.approx(19.25)
+    raw = 7.0 * 2.75
+    assert wins == pytest.approx(MAX_WINS_ADDED * math.tanh(raw / MAX_WINS_ADDED))
 
 
 def test_wins_added_part_time_scales_down():
-    # 60 GP × 18 MPG = 1080 minutes ≈ 36.6% of full season.
+    # 60 GP × 18 MPG = 1080 minutes vs. full-season 2952.
     full = calculate_wins_added(
         adjusted_net_rating=5.0, minutes_played=36 * 82, games_played=82
     )
     part = calculate_wins_added(
         adjusted_net_rating=5.0, minutes_played=18 * 60, games_played=60
     )
-    assert part < full
-    assert part == pytest.approx(full * (1080 / 2952))
+    assert 0 < part < full
 
 
 def test_wins_added_below_replacement_is_negative():
-    # Adjusted -5.0 is below the -2.0 replacement floor → value above
-    # replacement is -3.0, so wins are negative even at full minutes.
+    # Adjusted -5.0 is below the -2.0 replacement floor → raw wins are negative,
+    # tanh keeps them negative and bounded above -MAX_WINS_ADDED.
     wins = calculate_wins_added(
         adjusted_net_rating=-5.0, minutes_played=36 * 82, games_played=82
     )
+    raw = -3.0 * 2.75
     assert wins < 0
-    assert wins == pytest.approx(-3.0 * 2.75)
+    assert wins == pytest.approx(MAX_WINS_ADDED * math.tanh(raw / MAX_WINS_ADDED))
+
+
+def test_wins_added_extreme_capped_below_max():
+    # Absurdly high adjusted net rating gets compressed under MAX_WINS_ADDED.
+    extreme = calculate_wins_added(
+        adjusted_net_rating=50.0, minutes_played=36 * 82, games_played=82
+    )
+    assert 0 < extreme < MAX_WINS_ADDED
+
+
+def test_wins_added_extreme_negative_capped_above_min():
+    # Extremely negative net rating bounded by -MAX_WINS_ADDED.
+    crushed = calculate_wins_added(
+        adjusted_net_rating=-50.0, minutes_played=36 * 82, games_played=82
+    )
+    assert -MAX_WINS_ADDED < crushed < 0
+
+
+def test_wins_added_moderate_values_mostly_unchanged():
+    # A small raw wins value (~1.4) should pass through tanh nearly unchanged.
+    wins = calculate_wins_added(
+        adjusted_net_rating=1.0, minutes_played=500, games_played=30
+    )
+    raw = 3.0 * NET_RATING_TO_WINS_FACTOR * (500 / 2952)
+    assert wins == pytest.approx(raw, rel=0.05)
 
 
 # ----- player value & surplus value --------------------------------------
@@ -153,7 +185,10 @@ def test_evaluate_player_realistic_stat_line():
     assert valuation.player_name == "Anthony Edwards"
     assert valuation.team == "MIN"
     assert valuation.adjusted_net_rating == pytest.approx(3.5)
-    assert valuation.wins_added == pytest.approx(5.5 * 2.75 * (34 * 75 / 2952))
+    expected_raw = 5.5 * 2.75 * (34 * 75 / 2952)
+    assert valuation.wins_added == pytest.approx(
+        MAX_WINS_ADDED * math.tanh(expected_raw / MAX_WINS_ADDED)
+    )
     assert valuation.player_value == pytest.approx(
         valuation.wins_added * DOLLARS_PER_WIN
     )

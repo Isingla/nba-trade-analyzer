@@ -8,9 +8,12 @@ decide who came out ahead in a swap.
 
 from __future__ import annotations
 
+import math
+
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
     FULL_SEASON_MINUTES,
+    MAX_WINS_ADDED,
     NET_RATING_TO_WINS_FACTOR,
     REPLACEMENT_LEVEL_NET_RATING,
     TEAM_ADJUSTMENT_WEIGHT,
@@ -42,8 +45,9 @@ def calculate_wins_added(
     """
     del games_played
     value_above_replacement = adjusted_net_rating - REPLACEMENT_LEVEL_NET_RATING
-    wins_per_full_season = value_above_replacement * NET_RATING_TO_WINS_FACTOR
-    return wins_per_full_season * (minutes_played / FULL_SEASON_MINUTES)
+    minutes_fraction = minutes_played / FULL_SEASON_MINUTES
+    raw_wins = (value_above_replacement * NET_RATING_TO_WINS_FACTOR) * minutes_fraction
+    return MAX_WINS_ADDED * math.tanh(raw_wins / MAX_WINS_ADDED)
 
 
 def calculate_player_value(wins_added: float) -> float:

@@ -36,6 +36,11 @@ FULL_SEASON_MINUTES = 82 * 36  # 82 games × 36 minutes = 2,952
 # replaces this approach.
 TEAM_ADJUSTMENT_WEIGHT = 0.5
 
+# Theoretical maximum wins a single player can add. Used in tanh curve to
+# enforce diminishing returns. Historical best seasons (peak LeBron, peak
+# Jordan) are roughly 15-18 WAR.
+MAX_WINS_ADDED = 20.0
+
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
 # Fitted conceptually to EPM-based draft value research (Sports Appeal / Pelton).
