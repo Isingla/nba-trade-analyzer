@@ -764,6 +764,45 @@ def test_two_bad_contracts_different_lengths_not_a_robbery():
     assert grade.team_b_grade.verdict != "Highway Robbery"
 
 
+def _salary_df_for(specs: list[dict], extra_rows: list[dict] | None = None):
+    """Salary frame listing the base rosters (plus any extra rows) for filtering."""
+    rows = [{"player_name": s["name"], "team": s["team"]} for s in specs]
+    if extra_rows:
+        rows += extra_rows
+    return pd.DataFrame(rows)
+
+
+def test_grader_drops_traded_player_from_positional_fit():
+    # A player in NYK's season stats but listed on BOS in the salary feed has
+    # been traded away; with salary_df threaded through, he must not inflate
+    # NYK's forward minutes nor be named in the crunch. (His 36 MPG would
+    # otherwise top the list.)
+    traded = _spec("Traded Forward", "NYK", 1.0, position="F", age=29, mpg=36.0)
+    arriving = _spec("Arriving Forward", "MIN", 2.0, position="F", age=26)
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=TradeAssets(players=[_entry(_NYK_ROSTER[3], 20_000_000)]),
+        team_b_sends=TradeAssets(players=[_entry(arriving, 20_000_000)]),
+    )
+    epm_df, stats_df = _world([traded, arriving])
+    salary_df = _salary_df_for(
+        _NYK_ROSTER + _MIN_ROSTER,
+        extra_rows=[
+            {"player_name": "Traded Forward", "team": "BOS"},  # moved on
+            {"player_name": "Arriving Forward", "team": "MIN"},
+        ],
+    )
+    grade = grade_trade(
+        trade,
+        player_stats_df=stats_df,
+        epm_df=epm_df,
+        darko_df=_empty_darko(),
+        salary_df=salary_df,
+    )
+    assert "Traded Forward" not in grade.team_a_grade.positional_fit.explanation
+
+
 def test_outgoing_player_trimmed_from_positional_fit():
     # BUG 2: a player being sent out vacates his minutes, so he must not count
     # toward the team's positional load nor be named in the incoming player's

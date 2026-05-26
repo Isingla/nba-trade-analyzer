@@ -23,6 +23,7 @@ from nba_trade_analyzer.engine.team_context import (
     calculate_timeline_modifier,
     calculate_win_curve_multiplier,
     evaluate_player_in_team_context,
+    filter_to_current_roster,
     resolve_position,
 )
 from nba_trade_analyzer.engine.valuation import TeamContext, evaluate_trade_assets
@@ -240,6 +241,64 @@ def test_no_position_bucket_exceeds_roster_total():
     assert sum(by_pos.values()) == pytest.approx(total_mpg)
     for minutes in by_pos.values():
         assert minutes <= total_mpg
+
+
+# ----- salary-based roster filtering (traded players) --------------------
+# Season stats include every player who logged minutes for a team, including
+# ones traded away — which inflated position groups to impossible numbers
+# (336 guard minutes vs. a 240 ceiling). The salary feed reflects the current
+# roster, so it is used to drop departed players.
+
+
+def test_salary_filter_keeps_position_minutes_under_240():
+    # The regression: a stat frame that lists far more players than a real
+    # roster (10 guards + 8 forwards + 6 centers at 30 MPG each) blows past the
+    # 240 ceiling at every group; the salary feed names only the current roster.
+    roster = (
+        [{"player_name": f"G{i}", "MPG": 30.0, "position": "G"} for i in range(10)]
+        + [{"player_name": f"F{i}", "MPG": 30.0, "position": "F"} for i in range(8)]
+        + [{"player_name": f"C{i}", "MPG": 30.0, "position": "C"} for i in range(6)]
+    )
+    current = (
+        [(f"G{i}", "NYK") for i in range(5)]
+        + [(f"F{i}", "NYK") for i in range(4)]
+        + [(f"C{i}", "NYK") for i in range(3)]
+    )
+    salary_df = pd.DataFrame(current, columns=["player_name", "team"])
+    by_pos = _minutes_by_position(filter_to_current_roster(roster, "NYK", salary_df))
+    assert all(minutes <= 240.0 for minutes in by_pos.values())
+    assert by_pos["G"] == pytest.approx(150.0)  # 5 kept guards × 30 MPG
+
+
+def test_salary_filter_drops_traded_and_absent_players():
+    roster = [
+        {"player_name": "Stays", "MPG": 30.0, "position": "G"},
+        {"player_name": "Traded", "MPG": 30.0, "position": "G"},  # now on BOS
+        {"player_name": "Two Way", "MPG": 30.0, "position": "G"},  # absent from feed
+    ]
+    salary_df = pd.DataFrame(
+        {"player_name": ["Stays", "Traded"], "team": ["NYK", "BOS"]}
+    )
+    kept = {
+        e["player_name"] for e in filter_to_current_roster(roster, "NYK", salary_df)
+    }
+    assert kept == {"Stays"}
+
+
+def test_salary_filter_noop_without_usable_salary_data():
+    roster = [{"player_name": "X", "MPG": 30.0, "position": "G"}]
+    assert filter_to_current_roster(roster, "NYK", None) == roster
+    assert filter_to_current_roster(roster, "NYK", pd.DataFrame()) == roster
+    # Team not present in the salary feed → keep the full roster, don't wipe it.
+    other = pd.DataFrame({"player_name": ["Y"], "team": ["BOS"]})
+    assert filter_to_current_roster(roster, "NYK", other) == roster
+
+
+def test_salary_filter_matches_on_normalized_name():
+    # Diacritics differ between the stats and salary feeds but still match.
+    roster = [{"player_name": "Nikola Jokić", "MPG": 34.0, "position": "C"}]
+    salary_df = pd.DataFrame({"player_name": ["Nikola Jokic"], "team": ["DEN"]})
+    assert len(filter_to_current_roster(roster, "DEN", salary_df)) == 1
 
 
 # ----- spacing ----------------------------------------------------------

@@ -52,6 +52,7 @@ from nba_trade_analyzer.engine.team_context import (
     _team_core_ages,
     _trim_outgoing,
     calculate_win_curve_multiplier,
+    filter_to_current_roster,
     resolve_position,
 )
 from nba_trade_analyzer.engine.valuation import (
@@ -69,6 +70,7 @@ from nba_trade_analyzer.models.grade import (
 from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.team import Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
+from nba_trade_analyzer.teams import resolve_team
 
 # Calibrated against the documented surplus targets: a star-on-a-bargain-deal
 # haul (ratio ≈ 1) lands ~80, a fleecing tips past it, and a fair swap (ratio
@@ -1058,10 +1060,19 @@ def _grade_team_side(
     epm_df: pd.DataFrame | None,
     darko_df: pd.DataFrame | None,
     score: int,
+    salary_df: pd.DataFrame | None = None,
 ) -> TeamGrade:
     label = _short_label(team.name)
     team_wins = _team_wins(stats_df, team.abbreviation)
     roster = _roster_dicts(stats_df, team.abbreviation)
+    # Season stats list every player who suited up for the team, including ones
+    # traded away; the salary feed reflects the current roster, so use it to drop
+    # departed players before any roster-based context (positional minutes,
+    # core ages, spacing). The salary feed uses Basketball-Reference team forms
+    # (BRK/CHO/PHO), so map the nba_api abbreviation across first.
+    info = resolve_team(team.abbreviation)
+    salary_team_abbr = info.salary_abbreviation if info else team.abbreviation
+    roster = filter_to_current_roster(roster, salary_team_abbr, salary_df)
     context = TeamContext(
         projected_wins=team_wins, roster=roster, player_stats_df=stats_df
     )
@@ -1146,12 +1157,12 @@ def grade_trade(
     ``None``. Otherwise each side gets a full :class:`TeamGrade`.
 
     ``epm_df`` / ``darko_df`` are fetched on demand (24h cached) when omitted.
-    ``salary_df`` is accepted for signature compatibility with the data
-    pipeline; contracts are read directly from the trade's ``RosterEntry``
-    objects, so the grader works fine with manually-specified contracts.
+    Contracts are read directly from the trade's ``RosterEntry`` objects, so the
+    grader works fine with manually-specified contracts. ``salary_df``, when
+    supplied, is used only to drop traded-away players from each team's roster
+    before positional/context calculations (it reflects the current roster);
+    without it the grader keeps every player the season stats list.
     """
-    del salary_df  # contracts already live on the trade's RosterEntry objects
-
     legality = check_trade_legality(trade)
     if not legality.legal:
         return TradeGrade(is_legal=False, illegal_reason=legality.error_reason)
@@ -1187,6 +1198,7 @@ def grade_trade(
         epm_df,
         darko_df,
         score_a,
+        salary_df=salary_df,
     )
     team_b_grade = _grade_team_side(
         trade.team_b,
@@ -1196,6 +1208,7 @@ def grade_trade(
         epm_df,
         darko_df,
         score_b,
+        salary_df=salary_df,
     )
 
     return TradeGrade(
