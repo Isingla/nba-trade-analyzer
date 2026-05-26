@@ -18,6 +18,7 @@ import pandas as pd
 
 from nba_trade_analyzer.data.epm import fetch_epm_data, get_player_epm, normalize_name
 from nba_trade_analyzer.data.players import fetch_player_stats
+from nba_trade_analyzer.data.salaries import fetch_all_salaries, get_player_salary
 from nba_trade_analyzer.engine.constants import (
     FIRST_APRON,
     LEAGUE_AVG_3PT_PCT,
@@ -49,8 +50,10 @@ def _force_utf8_stdout() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HARDCODED 2025-26 SALARIES — TODO: replace once data/salaries.py exists.
-# Approximate figures sourced from public salary trackers (Spotrac / HoopsHype).
+# FALLBACK 2025-26 SALARIES. The live source is now data/salaries.py (scraped
+# from Basketball Reference, with a committed CSV offline fallback); this dict
+# is only consulted for players the source doesn't return. Kept for backward-
+# compatibility. Approximate figures from public trackers (Spotrac / HoopsHype).
 # ---------------------------------------------------------------------------
 SALARIES_2025_26: dict[str, int] = {
     "Julius Randle": 30_935_520,
@@ -275,17 +278,26 @@ def _build_player(
     )
 
 
+def _resolve_salary(salary_df: pd.DataFrame, name: str) -> int:
+    """Prefer the live salary source, falling back to the hardcoded dict."""
+    row = get_player_salary(salary_df, name)
+    if row is not None:
+        return int(row["salary"])
+    return SALARIES_2025_26[name]
+
+
 def _build_roster_entries(
     names: tuple[str, ...],
     epm_df: pd.DataFrame,
     stats_lookup: dict[str, pd.Series],
+    salary_df: pd.DataFrame,
 ) -> list[RosterEntry]:
     entries: list[RosterEntry] = []
     for name in names:
         epm_row = get_player_epm(epm_df, name)
         stats_row = stats_lookup.get(normalize_name(name))
         player = _build_player(name, epm_row, stats_row)
-        salary = SALARIES_2025_26[name]
+        salary = _resolve_salary(salary_df, name)
         entries.append(
             RosterEntry(
                 player=player,
@@ -851,6 +863,10 @@ def main() -> None:
     stats_df = fetch_player_stats()
     print(f"  {len(stats_df)} player-stat rows loaded")
 
+    print("Fetching salaries from Basketball Reference...")
+    salary_df = fetch_all_salaries()
+    print(f"  {len(salary_df)} contracts loaded")
+
     stats_df = _augment_with_epm_position(stats_df, epm_df)
     stats_lookup = {
         row["player_name_normalized"]: row for _, row in stats_df.iterrows()
@@ -859,10 +875,10 @@ def main() -> None:
 
     for scenario in SCENARIOS:
         team_a_entries = _build_roster_entries(
-            scenario.team_a_players, epm_df, stats_lookup
+            scenario.team_a_players, epm_df, stats_lookup, salary_df
         )
         team_b_entries = _build_roster_entries(
-            scenario.team_b_players, epm_df, stats_lookup
+            scenario.team_b_players, epm_df, stats_lookup, salary_df
         )
 
         team_a = _build_team(scenario.team_a_abbr)

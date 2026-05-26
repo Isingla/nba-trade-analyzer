@@ -147,7 +147,9 @@ def test_cade_growth_projection_lifts_per_year_value() -> None:
     assert mv.total_contract_surplus > naive_4x
     # Last-year discounted surplus is closer to zero than year 1 (improving
     # raw value + steeper discount both reduce the per-year drag).
-    assert mv.year_by_year[-1].discounted_surplus > mv.year_by_year[0].discounted_surplus
+    assert (
+        mv.year_by_year[-1].discounted_surplus > mv.year_by_year[0].discounted_surplus
+    )
 
 
 def test_prime_max_player_strongly_positive() -> None:
