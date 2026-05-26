@@ -53,6 +53,13 @@ def _receive_line(grade_side: TeamGrade, incoming: TradeAssets) -> str:
     return ", ".join(parts) if parts else "cap relief"
 
 
+def _asset_names(assets: TradeAssets) -> str:
+    """Player names + pick labels in an asset package, for the send/receive lines."""
+    parts = [entry.player.name for entry in assets.players]
+    parts.extend(pick.label for pick in assets.picks)
+    return ", ".join(parts) if parts else "nothing"
+
+
 def _print_metric(title: str, mb: MetricBreakdown) -> None:
     print(f"  {title}")
     print(f"    {mb.raw_label}  ({mb.tier})")
@@ -96,7 +103,17 @@ def _print_report(scenario: TradeScenario, trade: Trade, grade: TradeGrade) -> N
     print(_HEAVY)
     print()
     if not grade.is_legal:
+        # Show what each side would have moved, even though the deal is dead —
+        # the asset names live on the Trade object regardless of legality.
+        print(f"{a_label} send: {_asset_names(trade.team_a_sends)}")
+        print(f"{a_label} receive: {_asset_names(trade.team_b_sends)}")
+        print()
+        print(f"{b_label} send: {_asset_names(trade.team_b_sends)}")
+        print(f"{b_label} receive: {_asset_names(trade.team_a_sends)}")
+        print()
         print(f"LEGALITY: ❌ Illegal — {grade.illegal_reason}")
+        print()
+        print("Trade evaluation stops here — this deal doesn't work under the CBA.")
         print()
         print(_HEAVY)
         print()
