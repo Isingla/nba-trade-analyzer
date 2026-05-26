@@ -952,9 +952,14 @@ def _asset_totals(
     """Return ``(surplus, gross)`` for an asset package, team-agnostic.
 
     ``surplus`` is multi-year contract surplus plus pick values (the trade-
-    decisive metric). ``gross`` is single-season production value plus pick
-    values — the magnitude used to normalize the score. Both are independent
-    of which team receives the assets, so the resulting score is zero-sum.
+    decisive metric). ``gross`` is the *multi-year* production magnitude
+    (each projected year's value, discounted the same way as surplus) plus
+    pick values — the deal size used to normalize the score. Measuring gross
+    over the same horizon as surplus keeps the score ratio comparing like
+    with like: dividing a multi-year surplus by a single-season gross made a
+    long contract read as a lopsided win even when the two players were
+    similar in quality. Both totals are independent of which team receives
+    the assets, so the resulting score is zero-sum.
     """
     surplus = 0.0
     gross = 0.0
@@ -962,11 +967,10 @@ def _asset_totals(
         multi = evaluate_player_multiyear(
             entry.player, entry.contract, epm_df=epm_df, darko_df=darko_df
         )
-        base = evaluate_player(
-            entry.player, entry.contract, epm_df=epm_df, darko_df=darko_df
-        )
         surplus += multi.total_contract_surplus
-        gross += abs(base.player_value)
+        gross += sum(
+            abs(yr.projected_value) * yr.discount_factor for yr in multi.year_by_year
+        )
     for pick in assets.picks:
         value = evaluate_draft_pick(pick, _pick_team_wins(pick, stats_df))
         surplus += value

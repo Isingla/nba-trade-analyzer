@@ -472,6 +472,76 @@ def test_fair_trade_scores_balanced():
 
 
 # ---------------------------------------------------------------------------
+# 13. Score scaling normalized by trade magnitude (Issue 3)
+# ---------------------------------------------------------------------------
+
+
+def _swap(
+    a_spec: dict,
+    a_salary: int,
+    a_years: int,
+    b_spec: dict,
+    b_salary: int,
+    b_years: int,
+) -> tuple[Trade, list[dict]]:
+    """One-for-one swap; returns the trade plus the extra specs for the world."""
+    a_sends = TradeAssets(players=[_entry(a_spec, a_salary, a_years)])
+    b_sends = TradeAssets(players=[_entry(b_spec, b_salary, b_years)])
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=a_sends,
+        team_b_sends=b_sends,
+    )
+    return trade, [a_spec, b_spec]
+
+
+def test_identical_players_score_exactly_fifty():
+    # Same EPM, salary, age, length on both sides → zero surplus delta → 50/50.
+    a = _spec("Twin A", "NYK", 2.0, age=27)
+    b = _spec("Twin B", "MIN", 2.0, age=27)
+    trade, extra = _swap(a, 25_000_000, 3, b, 25_000_000, 3)
+    grade = _grade(trade, extra=extra)
+    assert grade.team_a_grade.score == 50
+    assert grade.team_b_grade.score == 50
+
+
+def test_similar_value_different_contract_lengths_stay_balanced():
+    # Same quality and salary, but 4 years vs 1 year. The longer commitment
+    # tilts the score, but normalizing by the multi-year deal magnitude keeps
+    # both sides inside the fair-trade band instead of producing an extreme
+    # split off contract length alone.
+    a = _spec("Long Deal", "NYK", 2.0, age=27)
+    b = _spec("Expiring", "MIN", 2.0, age=27)
+    trade, extra = _swap(a, 25_000_000, 4, b, 25_000_000, 1)
+    grade = _grade(trade, extra=extra)
+    assert 40 <= grade.team_a_grade.score <= 60
+    assert 40 <= grade.team_b_grade.score <= 60
+
+
+def test_similar_negative_value_players_stay_balanced():
+    # The Klay/Aldama case: two similar, modestly-negative-value players. A
+    # swap of equals should land near even, not at the extremes.
+    a = _spec("Vet A", "NYK", -0.3, age=34)
+    b = _spec("Vet B", "MIN", -0.1, age=24)
+    trade, extra = _swap(a, 14_000_000, 1, b, 13_000_000, 1)
+    grade = _grade(trade, extra=extra)
+    assert 40 <= grade.team_a_grade.score <= 60
+    assert 40 <= grade.team_b_grade.score <= 60
+
+
+def test_star_for_scrub_is_decisive():
+    # A productive star for a negative-value contract (salaries matched so the
+    # gap is all production) should be a clear fleecing.
+    star = _spec("Bargain Star", "MIN", 6.5, position="F", age=25)
+    scrub = _spec("Dead Weight", "NYK", -1.0, position="F", age=31)
+    trade, extra = _swap(scrub, 30_000_000, 3, star, 30_000_000, 3)
+    grade = _grade(trade, extra=extra)
+    assert grade.team_a_grade.score >= 75  # NYK acquires the star
+    assert grade.team_b_grade.score <= 25  # MIN acquires the scrub
+
+
+# ---------------------------------------------------------------------------
 # Prose clarity / display regressions
 # ---------------------------------------------------------------------------
 
