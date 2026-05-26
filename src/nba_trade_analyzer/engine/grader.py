@@ -846,6 +846,36 @@ def _fit_sentence(
     return f"{window} make a roughly fair-value move."
 
 
+def _shed_sentence(shed_millions: float, incoming_name: str | None) -> str:
+    """Frame a salary dump's shed value, capping how the dollar figure is quoted.
+
+    Raw multi-year surplus deltas read as broken to a casual fan ("shedding
+    $56M in negative value"), and after the replacement-level recalibration the
+    numbers are smaller but still easy to misread. So we tier the quote: under
+    $10M we drop the figure entirely, $10-30M calls it "significant", and only
+    above $30M do we quote it as a major cap win.
+    """
+    lead = (
+        f"While {incoming_name}'s numbers aren't flashy, "
+        if incoming_name is not None
+        else ""
+    )
+    if shed_millions < 10:
+        body = "the real win is shedding negative value off the books"
+    elif shed_millions <= 30:
+        body = (
+            f"the real win is shedding significant negative value "
+            f"(roughly ${shed_millions:.0f}M)"
+        )
+    else:
+        body = (
+            f"shedding ${shed_millions:.0f}M in negative value is a major cap "
+            f"improvement"
+        )
+    sentence = lead + body
+    return sentence[0].upper() + sentence[1:] + "."
+
+
 def _build_prose(
     label: str,
     score: int,
@@ -887,18 +917,13 @@ def _build_prose(
                 f"${worst.salary / _MILLION:.0f}M contract ({worst.epm:+.1f} EPM), "
                 f"bringing back {inc.name}{pick_clause}."
             )
-            sentences.append(
-                f"While {inc.name}'s numbers aren't flashy, shedding roughly "
-                f"${shed:.0f}M in negative value is the real win here."
-            )
+            sentences.append(_shed_sentence(shed, inc.name))
         else:
             sentences.append(
                 f"The {label} turn {worst.name}'s ${worst.salary / _MILLION:.0f}M "
                 f"contract ({worst.epm:+.1f} EPM) into draft capital and cap relief."
             )
-            sentences.append(
-                f"Shedding roughly ${shed:.0f}M in negative value is the win here."
-            )
+            sentences.append(_shed_sentence(shed, None))
         return " ".join(sentences)
 
     if score < 45 and inc is not None:

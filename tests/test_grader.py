@@ -13,6 +13,7 @@ import pytest
 from nba_trade_analyzer.engine.grader import (
     _contract_tier,
     _epm_tier,
+    _shed_sentence,
     _spacing_tier,
     _timeline_tier,
     _win_curve_tier,
@@ -596,3 +597,71 @@ def test_win_curve_multiplier_not_leaked_into_prose():
     grade = _grade(_lopsided_trade(), extra=_LOPSIDED_EXTRA)
     for tg in (grade.team_a_grade, grade.team_b_grade):
         assert tg.win_curve.raw_label not in tg.prose
+
+
+# ---------------------------------------------------------------------------
+# 14. Capped dollar amounts in salary-dump prose (Issue 4)
+# ---------------------------------------------------------------------------
+
+
+def test_shed_sentence_small_amount_omits_dollar_figure():
+    # Under $10M: no specific number, just "negative value".
+    s = _shed_sentence(6.0, "Filler Guy")
+    assert "$" not in s
+    assert "negative value" in s
+    assert "Filler Guy" in s
+
+
+def test_shed_sentence_mid_amount_calls_it_significant():
+    # $10-30M: "significant negative value (roughly $XM)".
+    s = _shed_sentence(20.0, "Filler Guy")
+    assert "significant negative value" in s
+    assert "$20M" in s
+
+
+def test_shed_sentence_large_amount_is_major_improvement():
+    # Over $30M: quotes the figure and frames it as a major cap win.
+    s = _shed_sentence(45.0, None)
+    assert "$45M" in s
+    assert "major cap improvement" in s
+
+
+def test_shed_sentence_never_uses_old_inflated_phrasing():
+    for amount in (5.0, 18.0, 56.0):
+        s = _shed_sentence(amount, "X")
+        assert "shedding roughly $" not in s
+
+
+def _salary_dump_trade() -> Trade:
+    """NYK dumps a bad contract for a cheap, weak filler player.
+
+    NYK takes back far less salary than it sends (always CBA-legal), the
+    incoming player is weak, and NYK comes out ahead — exactly the conditions
+    that trigger the salary-dump prose branch.
+    """
+    bad = _spec("Bad Contract", "NYK", -1.0, position="F", age=31)
+    filler = _spec("Cheap Filler", "MIN", 0.0, position="F", age=24)
+    a_sends = TradeAssets(players=[_entry(bad, 30_000_000, years=3)])
+    b_sends = TradeAssets(players=[_entry(filler, 5_000_000, years=1)])
+    return Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        # MIN is under the cap with room to absorb the dumped contract.
+        team_b=_team("MIN", "Minnesota Timberwolves", payroll=120_000_000),
+        team_a_sends=a_sends,
+        team_b_sends=b_sends,
+    )
+
+
+def test_salary_dump_prose_does_not_quote_inflated_delta():
+    grade = _grade(
+        _salary_dump_trade(),
+        extra=[
+            _spec("Bad Contract", "NYK", -1.0, position="F", age=31),
+            _spec("Cheap Filler", "MIN", 0.0, position="F", age=24),
+        ],
+    )
+    nyk = grade.team_a_grade  # the side shedding the bad contract
+    assert nyk.score >= 55
+    assert "shedding roughly $" not in nyk.prose
+    # The shed value is framed (cap relief), not quoted as a raw deficit.
+    assert "negative value" in nyk.prose or "cap" in nyk.prose
