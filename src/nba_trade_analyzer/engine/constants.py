@@ -135,3 +135,20 @@ PICK_VALUE_DECAY = 0.065  # decay rate — pick 14 ≈ $33M, pick 30 ≈ $12M, p
 PICK_VALUE_SECOND_ROUND_PENALTY = (
     0.4  # second round picks (31-60) get 40% of curve value
 )
+
+# ---- Team-Aware Draft Pick Valuation ----
+# A pick's value depends on the originating team's record (worse team → earlier,
+# more valuable pick), how far in the future it is (uncertainty), and any
+# protections. These parameters drive engine/draft_picks.py:evaluate_draft_pick.
+PICK_YEAR_DISCOUNT_RATE = 0.05  # 5% per year into the future (time + uncertainty)
+# Per-year retention of a team's deviation from the mean when projecting future
+# picks. regression_factor = 1 - PICK_REGRESSION_RATE ** year_offset, so a team
+# 19 wins above the mean keeps ~42% of that edge 3 years out (a 60-win team
+# projects to ~49 wins). Captures that today's extremes drift toward average.
+PICK_REGRESSION_RATE = 0.75
+LEAGUE_MEAN_WINS = 41.0  # 82-game schedule split evenly across the league
+CURRENT_SEASON_START = 2025  # year_offset = pick.year - this; update each season
+# A pick swap conveys only the *difference* between two teams' picks, not a whole
+# pick. 40% of the outright value is a rough placeholder until a probabilistic
+# swap model (Travis Chen's approach) replaces it.
+PICK_SWAP_VALUE_FRACTION = 0.40

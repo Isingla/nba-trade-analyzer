@@ -35,6 +35,7 @@ from nba_trade_analyzer.engine.constants import (
     FIRST_APRON,
     LEAGUE_AVG_3PT_PCT,
     LEAGUE_AVG_3PT_RATE,
+    LEAGUE_MEAN_WINS,
     MAX_WINS_ADDED,
     POSITIONAL_MAX_ADJUSTMENT,
     SALARY_CAP,
@@ -44,7 +45,7 @@ from nba_trade_analyzer.engine.constants import (
     WIN_CURVE_MAX_MULTIPLIER,
     WIN_CURVE_MIN_MULTIPLIER,
 )
-from nba_trade_analyzer.engine.draft_picks import calculate_pick_value_with_protections
+from nba_trade_analyzer.engine.draft_picks import evaluate_draft_pick
 from nba_trade_analyzer.engine.salary_rules import check_trade_legality
 from nba_trade_analyzer.engine.team_context import (
     _effective_win_curve,
@@ -55,6 +56,7 @@ from nba_trade_analyzer.engine.team_context import (
     evaluate_player_in_team_context,
 )
 from nba_trade_analyzer.engine.valuation import evaluate_player
+from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team import CapStatus, RosterEntry, Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
@@ -123,13 +125,6 @@ BLOCKBUSTER_WIN_PROJECTIONS: dict[str, float] = {
     "MIA": 46.0,
     "IND": 45.0,
     "NYK": 50.0,
-}
-
-# Pick estimates (landing pick, protection_top cutoff for "doesn't convey").
-PICK_ESTIMATES: dict[str, tuple[int, int | None]] = {
-    "2027 LAL 1st (top-10 protected)": (17, 10),
-    "2026 DEN 1st (unprotected)": (18, None),
-    "2027 MIA 1st (top-14 protected)": (16, 14),
 }
 
 DEFAULT_GP = 60
@@ -1284,8 +1279,8 @@ class Blockbuster:
     team_b_abbr: str
     a_sends: tuple[str, ...]
     b_sends: tuple[str, ...]
-    b_picks: tuple[str, ...] = ()
-    a_picks: tuple[str, ...] = ()
+    b_picks: tuple[DraftPick, ...] = ()
+    a_picks: tuple[DraftPick, ...] = ()
 
 
 BLOCKBUSTERS: list[Blockbuster] = [
@@ -1295,7 +1290,9 @@ BLOCKBUSTERS: list[Blockbuster] = [
         team_b_abbr="LAL",
         a_sends=("Trae Young",),
         b_sends=("D'Angelo Russell", "Rui Hachimura"),
-        b_picks=("2027 LAL 1st (top-10 protected)",),
+        b_picks=(
+            DraftPick(team="LAL", year=2027, round=1, protections="top-10 protected"),
+        ),
     ),
     Blockbuster(
         title="8b Zach LaVine to DEN for MPJ + 2026 DEN 1st",
@@ -1303,7 +1300,7 @@ BLOCKBUSTERS: list[Blockbuster] = [
         team_b_abbr="DEN",
         a_sends=("Zach LaVine",),
         b_sends=("Michael Porter Jr.",),
-        b_picks=("2026 DEN 1st (unprotected)",),
+        b_picks=(DraftPick(team="DEN", year=2026, round=1),),
     ),
     Blockbuster(
         title="8c Brandon Ingram to MIA for Tyler Herro + 2027 MIA 1st (top-14)",
@@ -1311,7 +1308,9 @@ BLOCKBUSTERS: list[Blockbuster] = [
         team_b_abbr="MIA",
         a_sends=("Brandon Ingram",),
         b_sends=("Tyler Herro",),
-        b_picks=("2027 MIA 1st (top-14 protected)",),
+        b_picks=(
+            DraftPick(team="MIA", year=2027, round=1, protections="lottery protected"),
+        ),
     ),
     Blockbuster(
         title="8d Pascal Siakam to NYK for Randle + Mitchell Robinson",
@@ -1354,16 +1353,16 @@ def _build_blockbuster_player(
     )
 
 
-def _pick_value(label: str) -> float:
-    pick_number, protection_top = PICK_ESTIMATES[label]
-    return calculate_pick_value_with_protections(pick_number, protection_top)
+def _pick_value(pick: DraftPick) -> float:
+    team_wins = BLOCKBUSTER_WIN_PROJECTIONS.get(pick.team, LEAGUE_MEAN_WINS)
+    return evaluate_draft_pick(pick, team_wins)
 
 
 def _evaluate_blockbuster_side(
     incoming_entries: list[RosterEntry],
     outgoing_entries: list[RosterEntry],
-    incoming_picks: tuple[str, ...],
-    outgoing_picks: tuple[str, ...],
+    incoming_picks: tuple[DraftPick, ...],
+    outgoing_picks: tuple[DraftPick, ...],
     acquiring_team_abbr: str,
     epm_df: pd.DataFrame,
     stats_df: pd.DataFrame,
