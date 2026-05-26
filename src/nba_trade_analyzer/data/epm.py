@@ -104,6 +104,7 @@ NAME_ALIASES: dict[str, str] = {
     "Cam Payne": "Cameron Payne",
     "Nicolas Claxton": "Nic Claxton",
     "Alexandre Sarr": "Alex Sarr",
+    "SGA": "Shai Gilgeous-Alexander",
 }
 
 _NORMALIZED_ALIASES: dict[str, str] = {
