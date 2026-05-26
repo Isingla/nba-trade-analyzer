@@ -466,12 +466,18 @@ def evaluate_trade_assets_detailed(
     team_net_rating: float = 0.0,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
+    outgoing_player_names: list[str] | None = None,
 ) -> list[tuple[PlayerValuation, TeamContextValuation, MultiYearValuation]]:
     """Per-player breakdown: single-season base, team-adjusted, multi-year.
 
     Returned triples expose all three views so callers can show the
     single-season number (transparency), the team-context-adjusted year-1
     number (fit), and the full-contract surplus (trade-decisive metric).
+
+    ``outgoing_player_names`` lists players the acquiring team is sending out;
+    they are stripped from the roster for the positional-fit calc so incoming
+    players are scored against the gap the trade creates, not the pre-trade
+    roster.
     """
     out: list[tuple[PlayerValuation, TeamContextValuation, MultiYearValuation]] = []
     for entry in trade_assets.players:
@@ -491,6 +497,7 @@ def evaluate_trade_assets_detailed(
             acquiring_team_roster=team_context.roster,
             epm_df=epm_df,
             player_stats_df=team_context.player_stats_df,
+            outgoing_player_names=outgoing_player_names,
         )
         multi = evaluate_player_multiyear(
             entry.player,

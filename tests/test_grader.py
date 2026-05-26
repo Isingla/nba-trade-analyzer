@@ -764,6 +764,27 @@ def test_two_bad_contracts_different_lengths_not_a_robbery():
     assert grade.team_b_grade.verdict != "Highway Robbery"
 
 
+def test_outgoing_player_trimmed_from_positional_fit():
+    # BUG 2: a player being sent out vacates his minutes, so he must not count
+    # toward the team's positional load nor be named in the incoming player's
+    # crunch. Without trimming, the highest-minute departing forward would be
+    # named first.
+    leaving_f = _spec("Leaving Forward", "NYK", 1.0, position="F", age=29, mpg=36.0)
+    arriving_f = _spec("Arriving Forward", "MIN", 2.0, position="F", age=26)
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=TradeAssets(players=[_entry(leaving_f, 22_000_000)]),
+        team_b_sends=TradeAssets(players=[_entry(arriving_f, 22_000_000)]),
+    )
+    grade = _grade(trade, extra=[leaving_f, arriving_f])
+    pos = grade.team_a_grade.positional_fit
+    # The departing forward is trimmed out of the crunch...
+    assert "Leaving Forward" not in pos.explanation
+    # ...while the forwards who actually stay still define the fit.
+    assert ("NYK Wing" in pos.explanation) or ("NYK Vet" in pos.explanation)
+
+
 def test_luka_not_named_in_forward_crunch():
     # BUG 3: Luka (listed "F-G" in the feed) is overridden to guard, so a team
     # acquiring a forward must not see him in the forward minutes crunch.

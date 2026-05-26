@@ -50,6 +50,7 @@ from nba_trade_analyzer.engine.team_context import (
     _coarse_position,
     _minutes_by_position,
     _team_core_ages,
+    _trim_outgoing,
     calculate_win_curve_multiplier,
     resolve_position,
 )
@@ -1065,13 +1066,24 @@ def _grade_team_side(
         projected_wins=team_wins, roster=roster, player_stats_df=stats_df
     )
 
+    # Players this team is sending out vacate their minutes, so positional fit
+    # must score incoming players against the gap the trade creates — not the
+    # pre-trade roster (which would wrongly flag a logjam and name a departing
+    # player in the crunch).
+    outgoing_names = [entry.player.name for entry in outgoing.players]
+    positional_roster = _trim_outgoing(roster, outgoing_names)
+
     triples = evaluate_trade_assets_detailed(
-        incoming, context, epm_df=epm_df, darko_df=darko_df
+        incoming,
+        context,
+        epm_df=epm_df,
+        darko_df=darko_df,
+        outgoing_player_names=outgoing_names,
     )
     acquired = _enrich_acquired(incoming, triples, epm_df, stats_df)
     sent = _enrich_sent(outgoing, epm_df, darko_df)
 
-    minutes_by_pos = _minutes_by_position(roster)
+    minutes_by_pos = _minutes_by_position(positional_roster)
     core_ages = _team_core_ages(roster)
     core_age = (sum(core_ages) / len(core_ages)) if core_ages else None
     rank, spacing_label = _team_spacing(stats_df, team.abbreviation)
@@ -1080,7 +1092,7 @@ def _grade_team_side(
     contract = _contract_metric(acquired, label)
     win_curve = _win_curve_metric(team_wins, label)
     timeline = _timeline_metric(acquired, core_age, label)
-    positional = _positional_metric(acquired, minutes_by_pos, roster, label)
+    positional = _positional_metric(acquired, minutes_by_pos, positional_roster, label)
     spacing = _spacing_metric(acquired, rank, spacing_label, label)
     draft = _draft_capital(list(incoming.picks), stats_df, label)
 
