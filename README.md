@@ -1,141 +1,218 @@
 # NBA Trade Analyzer
 
-An NBA trade evaluation engine that grades proposed trades using salary cap validation, player impact modeling, and team-context-aware value estimation. Combines CBA compliance checking, EPM-based player surplus value calculations, multi-year contract projections, and contextual adjustments for team situation.
+An AI-powered NBA trade evaluation engine with CBA enforcement, EPM-based valuations, and plain-English explanations.
 
-## What It Does
+Feed it a proposed trade between two teams and it checks the deal against the 2025-26 collective bargaining agreement, values every player and pick, weighs each side's team context, and returns a 0-100 grade per team with a basketball-language write-up.
 
-Feed the analyzer a proposed trade between two teams and it will:
+## Demo
 
-1. **Check salary legality** — validates the trade against the full 2025-26 CBA salary matching rules across all four cap tiers (under cap, over cap, first apron, second apron), including second-apron aggregation restrictions
-2. **Value each player** — calculates surplus value using EPM (Estimated Plus-Minus) as the primary impact metric, with DARKO projections and adjusted NET_RATING as fallbacks
-3. **Apply team context** — adjusts player value based on the acquiring team's win curve position, timeline alignment with the team core, positional fit, and spacing needs
-4. **Project across contract years** — values the full remaining contract using EPM for the current season, DARKO for next season, and aging curve projections for years 3+, discounted for uncertainty
-5. **Grade the trade** — determines which side wins and by how much, with basketball-language explanations referencing offensive/defensive splits, shooting profiles, and fit
-
-## Quick Start
-
-```bash
-# requires python 3.12+
-git clone https://github.com/Isingla/nba-trade-analyzer.git
-cd nba-trade-analyzer
-
-# install dependencies
-pip install uv
-uv sync
-
-# run tests
-uv run pytest
-
-# run the calibration script (prints top-30 EPM valuations)
-uv run python scripts/calibrate_epm.py
-
-# run the end-to-end trade diagnostic
-uv run python scripts/end_to_end_test.py
-
-# run the 62-scenario stress test
-uv run python scripts/stress_test_trades.py
 ```
+$ uv run nba-trade-analyzer grade --team-a DAL --team-b MEM \
+    --sends-a "Klay Thompson" --sends-b "Santi Aldama"
+
+════════════════════════════════════════════════════════════════
+TRADE: Mavericks ↔ Grizzlies
+════════════════════════════════════════════════════════════════
+
+LEGALITY: ✅ Legal
+
+─────────────────────────────────────────
+MAVERICKS receive: Santi Aldama
+Score: 50 / 100 — Fair Trade
+─────────────────────────────────────────
+
+  IMPACT
+    -0.3 EPM  (Below Average)
+    → Santi Aldama's teams outscore opponents by -0.3 points per
+    100 possessions when he's on the court.
+
+  CONTRACT
+    -$11.0M/yr deficit  (Overpay)
+    → Santi Aldama is paid $18M but producing like a $8M player
+    — a notable overpay.
+
+  WIN CURVE
+    0.5x  (Rebuilding)
+    → The Mavericks are a 26-win team. Each win they add is
+    worth 47% less than it would be for a .500 team.
+
+  TIMELINE
+    +8%  (Good Fit)
+    → Santi Aldama is 25. The Mavericks' core averages 27. He'll
+    peak alongside their core.
+
+  POSITIONAL FIT
+    -10%  (Roster Overlap)
+    → The Mavericks already commit 204 minutes per game at F-C.
+    Adding another F-C creates a minutes crunch with Cooper
+    Flagg and P.J. Washington.
+
+  SPACING
+    +0%  (Neutral)
+    → Santi Aldama shoots 35% from three on 4.7 attempts per
+    game. Minimal impact on a team with poor existing spacing.
+
+  DRAFT CAPITAL
+    → No draft picks involved.
+
+  VERDICT
+    The Mavericks add Santi Aldama, below average on impact at
+    -0.3 EPM. Santi Aldama is paid $18M but producing like a $8M
+    player — a notable overpay. On the positive side: Santi
+    Aldama is 25. The Mavericks' core averages 27. He'll peak
+    alongside their core.
+
+─────────────────────────────────────────
+GRIZZLIES receive: Klay Thompson
+Score: 50 / 100 — Fair Trade
+─────────────────────────────────────────
+
+  IMPACT
+    -0.8 EPM  (Below Average)
+    → Klay Thompson's teams outscore opponents by -0.8 points
+    per 100 possessions when he's on the court.
+
+  CONTRACT
+    -$15.8M/yr deficit  (Bad Contract)
+    → Klay Thompson's $17M salary is a major drag on the cap —
+    his production doesn't come close to justifying the cost.
+
+  WIN CURVE
+    0.5x  (Rebuilding)
+    → The Grizzlies are a 26-win team. Each win they add is
+    worth 46% less than it would be for a .500 team.
+
+  TIMELINE
+    -11%  (Timeline Mismatch)
+    → Klay Thompson is 36. The Grizzlies' core averages 24.
+    He'll be 39 when their younger core hits its prime — the
+    timelines don't align.
+
+  POSITIONAL FIT
+    -10%  (Roster Overlap)
+    → The Grizzlies already commit 212 minutes per game at G.
+    Adding another G creates a minutes crunch with Lucas
+    Williamson and Ja Morant.
+
+  SPACING
+    +2%  (Mild Boost)
+    → Klay Thompson shoots 38% from three on 7.6 attempts per
+    game. That helps a Grizzlies squad ranked 14th in spacing.
+
+  DRAFT CAPITAL
+    → No draft picks involved.
+
+  VERDICT
+    The Grizzlies add Klay Thompson, below average on impact at
+    -0.8 EPM. Klay Thompson's $17M salary is a major drag on the
+    cap — his production doesn't come close to justifying the
+    cost. On the downside: Klay Thompson is 36. The Grizzlies'
+    core averages 24. He'll be 39 when their younger core hits
+    its prime — the timelines don't align.
+
+════════════════════════════════════════════════════════════════
+```
+
+## Features
+
+- **CBA salary matching** — all four cap tiers under 2025-26 rules (under cap, over cap, first apron, second apron), including second-apron aggregation restrictions
+- **EPM-based player impact** — Estimated Plus-Minus from dunksandthrees.com as the primary metric, with DARKO and NET_RATING fallbacks
+- **Multi-year contract valuation** — values every remaining year with age-bracket aging curves, discounted for uncertainty
+- **Team context** — win curve, timeline alignment, positional fit, and spacing, each adjusting value to the acquiring team's situation
+- **Draft pick valuation** — team-aware (the originating team's record sets where the pick lands), with future-year regression and protection discounts
+- **Trade grader** — 0-100 score per team with seven metric breakdowns and a plain-English verdict
+- **CLI** — `grade` a trade and `lookup` a player from the terminal
+- **291 tests** plus a 5-trade validation smoke test
 
 ## Architecture
 
 ```
 src/nba_trade_analyzer/
+├── cli.py                # typer entry point (grade + lookup)
+├── report.py             # terminal report renderer
+├── teams.py              # team abbreviation resolution
 ├── data/
-│   ├── cache.py          # Generic JSON cache with 24h TTL
-│   ├── players.py        # nba_api stats pipeline (stats, 3PT splits, team records)
-│   ├── epm.py            # EPM scraper from dunksandthrees.com
-│   └── darko.py          # DARKO projections from public Google Sheet
+│   ├── cache.py          # JSON file cache, 24h TTL
+│   ├── players.py        # nba_api stats pipeline
+│   ├── epm.py            # EPM scraper (dunksandthrees.com)
+│   ├── darko.py          # DARKO projections (Google Sheet)
+│   └── salaries.py       # Basketball Reference contract scraper
 ├── models/
-│   ├── player.py         # Player, Contract (frozen pydantic models)
-│   ├── team.py           # CapStatus, Team, RosterEntry, Roster
-│   ├── trade.py          # TradeAssets, Trade, TradeResult
-│   ├── valuation.py      # PlayerValuation, YearProjection, MultiYearValuation
-│   └── team_context.py   # TeamContextValuation
+│   ├── player.py         # Player, Contract
+│   ├── team.py           # Team, Roster, CapStatus
+│   ├── trade.py          # Trade, TradeAssets
+│   ├── valuation.py      # PlayerValuation, MultiYearValuation
+│   ├── team_context.py   # TeamContextValuation
+│   ├── draft_pick.py     # structured DraftPick
+│   └── grade.py          # TradeGrade, TeamGrade, breakdowns
 ├── engine/
-│   ├── constants.py      # All cap numbers, valuation params, aging curve rates
-│   ├── salary_rules.py   # CBA trade legality checker (all 4 tiers)
-│   ├── valuation.py      # Surplus value calculator (single + multi-year)
-│   ├── draft_picks.py    # Pick value curves by draft position
-│   ├── team_context.py   # Win curve, timeline, positional fit, spacing
-│   └── aging_curve.py    # EPM aging projections by age bracket
+│   ├── constants.py      # cap numbers, tunable parameters
+│   ├── salary_rules.py   # CBA legality checker
+│   ├── valuation.py      # surplus value (single + multi-year)
+│   ├── draft_picks.py    # team-aware pick value curves
+│   ├── team_context.py   # win curve, timeline, fit, spacing
+│   ├── aging_curve.py    # EPM aging projections
+│   └── grader.py         # scores, breakdowns, prose
 scripts/
-├── calibrate_epm.py      # Top-30 valuation output for factor tuning
-├── end_to_end_test.py    # 4 real trade scenarios with full breakdowns
-└── stress_test_trades.py # 62 scenarios across all system components
+├── calibrate_epm.py      # top-30 valuation dump for tuning
+├── grade_trades.py       # demo trades through the grader
+├── validate_trades.py    # 5-trade smoke test
+├── end_to_end_test.py    # full-pipeline trade diagnostics
+├── stress_test_trades.py # 62 component scenarios
+└── stress_test_multiyear.py  # 478 multi-year scenarios
 ```
 
-## How Valuation Works
+## Usage
 
-**Player impact → Wins added → Dollar value → Subtract salary → Surplus**
+```powershell
+# install dependencies (requires Python 3.12+)
+uv sync
 
-The pipeline:
+# grade a trade
+uv run nba-trade-analyzer grade --team-a DAL --team-b MEM `
+    --sends-a "Klay Thompson" --sends-b "Santi Aldama"
 
-1. **EPM** (primary) measures points per 100 possessions attributable to the individual player, isolated from teammate and opponent effects via RAPM. DARKO (secondary) provides forward-looking projections. NET_RATING (fallback) is used when neither is available.
+# trades can include picks and multi-asset packages
+uv run nba-trade-analyzer grade --team-a DAL --team-b DET `
+    --sends-a "Kyrie Irving" `
+    --sends-b "Isaiah Stewart" --sends-b "Caris LeVert" `
+    --sends-b "Ausar Thompson" --sends-b "2027 DET 1st unprotected"
 
-2. **Wins added** converts EPM to wins using a calibrated factor (EPM_TO_WINS_FACTOR = 4.2), scaled by minutes fraction and compressed through a tanh curve to cap outliers at MAX_WINS_ADDED = 20.
+# look up a single player's valuation
+uv run nba-trade-analyzer lookup "Shai Gilgeous-Alexander"
 
-3. **Dollar value** multiplies wins added by DOLLARS_PER_WIN ($3.5M), adjusted by the acquiring team's win curve multiplier — contending teams near the playoff cutoff get a higher multiplier (~1.5-1.8x), tanking teams get a lower one (~0.4-0.5x).
+# run the test suite
+uv run pytest
 
-4. **Team context** applies additive adjustments for timeline alignment (±15%), positional fit (±10%), and spacing (±8%), each capped to prevent wild swings.
-
-5. **Multi-year projection** sums discounted surplus across all remaining contract years. Year 1 uses current EPM, year 2 uses DARKO projections, years 3+ apply aging curve decay. Future years are discounted at 12% annually.
+# run the validation smoke test
+uv run python scripts/validate_trades.py
+```
 
 ## Data Sources
 
-| Source | What | Update frequency |
-|--------|------|------------------|
-| [Dunks & Threes](https://dunksandthrees.com/epm) | EPM (current season impact) | Nightly |
-| [DARKO](https://apanacea.com/darko) | Forward projections (Kalman filter) | Daily |
-| [nba_api](https://github.com/swar/nba_api) | Player stats, team records, 3PT splits | Live |
-| [CBA Guide](https://cbaguide.com) | Salary matching rules | As CBA changes |
+| Source | What | Module |
+|--------|------|--------|
+| [Dunks & Threes](https://dunksandthrees.com/epm) | EPM (current-season impact, off/def splits, position) | `data/epm.py` |
+| [DARKO](https://darko.app/) | Forward-looking DPM projections (Google Sheet export) | `data/darko.py` |
+| [nba_api](https://github.com/swar/nba_api) | Player stats, team records, 3PT splits | `data/players.py` |
+| [Basketball Reference](https://www.basketball-reference.com/contracts/players.html) | Contracts and salaries | `data/salaries.py` |
 
-All data is cached locally for 24 hours at `~/.nba_trade_analyzer/cache/`.
+All sources are cached locally for 24 hours. The salary scraper falls back to a committed CSV snapshot if the live fetch fails, so the tool works offline.
 
-## CBA Rules Implemented
+## Grading Scale
 
-Full 2025-26 salary matching across four tiers:
+The score is zero-sum: a 0-100 grade per team, where 50 is an even deal. One side's gain is the other's loss.
 
-- **Under cap**: Can absorb salary into cap space without matching
-- **Over cap / below first apron**: Expanded TPE brackets — 200%+$250K (under $7.25M), +$8.527M ($7.25M-$29M), 125%+$250K (over $29M)
-- **First apron**: 100% match, no cushion, no simultaneous sign-and-trade
-- **Second apron**: 100% match, no aggregation (no 2-for-1 or 3-for-1 trades)
+| Score | Verdict |
+|-------|---------|
+| 85-100 | Highway Robbery |
+| 70-84 | Clear Win |
+| 55-69 | Smart Deal |
+| 45-54 | Fair Trade |
+| 35-44 | Slight Overpay |
+| 20-34 | Overpay |
+| 0-19 | Fleeced |
 
-Cap numbers: $154.6M salary cap, $187.9M luxury tax, $195.9M first apron, $207.8M second apron.
+## Built With
 
-## Roadmap
-
-- [x] Phase 1: Player data pipeline
-- [x] Phase 1.5: EPM & DARKO integration
-- [x] Phase 2: Pydantic domain models
-- [x] Phase 3: CBA salary rules engine
-- [x] Phase 4: Valuation engine (tanh curve, draft picks)
-- [x] Phase 5: Team context (win curve, timeline, positional fit, spacing)
-- [x] Phase 5.5: Multi-year contract valuation with aging curves
-- [ ] Phase 6: ML trade history model (calibrate against real trades)
-- [ ] Phase 7: Trade grader (letter grades, prose explanations)
-- [ ] Phase 8: Trade builder / suggestion engine
-- [ ] Phase 9: CLI (typer)
-- [ ] Phase 10: Web app
-
-## Tech Stack
-
-Python 3.12+, uv, pydantic, httpx, pandas, BeautifulSoup, nba_api, pytest, ruff
-
-## Testing
-
-```bash
-# full test suite
-uv run pytest
-
-# specific module
-uv run pytest tests/test_epm.py
-
-# with verbose output
-uv run pytest -v
-```
-
-127+ tests covering salary matching edge cases, valuation paths, metric fallback chains, team context components, and aging curve projections. The stress test script runs 62 scenarios across every combination of system components.
-
-## License
-
-MIT
+Python 3.12, pydantic, typer, httpx, pandas, pytest
