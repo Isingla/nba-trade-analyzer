@@ -17,6 +17,7 @@ from nba_trade_analyzer.engine.constants import (
     WIN_CURVE_MIN_MULTIPLIER,
 )
 from nba_trade_analyzer.engine.team_context import (
+    _minutes_by_position,
     calculate_positional_modifier,
     calculate_spacing_modifier,
     calculate_timeline_modifier,
@@ -161,6 +162,63 @@ def test_positional_split_position_blends():
     mod = calculate_positional_modifier("G-F", roster)
     # G is thin (+MAX), F is logjam (-MAX) — split should land near 0.
     assert abs(mod) < 0.5 * POSITIONAL_MAX_ADJUSTMENT
+
+
+# ----- minutes-by-position bookkeeping (Issue 2) -------------------------
+# Dual-position players ("G-F", "F-C", ...) must have their minutes *split*
+# across the two buckets, never counted in full in both. Double-counting was
+# the source of impossible totals like "301 minutes per game at G".
+
+
+def test_dual_position_minutes_are_split_not_doubled():
+    # A lone "F-C" player at 30 MPG contributes 15 to F and 15 to C — a total
+    # of 30, not 60.
+    roster = [{"player_name": "Big", "MPG": 30.0, "position": "F-C"}]
+    by_pos = _minutes_by_position(roster)
+    assert by_pos["F"] == pytest.approx(15.0)
+    assert by_pos["C"] == pytest.approx(15.0)
+    assert by_pos["G"] == pytest.approx(0.0)
+    assert sum(by_pos.values()) == pytest.approx(30.0)
+
+
+def test_minutes_by_position_conserves_total_minutes():
+    # Total minutes across buckets must equal the sum of player MPG, even with
+    # several dual-eligible players in the mix.
+    roster = [
+        {"player_name": "PG", "MPG": 30.0, "position": "G"},
+        {"player_name": "SG", "MPG": 30.0, "position": "G"},
+        {"player_name": "SF", "MPG": 30.0, "position": "F"},
+        {"player_name": "PF", "MPG": 30.0, "position": "F"},
+        {"player_name": "C", "MPG": 30.0, "position": "C"},
+        {"player_name": "Combo1", "MPG": 18.0, "position": "G-F"},
+        {"player_name": "Combo2", "MPG": 18.0, "position": "F-C"},
+        {"player_name": "Bench G", "MPG": 18.0, "position": "G"},
+        {"player_name": "Bench F", "MPG": 18.0, "position": "F"},
+        {"player_name": "Bench C", "MPG": 18.0, "position": "C"},
+    ]
+    by_pos = _minutes_by_position(roster)
+    total_mpg = sum(p["MPG"] for p in roster)
+    assert sum(by_pos.values()) == pytest.approx(total_mpg)
+    # 240 game-minutes (48 × 5). No single coarse bucket can carry an
+    # impossible load — well under the 144-minute (3-deep) warning line for a
+    # balanced rotation.
+    assert total_mpg == pytest.approx(240.0)
+    for bucket, minutes in by_pos.items():
+        assert minutes <= 144.0, f"{bucket} bucket overcounted: {minutes}"
+
+
+def test_no_position_bucket_exceeds_roster_total():
+    # Even an all-one-position small-ball roster can't exceed the roster's
+    # total minutes at any bucket — the worst pre-fix bug produced totals
+    # larger than every player's minutes combined.
+    roster = [
+        {"player_name": f"G{i}", "MPG": 36.0, "position": "G-F"} for i in range(5)
+    ]
+    by_pos = _minutes_by_position(roster)
+    total_mpg = sum(p["MPG"] for p in roster)
+    assert sum(by_pos.values()) == pytest.approx(total_mpg)
+    for minutes in by_pos.values():
+        assert minutes <= total_mpg
 
 
 # ----- spacing ----------------------------------------------------------
