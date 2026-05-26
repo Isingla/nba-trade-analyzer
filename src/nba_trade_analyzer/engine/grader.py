@@ -51,6 +51,7 @@ from nba_trade_analyzer.engine.team_context import (
     _minutes_by_position,
     _team_core_ages,
     calculate_win_curve_multiplier,
+    resolve_position,
 )
 from nba_trade_analyzer.engine.valuation import (
     TeamContext,
@@ -399,6 +400,7 @@ def _enrich_acquired(
         fg3a, fg3_pct, present, stats_pos = _fg3_profile(stats_df, player.name)
         if position is None:
             position = stats_pos
+        position = resolve_position(player.name, position)
 
         out.append(
             _Acquired(
@@ -479,7 +481,8 @@ def _existing_at_bucket(
         name = str(entry.get("player_name", ""))
         if name == exclude:
             continue
-        if any(b == bucket for b, _ in _coarse_position(entry.get("position"))):
+        position = resolve_position(name, entry.get("position"))
+        if any(b == bucket for b, _ in _coarse_position(position)):
             matches.append((float(entry.get("MPG", 0) or 0), name))
     matches.sort(reverse=True)
     return [name for _, name in matches]

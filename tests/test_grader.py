@@ -764,6 +764,26 @@ def test_two_bad_contracts_different_lengths_not_a_robbery():
     assert grade.team_b_grade.verdict != "Highway Robbery"
 
 
+def test_luka_not_named_in_forward_crunch():
+    # BUG 3: Luka (listed "F-G" in the feed) is overridden to guard, so a team
+    # acquiring a forward must not see him in the forward minutes crunch.
+    luka = _spec("Luka Dončić", "NYK", 6.0, position="F-G", age=26, mpg=36.0)
+    new_f = _spec("New Forward", "MIN", 2.0, position="F", age=27)
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=TradeAssets(players=[_entry(_NYK_ROSTER[3], 20_000_000)]),
+        team_b_sends=TradeAssets(players=[_entry(new_f, 20_000_000)]),
+    )
+    grade = _grade(trade, extra=[luka, new_f])
+    explanation = grade.team_a_grade.positional_fit.explanation
+    # It is a genuine forward logjam (the real forwards fill it)...
+    assert grade.team_a_grade.positional_fit.raw_value < 0
+    # ...but Luka must not be the one named for it.
+    assert "Luka" not in explanation
+    assert "Dončić" not in explanation
+
+
 def test_two_bad_contracts_small_length_gap_stays_balanced():
     # Klay (2yr) for Aldama (3yr): a tighter pairing should sit near even.
     a_sends = TradeAssets(players=[_entry(_ALDAMA, 18_485_916, years=3)])

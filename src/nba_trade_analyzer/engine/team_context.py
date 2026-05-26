@@ -27,6 +27,7 @@ import math
 
 import pandas as pd
 
+from nba_trade_analyzer.data.epm import normalize_name
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
     LEAGUE_AVG_3PT_PCT,
@@ -51,8 +52,9 @@ from nba_trade_analyzer.models.team_context import TeamContextValuation
 # each of the five positions in a game (5 positions × 48 minutes).
 MINUTES_PER_POSITION_SLOT = 48.0
 
-# Roster entries with "G-F", "F-C", etc. split their minutes between the
-# two listed positions. Anything else maps straight through.
+# Dual-position labels ("G-F", "F-C", ...). The FIRST entry is the player's
+# primary position — we bucket them there at full weight. The second is kept
+# only so the label is recognized as a dual string.
 _POSITION_SPLITS = {
     "G-F": ("G", "F"),
     "F-G": ("F", "G"),
@@ -77,24 +79,49 @@ _COARSE_POSITION = {
     "F": "F",
 }
 
+# Known position misclassifications in the source feeds. dunksandthrees lists
+# some lead guards forward-first (Luka Dončić is "F-G"), so resolving to the
+# primary position would still bucket them at forward and name them in forward
+# logjams. Override by normalized name to the bucket we actually want.
+POSITION_OVERRIDES: dict[str, str] = {
+    normalize_name("Luka Doncic"): "G",
+}
+
+
+def resolve_position(player_name: object, raw_position: str | None) -> str | None:
+    """Apply a per-player position override when one exists, else pass through.
+
+    Source position labels are occasionally wrong for high-profile players
+    (a lead guard tagged forward-first); this lets us correct the few that
+    matter without second-guessing the whole feed.
+    """
+    if player_name is not None:
+        override = POSITION_OVERRIDES.get(normalize_name(str(player_name)))
+        if override is not None:
+            return override
+    return raw_position
+
 
 def _coarse_position(label: str | None) -> tuple[tuple[str, float], ...]:
     """Convert a position string into ``((bucket, weight), ...)`` pairs.
 
+    Dual-position labels resolve to their *primary* (first-listed) position at
+    full weight rather than splitting: a "G-F" buckets as a guard, an "F-C" as
+    a forward. Splitting diluted real logjams and made the prose talk about
+    half-players; primary-only is simpler and truer to how a player is deployed.
+
     Examples:
         ``"G"`` → ``(("G", 1.0),)``
-        ``"G-F"`` → ``(("G", 0.5), ("F", 0.5))``
+        ``"G-F"`` → ``(("G", 1.0),)``
+        ``"F-C"`` → ``(("F", 1.0),)``
         ``"PF"`` → ``(("F", 1.0),)``
     """
     if not label:
         return ()
     label = label.strip().upper()
     if label in _POSITION_SPLITS:
-        a, b = _POSITION_SPLITS[label]
-        return (
-            (_COARSE_POSITION.get(a, a), 0.5),
-            (_COARSE_POSITION.get(b, b), 0.5),
-        )
+        primary = _POSITION_SPLITS[label][0]
+        return ((_COARSE_POSITION.get(primary, primary), 1.0),)
     return ((_COARSE_POSITION.get(label, label), 1.0),)
 
 
@@ -192,7 +219,8 @@ def _minutes_by_position(roster: list[dict]) -> dict[str, float]:
     totals: dict[str, float] = {"G": 0.0, "F": 0.0, "C": 0.0}
     for entry in roster:
         mpg = float(entry.get("MPG", 0) or 0)
-        for bucket, weight in _coarse_position(entry.get("position")):
+        position = resolve_position(entry.get("player_name"), entry.get("position"))
+        for bucket, weight in _coarse_position(position):
             if bucket in totals:
                 totals[bucket] += mpg * weight
     return totals
@@ -352,8 +380,8 @@ def _player_position(
             continue
         pos = row.get("position") if "position" in row.index else None
         if pos is not None and not (isinstance(pos, float) and math.isnan(pos)):
-            return str(pos)
-    return None
+            return resolve_position(player.name, str(pos))
+    return resolve_position(player.name, None)
 
 
 def evaluate_player_in_team_context(

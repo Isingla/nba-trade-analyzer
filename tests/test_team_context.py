@@ -23,6 +23,7 @@ from nba_trade_analyzer.engine.team_context import (
     calculate_timeline_modifier,
     calculate_win_curve_multiplier,
     evaluate_player_in_team_context,
+    resolve_position,
 )
 from nba_trade_analyzer.engine.valuation import TeamContext, evaluate_trade_assets
 from nba_trade_analyzer.models.player import Contract, Player
@@ -156,27 +157,28 @@ def test_positional_no_position_label_returns_zero():
     assert calculate_positional_modifier("", roster) == 0.0
 
 
-def test_positional_split_position_blends():
-    # G-F label averages G and F minutes contributions.
+def test_dual_position_uses_primary_position():
+    # A "G-F" resolves to its primary (guard) position. On a roster thin at
+    # guard but logjammed at forward, that reads as a positional need (a bonus),
+    # not a blended wash.
     roster = _roster_with_position_minutes(g_mpg=10, f_mpg=80, c_mpg=40)
     mod = calculate_positional_modifier("G-F", roster)
-    # G is thin (+MAX), F is logjam (-MAX) — split should land near 0.
-    assert abs(mod) < 0.5 * POSITIONAL_MAX_ADJUSTMENT
+    assert mod == pytest.approx(POSITIONAL_MAX_ADJUSTMENT, abs=1e-6)
 
 
 # ----- minutes-by-position bookkeeping (Issue 2) -------------------------
-# Dual-position players ("G-F", "F-C", ...) must have their minutes *split*
-# across the two buckets, never counted in full in both. Double-counting was
+# Dual-position players ("G-F", "F-C", ...) are bucketed at their PRIMARY
+# (first-listed) position, never counted in full in both. Double-counting was
 # the source of impossible totals like "301 minutes per game at G".
 
 
-def test_dual_position_minutes_are_split_not_doubled():
-    # A lone "F-C" player at 30 MPG contributes 15 to F and 15 to C — a total
-    # of 30, not 60.
+def test_dual_position_minutes_assigned_to_primary():
+    # A lone "F-C" player at 30 MPG is bucketed entirely at his primary
+    # position (F) — not split, and never double-counted into both.
     roster = [{"player_name": "Big", "MPG": 30.0, "position": "F-C"}]
     by_pos = _minutes_by_position(roster)
-    assert by_pos["F"] == pytest.approx(15.0)
-    assert by_pos["C"] == pytest.approx(15.0)
+    assert by_pos["F"] == pytest.approx(30.0)
+    assert by_pos["C"] == pytest.approx(0.0)
     assert by_pos["G"] == pytest.approx(0.0)
     assert sum(by_pos.values()) == pytest.approx(30.0)
 
@@ -205,6 +207,25 @@ def test_minutes_by_position_conserves_total_minutes():
     assert total_mpg == pytest.approx(240.0)
     for bucket, minutes in by_pos.items():
         assert minutes <= 144.0, f"{bucket} bucket overcounted: {minutes}"
+
+
+def test_luka_doncic_position_override_to_guard():
+    # BUG 3: dunksandthrees lists Luka forward-first ("F-G"), so resolving to a
+    # primary position would still bucket him at forward. The override fixes it.
+    assert resolve_position("Luka Dončić", "F-G") == "G"
+    assert resolve_position("Luka Doncic", "F-G") == "G"  # diacritic-insensitive
+    roster = [
+        {"player_name": "Luka Dončić", "MPG": 36.0, "position": "F-G"},
+        {"player_name": "Real Forward", "MPG": 30.0, "position": "F"},
+    ]
+    by_pos = _minutes_by_position(roster)
+    assert by_pos["G"] == pytest.approx(36.0)  # Luka's minutes land at guard
+    assert by_pos["F"] == pytest.approx(30.0)  # only the actual forward
+
+
+def test_position_override_leaves_other_players_untouched():
+    assert resolve_position("Some Forward", "F-G") == "F-G"
+    assert resolve_position(None, "F") == "F"
 
 
 def test_no_position_bucket_exceeds_roster_total():
