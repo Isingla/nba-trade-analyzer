@@ -50,7 +50,10 @@ from nba_trade_analyzer.engine.team_context import (
     _coarse_position,
     _minutes_by_position,
     _team_core_ages,
+    _trim_outgoing,
     calculate_win_curve_multiplier,
+    filter_to_current_roster,
+    resolve_position,
 )
 from nba_trade_analyzer.engine.valuation import (
     TeamContext,
@@ -67,11 +70,19 @@ from nba_trade_analyzer.models.grade import (
 from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.team import Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
+from nba_trade_analyzer.teams import resolve_team
 
 # Calibrated against the documented surplus targets: a star-on-a-bargain-deal
 # haul (ratio ≈ 1) lands ~80, a fleecing tips past it, and a fair swap (ratio
 # ≈ 0) sits at 50. See module docstring for why the score is surplus-driven.
 SCORE_SCALING_FACTOR = 30.0
+
+# When both sides receive negative-surplus packages, the score swing is damped
+# (see _dual_negative_damping). This sets how negative the less-bad package can
+# get before the swing fully collapses to 50/50. Calibrated so a two-bad-
+# contract swap whose better side sits ~-$28M lands ~64/36 (a "Smart Deal"
+# nudge, not a robbery) while a tighter pairing stays inside the fair band.
+DUAL_NEGATIVE_DAMPING_THRESHOLD = 40_000_000.0
 
 _MILLION = 1_000_000.0
 
@@ -392,6 +403,7 @@ def _enrich_acquired(
         fg3a, fg3_pct, present, stats_pos = _fg3_profile(stats_df, player.name)
         if position is None:
             position = stats_pos
+        position = resolve_position(player.name, position)
 
         out.append(
             _Acquired(
@@ -472,7 +484,8 @@ def _existing_at_bucket(
         name = str(entry.get("player_name", ""))
         if name == exclude:
             continue
-        if any(b == bucket for b, _ in _coarse_position(entry.get("position"))):
+        position = resolve_position(name, entry.get("position"))
+        if any(b == bucket for b, _ in _coarse_position(position)):
             matches.append((float(entry.get("MPG", 0) or 0), name))
     matches.sort(reverse=True)
     return [name for _, name in matches]
@@ -517,17 +530,21 @@ def _impact_metric(players: list[_Acquired], label: str) -> MetricBreakdown:
 def _contract_sentence(p: _Acquired, label: str) -> str:
     """Plain-English contract verdict for one player.
 
-    Deliberately omits the raw per-year deficit figure — a "-$47M/yr" number
-    reads as broken to a casual fan even when the math is right. The signed
-    deficit still lives in the metric's ``raw_label`` for analytics readers.
-    The salary itself is fair game; it is a real, intuitive number.
+    The "producing like" figure is the per-year production *implied by the
+    multi-year surplus* (salary + per_year_surplus) — the same basis as the
+    contract tier and ``raw_label`` — not the single-season player value. Mixing
+    the two let the verdict contradict itself: a player whose out-year decline
+    makes him a multi-year overpay still has a strong current-season value, so
+    "paid $37M, producing like a $37M player — a notable overpay" could print.
+    The raw per-year deficit stays out of the prose (it reads as broken to a
+    casual fan); it lives in ``raw_label`` for analytics readers.
     """
-    pv = p.base_player_value / _MILLION
     sal = p.salary / _MILLION
     py = p.per_year_surplus / _MILLION
+    prod = sal + py  # per-year production consistent with the surplus verdict
     if p.per_year_surplus >= 0:
         return (
-            f"{p.name} is playing like a ${pv:.0f}M player on a ${sal:.0f}M deal "
+            f"{p.name} is playing like a ${prod:.0f}M player on a ${sal:.0f}M deal "
             f"— about ${py:.0f}M in extra value per season."
         )
     if p.per_year_surplus <= -15 * _MILLION:
@@ -536,9 +553,9 @@ def _contract_sentence(p: _Acquired, label: str) -> str:
             f"production doesn't come close to justifying the cost."
         )
     if p.per_year_surplus <= -5 * _MILLION:
-        if pv >= 0:
+        if prod >= 0:
             return (
-                f"{p.name} is paid ${sal:.0f}M but producing like a ${pv:.0f}M "
+                f"{p.name} is paid ${sal:.0f}M but producing like a ${prod:.0f}M "
                 f"player — a notable overpay."
             )
         return (
@@ -701,7 +718,16 @@ def _spacing_metric(
     tier = _spacing_tier(modifier)
     p = _headline(players)
     assert p is not None
-    if not p.fg3_data_present or p.fg3a < 1.0:
+    if not p.fg3_data_present:
+        # No usable shooting data — most often a player who hasn't logged
+        # current-season minutes (injury/absence). Don't assert "0.0 attempts,
+        # not a threat" as if confirmed; the modifier already falls back to a
+        # league-average (neutral) profile, so say so plainly.
+        explanation = (
+            f"No current shooting data for {p.name}, so the spacing impact for "
+            f"the {label} is treated as neutral."
+        )
+    elif p.fg3a < 1.0:
         explanation = (
             f"{p.name} isn't a three-point threat ({p.fg3a:.1f} attempts/game) — "
             f"spacing impact for the {label} is negligible."
@@ -846,6 +872,36 @@ def _fit_sentence(
     return f"{window} make a roughly fair-value move."
 
 
+def _shed_sentence(shed_millions: float, incoming_name: str | None) -> str:
+    """Frame a salary dump's shed value, capping how the dollar figure is quoted.
+
+    Raw multi-year surplus deltas read as broken to a casual fan ("shedding
+    $56M in negative value"), and after the replacement-level recalibration the
+    numbers are smaller but still easy to misread. So we tier the quote: under
+    $10M we drop the figure entirely, $10-30M calls it "significant", and only
+    above $30M do we quote it as a major cap win.
+    """
+    lead = (
+        f"While {incoming_name}'s numbers aren't flashy, "
+        if incoming_name is not None
+        else ""
+    )
+    if shed_millions < 10:
+        body = "the real win is shedding negative value off the books"
+    elif shed_millions <= 30:
+        body = (
+            f"the real win is shedding significant negative value "
+            f"(roughly ${shed_millions:.0f}M)"
+        )
+    else:
+        body = (
+            f"shedding ${shed_millions:.0f}M in negative value is a major cap "
+            f"improvement"
+        )
+    sentence = lead + body
+    return sentence[0].upper() + sentence[1:] + "."
+
+
 def _build_prose(
     label: str,
     score: int,
@@ -880,25 +936,26 @@ def _build_prose(
     if score >= 55 and incoming_weak and sent:
         # Salary-dump win: the exit is the story, not the incoming player.
         worst = min(sent, key=lambda s: s.total_contract_surplus)
-        shed = abs(worst.total_contract_surplus) / _MILLION
+        # The shed value is the *improvement* from the swap — the negative
+        # surplus sent out minus the negative surplus taken back — not the
+        # outgoing contract's raw total. Quoting the raw total double-counts
+        # the bad value the team also absorbs in the incoming player.
+        sent_surplus = sum(s.total_contract_surplus for s in sent)
+        received_surplus = sum(a.total_contract_surplus for a in acquired)
+        shed = max(0.0, abs(sent_surplus) - abs(received_surplus)) / _MILLION
         if inc is not None:
             sentences.append(
                 f"The {label} move off {worst.name}'s "
                 f"${worst.salary / _MILLION:.0f}M contract ({worst.epm:+.1f} EPM), "
                 f"bringing back {inc.name}{pick_clause}."
             )
-            sentences.append(
-                f"While {inc.name}'s numbers aren't flashy, shedding roughly "
-                f"${shed:.0f}M in negative value is the real win here."
-            )
+            sentences.append(_shed_sentence(shed, inc.name))
         else:
             sentences.append(
                 f"The {label} turn {worst.name}'s ${worst.salary / _MILLION:.0f}M "
                 f"contract ({worst.epm:+.1f} EPM) into draft capital and cap relief."
             )
-            sentences.append(
-                f"Shedding roughly ${shed:.0f}M in negative value is the win here."
-            )
+            sentences.append(_shed_sentence(shed, None))
         return " ".join(sentences)
 
     if score < 45 and inc is not None:
@@ -952,9 +1009,14 @@ def _asset_totals(
     """Return ``(surplus, gross)`` for an asset package, team-agnostic.
 
     ``surplus`` is multi-year contract surplus plus pick values (the trade-
-    decisive metric). ``gross`` is single-season production value plus pick
-    values — the magnitude used to normalize the score. Both are independent
-    of which team receives the assets, so the resulting score is zero-sum.
+    decisive metric). ``gross`` is the *multi-year* production magnitude
+    (each projected year's value, discounted the same way as surplus) plus
+    pick values — the deal size used to normalize the score. Measuring gross
+    over the same horizon as surplus keeps the score ratio comparing like
+    with like: dividing a multi-year surplus by a single-season gross made a
+    long contract read as a lopsided win even when the two players were
+    similar in quality. Both totals are independent of which team receives
+    the assets, so the resulting score is zero-sum.
     """
     surplus = 0.0
     gross = 0.0
@@ -962,11 +1024,10 @@ def _asset_totals(
         multi = evaluate_player_multiyear(
             entry.player, entry.contract, epm_df=epm_df, darko_df=darko_df
         )
-        base = evaluate_player(
-            entry.player, entry.contract, epm_df=epm_df, darko_df=darko_df
-        )
         surplus += multi.total_contract_surplus
-        gross += abs(base.player_value)
+        gross += sum(
+            abs(yr.projected_value) * yr.discount_factor for yr in multi.year_by_year
+        )
     for pick in assets.picks:
         value = evaluate_draft_pick(pick, _pick_team_wins(pick, stats_df))
         surplus += value
@@ -978,6 +1039,25 @@ def _score(surplus_delta: float, total_value: float) -> int:
     ratio = surplus_delta / max(total_value, 1.0)
     raw = 50.0 + ratio * SCORE_SCALING_FACTOR
     return int(max(0, min(100, round(raw))))
+
+
+def _dual_negative_damping(a_surplus: float, b_surplus: float) -> float:
+    """Multiplier in [0, 1] applied to the surplus delta before scoring.
+
+    Returns 1.0 (no damping) unless *both* sides receive net-negative-surplus
+    packages. When they do, the trade is a "pick your poison" swap rather than
+    a fleecing: the headline gap is usually driven by contract length, not by a
+    real quality edge, so a 2-year bad deal for a 4-year bad deal shouldn't read
+    as Highway Robbery. The swing is compressed in proportion to how negative
+    the *better* (less-bad) of the two packages is — a near-fair package
+    opposite a terrible one still grades as a win, but two comparably-bad
+    packages collapse toward even. Once the less-bad package is more negative
+    than ``DUAL_NEGATIVE_DAMPING_THRESHOLD`` the swing vanishes entirely (50/50).
+    """
+    if a_surplus >= 0 or b_surplus >= 0:
+        return 1.0
+    better = max(a_surplus, b_surplus)
+    return max(0.0, 1.0 - abs(better) / DUAL_NEGATIVE_DAMPING_THRESHOLD)
 
 
 # ---------------------------------------------------------------------------
@@ -993,21 +1073,41 @@ def _grade_team_side(
     epm_df: pd.DataFrame | None,
     darko_df: pd.DataFrame | None,
     score: int,
+    salary_df: pd.DataFrame | None = None,
 ) -> TeamGrade:
     label = _short_label(team.name)
     team_wins = _team_wins(stats_df, team.abbreviation)
     roster = _roster_dicts(stats_df, team.abbreviation)
+    # Season stats list every player who suited up for the team, including ones
+    # traded away; the salary feed reflects the current roster, so use it to drop
+    # departed players before any roster-based context (positional minutes,
+    # core ages, spacing). The salary feed uses Basketball-Reference team forms
+    # (BRK/CHO/PHO), so map the nba_api abbreviation across first.
+    info = resolve_team(team.abbreviation)
+    salary_team_abbr = info.salary_abbreviation if info else team.abbreviation
+    roster = filter_to_current_roster(roster, salary_team_abbr, salary_df)
     context = TeamContext(
         projected_wins=team_wins, roster=roster, player_stats_df=stats_df
     )
 
+    # Players this team is sending out vacate their minutes, so positional fit
+    # must score incoming players against the gap the trade creates — not the
+    # pre-trade roster (which would wrongly flag a logjam and name a departing
+    # player in the crunch).
+    outgoing_names = [entry.player.name for entry in outgoing.players]
+    positional_roster = _trim_outgoing(roster, outgoing_names)
+
     triples = evaluate_trade_assets_detailed(
-        incoming, context, epm_df=epm_df, darko_df=darko_df
+        incoming,
+        context,
+        epm_df=epm_df,
+        darko_df=darko_df,
+        outgoing_player_names=outgoing_names,
     )
     acquired = _enrich_acquired(incoming, triples, epm_df, stats_df)
     sent = _enrich_sent(outgoing, epm_df, darko_df)
 
-    minutes_by_pos = _minutes_by_position(roster)
+    minutes_by_pos = _minutes_by_position(positional_roster)
     core_ages = _team_core_ages(roster)
     core_age = (sum(core_ages) / len(core_ages)) if core_ages else None
     rank, spacing_label = _team_spacing(stats_df, team.abbreviation)
@@ -1016,7 +1116,7 @@ def _grade_team_side(
     contract = _contract_metric(acquired, label)
     win_curve = _win_curve_metric(team_wins, label)
     timeline = _timeline_metric(acquired, core_age, label)
-    positional = _positional_metric(acquired, minutes_by_pos, roster, label)
+    positional = _positional_metric(acquired, minutes_by_pos, positional_roster, label)
     spacing = _spacing_metric(acquired, rank, spacing_label, label)
     draft = _draft_capital(list(incoming.picks), stats_df, label)
 
@@ -1070,12 +1170,12 @@ def grade_trade(
     ``None``. Otherwise each side gets a full :class:`TeamGrade`.
 
     ``epm_df`` / ``darko_df`` are fetched on demand (24h cached) when omitted.
-    ``salary_df`` is accepted for signature compatibility with the data
-    pipeline; contracts are read directly from the trade's ``RosterEntry``
-    objects, so the grader works fine with manually-specified contracts.
+    Contracts are read directly from the trade's ``RosterEntry`` objects, so the
+    grader works fine with manually-specified contracts. ``salary_df``, when
+    supplied, is used only to drop traded-away players from each team's roster
+    before positional/context calculations (it reflects the current roster);
+    without it the grader keeps every player the season stats list.
     """
-    del salary_df  # contracts already live on the trade's RosterEntry objects
-
     legality = check_trade_legality(trade)
     if not legality.legal:
         return TradeGrade(is_legal=False, illegal_reason=legality.error_reason)
@@ -1096,6 +1196,10 @@ def grade_trade(
     )
     total_value = incoming_gross + outgoing_gross
     delta_a = incoming_surplus - outgoing_surplus
+    # When both packages are net-negative, damp the swing so a contract-length
+    # gap between two bad deals doesn't read as a fleecing (incoming_surplus is
+    # what team A receives; outgoing_surplus is what team B receives).
+    delta_a *= _dual_negative_damping(incoming_surplus, outgoing_surplus)
     score_a = _score(delta_a, total_value)
     score_b = _score(-delta_a, total_value)
 
@@ -1107,6 +1211,7 @@ def grade_trade(
         epm_df,
         darko_df,
         score_a,
+        salary_df=salary_df,
     )
     team_b_grade = _grade_team_side(
         trade.team_b,
@@ -1116,6 +1221,7 @@ def grade_trade(
         epm_df,
         darko_df,
         score_b,
+        salary_df=salary_df,
     )
 
     return TradeGrade(

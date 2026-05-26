@@ -20,6 +20,7 @@ from nba_trade_analyzer.data.players import fetch_player_stats
 from nba_trade_analyzer.data.salaries import fetch_all_salaries, get_player_salary
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
+    EPM_REPLACEMENT_LEVEL,
     EPM_TO_WINS_FACTOR,
     FULL_SEASON_MINUTES,
     MAX_WINS_ADDED,
@@ -193,7 +194,9 @@ def main() -> None:
 
         minutes_played = gp * mpg
         minutes_fraction = minutes_played / FULL_SEASON_MINUTES
-        raw_wins = epm * minutes_fraction * EPM_TO_WINS_FACTOR
+        # Wins are measured above replacement level (EPM 0.0 = league average,
+        # not replacement), matching calculate_wins_added_from_impact.
+        raw_wins = (epm - EPM_REPLACEMENT_LEVEL) * minutes_fraction * EPM_TO_WINS_FACTOR
         # tanh_wins should equal evaluate_player(...).wins_added — we compute it
         # here too just to surface both in the same row, but the value used for
         # player_value and surplus comes from the real pipeline below.

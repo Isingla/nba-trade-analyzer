@@ -17,11 +17,14 @@ from nba_trade_analyzer.engine.constants import (
     WIN_CURVE_MIN_MULTIPLIER,
 )
 from nba_trade_analyzer.engine.team_context import (
+    _minutes_by_position,
     calculate_positional_modifier,
     calculate_spacing_modifier,
     calculate_timeline_modifier,
     calculate_win_curve_multiplier,
     evaluate_player_in_team_context,
+    filter_to_current_roster,
+    resolve_position,
 )
 from nba_trade_analyzer.engine.valuation import TeamContext, evaluate_trade_assets
 from nba_trade_analyzer.models.player import Contract, Player
@@ -155,12 +158,147 @@ def test_positional_no_position_label_returns_zero():
     assert calculate_positional_modifier("", roster) == 0.0
 
 
-def test_positional_split_position_blends():
-    # G-F label averages G and F minutes contributions.
+def test_dual_position_uses_primary_position():
+    # A "G-F" resolves to its primary (guard) position. On a roster thin at
+    # guard but logjammed at forward, that reads as a positional need (a bonus),
+    # not a blended wash.
     roster = _roster_with_position_minutes(g_mpg=10, f_mpg=80, c_mpg=40)
     mod = calculate_positional_modifier("G-F", roster)
-    # G is thin (+MAX), F is logjam (-MAX) — split should land near 0.
-    assert abs(mod) < 0.5 * POSITIONAL_MAX_ADJUSTMENT
+    assert mod == pytest.approx(POSITIONAL_MAX_ADJUSTMENT, abs=1e-6)
+
+
+# ----- minutes-by-position bookkeeping (Issue 2) -------------------------
+# Dual-position players ("G-F", "F-C", ...) are bucketed at their PRIMARY
+# (first-listed) position, never counted in full in both. Double-counting was
+# the source of impossible totals like "301 minutes per game at G".
+
+
+def test_dual_position_minutes_assigned_to_primary():
+    # A lone "F-C" player at 30 MPG is bucketed entirely at his primary
+    # position (F) — not split, and never double-counted into both.
+    roster = [{"player_name": "Big", "MPG": 30.0, "position": "F-C"}]
+    by_pos = _minutes_by_position(roster)
+    assert by_pos["F"] == pytest.approx(30.0)
+    assert by_pos["C"] == pytest.approx(0.0)
+    assert by_pos["G"] == pytest.approx(0.0)
+    assert sum(by_pos.values()) == pytest.approx(30.0)
+
+
+def test_minutes_by_position_conserves_total_minutes():
+    # Total minutes across buckets must equal the sum of player MPG, even with
+    # several dual-eligible players in the mix.
+    roster = [
+        {"player_name": "PG", "MPG": 30.0, "position": "G"},
+        {"player_name": "SG", "MPG": 30.0, "position": "G"},
+        {"player_name": "SF", "MPG": 30.0, "position": "F"},
+        {"player_name": "PF", "MPG": 30.0, "position": "F"},
+        {"player_name": "C", "MPG": 30.0, "position": "C"},
+        {"player_name": "Combo1", "MPG": 18.0, "position": "G-F"},
+        {"player_name": "Combo2", "MPG": 18.0, "position": "F-C"},
+        {"player_name": "Bench G", "MPG": 18.0, "position": "G"},
+        {"player_name": "Bench F", "MPG": 18.0, "position": "F"},
+        {"player_name": "Bench C", "MPG": 18.0, "position": "C"},
+    ]
+    by_pos = _minutes_by_position(roster)
+    total_mpg = sum(p["MPG"] for p in roster)
+    assert sum(by_pos.values()) == pytest.approx(total_mpg)
+    # 240 game-minutes (48 × 5). No single coarse bucket can carry an
+    # impossible load — well under the 144-minute (3-deep) warning line for a
+    # balanced rotation.
+    assert total_mpg == pytest.approx(240.0)
+    for bucket, minutes in by_pos.items():
+        assert minutes <= 144.0, f"{bucket} bucket overcounted: {minutes}"
+
+
+def test_luka_doncic_position_override_to_guard():
+    # BUG 3: dunksandthrees lists Luka forward-first ("F-G"), so resolving to a
+    # primary position would still bucket him at forward. The override fixes it.
+    assert resolve_position("Luka Dončić", "F-G") == "G"
+    assert resolve_position("Luka Doncic", "F-G") == "G"  # diacritic-insensitive
+    roster = [
+        {"player_name": "Luka Dončić", "MPG": 36.0, "position": "F-G"},
+        {"player_name": "Real Forward", "MPG": 30.0, "position": "F"},
+    ]
+    by_pos = _minutes_by_position(roster)
+    assert by_pos["G"] == pytest.approx(36.0)  # Luka's minutes land at guard
+    assert by_pos["F"] == pytest.approx(30.0)  # only the actual forward
+
+
+def test_position_override_leaves_other_players_untouched():
+    assert resolve_position("Some Forward", "F-G") == "F-G"
+    assert resolve_position(None, "F") == "F"
+
+
+def test_no_position_bucket_exceeds_roster_total():
+    # Even an all-one-position small-ball roster can't exceed the roster's
+    # total minutes at any bucket — the worst pre-fix bug produced totals
+    # larger than every player's minutes combined.
+    roster = [
+        {"player_name": f"G{i}", "MPG": 36.0, "position": "G-F"} for i in range(5)
+    ]
+    by_pos = _minutes_by_position(roster)
+    total_mpg = sum(p["MPG"] for p in roster)
+    assert sum(by_pos.values()) == pytest.approx(total_mpg)
+    for minutes in by_pos.values():
+        assert minutes <= total_mpg
+
+
+# ----- salary-based roster filtering (traded players) --------------------
+# Season stats include every player who logged minutes for a team, including
+# ones traded away — which inflated position groups to impossible numbers
+# (336 guard minutes vs. a 240 ceiling). The salary feed reflects the current
+# roster, so it is used to drop departed players.
+
+
+def test_salary_filter_keeps_position_minutes_under_240():
+    # The regression: a stat frame that lists far more players than a real
+    # roster (10 guards + 8 forwards + 6 centers at 30 MPG each) blows past the
+    # 240 ceiling at every group; the salary feed names only the current roster.
+    roster = (
+        [{"player_name": f"G{i}", "MPG": 30.0, "position": "G"} for i in range(10)]
+        + [{"player_name": f"F{i}", "MPG": 30.0, "position": "F"} for i in range(8)]
+        + [{"player_name": f"C{i}", "MPG": 30.0, "position": "C"} for i in range(6)]
+    )
+    current = (
+        [(f"G{i}", "NYK") for i in range(5)]
+        + [(f"F{i}", "NYK") for i in range(4)]
+        + [(f"C{i}", "NYK") for i in range(3)]
+    )
+    salary_df = pd.DataFrame(current, columns=["player_name", "team"])
+    by_pos = _minutes_by_position(filter_to_current_roster(roster, "NYK", salary_df))
+    assert all(minutes <= 240.0 for minutes in by_pos.values())
+    assert by_pos["G"] == pytest.approx(150.0)  # 5 kept guards × 30 MPG
+
+
+def test_salary_filter_drops_traded_and_absent_players():
+    roster = [
+        {"player_name": "Stays", "MPG": 30.0, "position": "G"},
+        {"player_name": "Traded", "MPG": 30.0, "position": "G"},  # now on BOS
+        {"player_name": "Two Way", "MPG": 30.0, "position": "G"},  # absent from feed
+    ]
+    salary_df = pd.DataFrame(
+        {"player_name": ["Stays", "Traded"], "team": ["NYK", "BOS"]}
+    )
+    kept = {
+        e["player_name"] for e in filter_to_current_roster(roster, "NYK", salary_df)
+    }
+    assert kept == {"Stays"}
+
+
+def test_salary_filter_noop_without_usable_salary_data():
+    roster = [{"player_name": "X", "MPG": 30.0, "position": "G"}]
+    assert filter_to_current_roster(roster, "NYK", None) == roster
+    assert filter_to_current_roster(roster, "NYK", pd.DataFrame()) == roster
+    # Team not present in the salary feed → keep the full roster, don't wipe it.
+    other = pd.DataFrame({"player_name": ["Y"], "team": ["BOS"]})
+    assert filter_to_current_roster(roster, "NYK", other) == roster
+
+
+def test_salary_filter_matches_on_normalized_name():
+    # Diacritics differ between the stats and salary feeds but still match.
+    roster = [{"player_name": "Nikola Jokić", "MPG": 34.0, "position": "C"}]
+    salary_df = pd.DataFrame({"player_name": ["Nikola Jokic"], "team": ["DEN"]})
+    assert len(filter_to_current_roster(roster, "DEN", salary_df)) == 1
 
 
 # ----- spacing ----------------------------------------------------------

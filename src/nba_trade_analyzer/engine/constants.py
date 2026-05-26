@@ -51,6 +51,17 @@ MAX_WINS_ADDED = 20.0
 # second-tier max guys (Cade, Brunson, LeBron) back toward breakeven.
 EPM_TO_WINS_FACTOR = 4.2
 
+# EPM replacement level: the production available for a minimum salary.
+# EPM 0.0 = league average, NOT replacement level — RAPM centers the metric
+# on the average rotation player, who is a real, rosterable contributor, not
+# a freely-available scrap-heap body. Replacement level is roughly -1.0 to
+# -1.5 EPM (the floor you can sign off waivers for the minimum). Pricing a
+# player against 0.0 made the median $15M starter look like a $13M overpay;
+# pricing against replacement level fixes that without touching relative
+# ordering. Player value on the EPM/DARKO path is therefore:
+#   (EPM - EPM_REPLACEMENT_LEVEL) * minutes_fraction * EPM_TO_WINS_FACTOR
+EPM_REPLACEMENT_LEVEL = -1.0
+
 # ---- Team Context Constants (Phase 5) ----
 # Win curve: sigmoid on projected team wins that rescales DOLLARS_PER_WIN.
 # Marginal wins are most valuable near the playoff cutoff (where they swing

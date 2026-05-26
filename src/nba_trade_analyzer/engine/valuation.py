@@ -30,6 +30,7 @@ from nba_trade_analyzer.data.players import get_team_projected_wins
 from nba_trade_analyzer.engine.aging_curve import get_aging_factor
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
+    EPM_REPLACEMENT_LEVEL,
     EPM_TO_WINS_FACTOR,
     FULL_SEASON_MINUTES,
     LEAGUE_MEAN_WINS,
@@ -98,12 +99,19 @@ def calculate_wins_added(
 
 
 def calculate_wins_added_from_impact(impact: float, minutes_played: float) -> float:
-    """EPM/DARKO-path wins. No replacement subtraction — RAPM already centers
-    impact around the league average, and "replacement level" in this regime
-    is just a low (≈ -2) value of the impact metric itself.
+    """EPM/DARKO-path wins, measured above replacement level.
+
+    EPM centers on league *average* (0.0), not replacement level, so we shift
+    by ``EPM_REPLACEMENT_LEVEL`` before scaling: a 0.0-EPM average starter is
+    ``-EPM_REPLACEMENT_LEVEL`` (≈ +1.0) above the minimum-salary body you could
+    sign to replace him, which is what actually generates surplus over a
+    contract. The shift is a constant offset, so it preserves the relative
+    ordering of players while pricing the median starter near fair value
+    instead of as a large overpay.
     """
+    impact_above_replacement = impact - EPM_REPLACEMENT_LEVEL
     minutes_fraction = minutes_played / FULL_SEASON_MINUTES
-    raw_wins = impact * minutes_fraction * EPM_TO_WINS_FACTOR
+    raw_wins = impact_above_replacement * minutes_fraction * EPM_TO_WINS_FACTOR
     return MAX_WINS_ADDED * math.tanh(raw_wins / MAX_WINS_ADDED)
 
 
@@ -458,12 +466,18 @@ def evaluate_trade_assets_detailed(
     team_net_rating: float = 0.0,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
+    outgoing_player_names: list[str] | None = None,
 ) -> list[tuple[PlayerValuation, TeamContextValuation, MultiYearValuation]]:
     """Per-player breakdown: single-season base, team-adjusted, multi-year.
 
     Returned triples expose all three views so callers can show the
     single-season number (transparency), the team-context-adjusted year-1
     number (fit), and the full-contract surplus (trade-decisive metric).
+
+    ``outgoing_player_names`` lists players the acquiring team is sending out;
+    they are stripped from the roster for the positional-fit calc so incoming
+    players are scored against the gap the trade creates, not the pre-trade
+    roster.
     """
     out: list[tuple[PlayerValuation, TeamContextValuation, MultiYearValuation]] = []
     for entry in trade_assets.players:
@@ -483,6 +497,7 @@ def evaluate_trade_assets_detailed(
             acquiring_team_roster=team_context.roster,
             epm_df=epm_df,
             player_stats_df=team_context.player_stats_df,
+            outgoing_player_names=outgoing_player_names,
         )
         multi = evaluate_player_multiyear(
             entry.player,
