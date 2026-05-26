@@ -73,6 +73,13 @@ from nba_trade_analyzer.models.trade import Trade, TradeAssets
 # ≈ 0) sits at 50. See module docstring for why the score is surplus-driven.
 SCORE_SCALING_FACTOR = 30.0
 
+# When both sides receive negative-surplus packages, the score swing is damped
+# (see _dual_negative_damping). This sets how negative the less-bad package can
+# get before the swing fully collapses to 50/50. Calibrated so a two-bad-
+# contract swap whose better side sits ~-$28M lands ~64/36 (a "Smart Deal"
+# nudge, not a robbery) while a tighter pairing stays inside the fair band.
+DUAL_NEGATIVE_DAMPING_THRESHOLD = 40_000_000.0
+
 _MILLION = 1_000_000.0
 
 
@@ -1009,6 +1016,25 @@ def _score(surplus_delta: float, total_value: float) -> int:
     return int(max(0, min(100, round(raw))))
 
 
+def _dual_negative_damping(a_surplus: float, b_surplus: float) -> float:
+    """Multiplier in [0, 1] applied to the surplus delta before scoring.
+
+    Returns 1.0 (no damping) unless *both* sides receive net-negative-surplus
+    packages. When they do, the trade is a "pick your poison" swap rather than
+    a fleecing: the headline gap is usually driven by contract length, not by a
+    real quality edge, so a 2-year bad deal for a 4-year bad deal shouldn't read
+    as Highway Robbery. The swing is compressed in proportion to how negative
+    the *better* (less-bad) of the two packages is — a near-fair package
+    opposite a terrible one still grades as a win, but two comparably-bad
+    packages collapse toward even. Once the less-bad package is more negative
+    than ``DUAL_NEGATIVE_DAMPING_THRESHOLD`` the swing vanishes entirely (50/50).
+    """
+    if a_surplus >= 0 or b_surplus >= 0:
+        return 1.0
+    better = max(a_surplus, b_surplus)
+    return max(0.0, 1.0 - abs(better) / DUAL_NEGATIVE_DAMPING_THRESHOLD)
+
+
 # ---------------------------------------------------------------------------
 # Per-team grade
 # ---------------------------------------------------------------------------
@@ -1125,6 +1151,10 @@ def grade_trade(
     )
     total_value = incoming_gross + outgoing_gross
     delta_a = incoming_surplus - outgoing_surplus
+    # When both packages are net-negative, damp the swing so a contract-length
+    # gap between two bad deals doesn't read as a fleecing (incoming_surplus is
+    # what team A receives; outgoing_surplus is what team B receives).
+    delta_a *= _dual_negative_damping(incoming_surplus, outgoing_surplus)
     score_a = _score(delta_a, total_value)
     score_b = _score(-delta_a, total_value)
 

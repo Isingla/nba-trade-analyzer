@@ -11,7 +11,9 @@ import pandas as pd
 import pytest
 
 from nba_trade_analyzer.engine.grader import (
+    DUAL_NEGATIVE_DAMPING_THRESHOLD,
     _contract_tier,
+    _dual_negative_damping,
     _epm_tier,
     _shed_sentence,
     _spacing_tier,
@@ -665,3 +667,81 @@ def test_salary_dump_prose_does_not_quote_inflated_delta():
     assert "shedding roughly $" not in nyk.prose
     # The shed value is framed (cap relief), not quoted as a raw deficit.
     assert "negative value" in nyk.prose or "cap" in nyk.prose
+
+
+# ---------------------------------------------------------------------------
+# 15. Dual-negative-surplus score damping (Issue 5)
+# ---------------------------------------------------------------------------
+
+
+def test_damping_inactive_unless_both_sides_negative():
+    # No damping when either received package is non-negative.
+    assert _dual_negative_damping(10_000_000, 5_000_000) == 1.0
+    assert _dual_negative_damping(-30_000_000, 5_000_000) == 1.0
+    assert _dual_negative_damping(5_000_000, -30_000_000) == 1.0
+
+
+def test_damping_compresses_when_both_negative():
+    # Both negative → multiplier strictly inside (0, 1).
+    d = _dual_negative_damping(-28_000_000, -73_000_000)
+    assert 0.0 < d < 1.0
+
+
+def test_damping_deeper_better_deal_compresses_more():
+    # The more negative the *better* (less-bad) package, the smaller the
+    # multiplier — a deeper "pick your poison" collapses harder toward even.
+    mild = _dual_negative_damping(-8_000_000, -40_000_000)
+    deep = _dual_negative_damping(-28_000_000, -60_000_000)
+    assert deep < mild
+
+
+def test_damping_floors_at_zero():
+    # Once the better package is past the threshold, the swing vanishes.
+    assert (
+        _dual_negative_damping(
+            -DUAL_NEGATIVE_DAMPING_THRESHOLD - 1, -DUAL_NEGATIVE_DAMPING_THRESHOLD - 5
+        )
+        == 0.0
+    )
+
+
+# Real 2025-26 values (EPM / GP / MPG / salary / years) for the reported
+# regression cases. Two below-replacement players on different-length deals.
+_KLAY = _spec("Klay Thompson", "NYK", -0.7843, gp=69, mpg=21.7, age=35)
+_KISPERT = _spec("Corey Kispert", "MIN", -2.1878, gp=58, mpg=18.6, age=26)
+_ALDAMA = _spec("Santi Aldama", "MIN", -0.3166, gp=43, mpg=27.9, age=24)
+
+
+def test_two_bad_contracts_different_lengths_not_a_robbery():
+    # Klay (2yr) for Kispert (4yr): both deeply negative value. The team
+    # shedding the longer deal wins, but it is a "Smart Deal" nudge, not a
+    # fleecing — without damping this graded ~96/4.
+    a_sends = TradeAssets(players=[_entry(_KISPERT, 13_975_000, years=4)])
+    b_sends = TradeAssets(players=[_entry(_KLAY, 16_666_667, years=2)])
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=a_sends,
+        team_b_sends=b_sends,
+    )
+    grade = _grade(trade, extra=[_KLAY, _KISPERT])
+    a, b = grade.team_a_grade.score, grade.team_b_grade.score
+    assert 35 <= a <= 65
+    assert 35 <= b <= 65
+    assert grade.team_a_grade.verdict != "Highway Robbery"
+    assert grade.team_b_grade.verdict != "Highway Robbery"
+
+
+def test_two_bad_contracts_small_length_gap_stays_balanced():
+    # Klay (2yr) for Aldama (3yr): a tighter pairing should sit near even.
+    a_sends = TradeAssets(players=[_entry(_ALDAMA, 18_485_916, years=3)])
+    b_sends = TradeAssets(players=[_entry(_KLAY, 16_666_667, years=2)])
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=a_sends,
+        team_b_sends=b_sends,
+    )
+    grade = _grade(trade, extra=[_KLAY, _ALDAMA])
+    assert 45 <= grade.team_a_grade.score <= 55
+    assert 45 <= grade.team_b_grade.score <= 55
