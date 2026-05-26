@@ -18,6 +18,7 @@ from nba_trade_analyzer.engine.valuation import (
     calculate_wins_added,
     calculate_wins_added_from_impact,
     evaluate_player,
+    evaluate_player_multiyear,
     evaluate_trade_assets,
 )
 from nba_trade_analyzer.models.player import Contract, Player
@@ -305,19 +306,20 @@ def test_evaluate_trade_assets_sums_surplus_across_players():
 
     epm = _empty_epm()
     darko = _empty_darko()
+    # Multi-year sum: trade value is now total contract surplus, not single season.
     expected = (
-        evaluate_player(
+        evaluate_player_multiyear(
             p1,
             Contract(salary=20_000_000, years_remaining=2),
             epm_df=epm,
             darko_df=darko,
-        ).surplus_value
-        + evaluate_player(
+        ).total_contract_surplus
+        + evaluate_player_multiyear(
             p2,
             Contract(salary=8_000_000, years_remaining=1),
             epm_df=epm,
             darko_df=darko,
-        ).surplus_value
+        ).total_contract_surplus
     )
     assert evaluate_trade_assets(assets, epm_df=epm, darko_df=darko) == pytest.approx(
         expected

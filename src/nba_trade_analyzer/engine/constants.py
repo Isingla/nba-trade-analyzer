@@ -85,6 +85,45 @@ SPACING_MAX_ADJUSTMENT = 0.08  # ±8% — weakest signal of the four
 LEAGUE_AVG_3PT_PCT = 0.363  # 2024-25 league average 3P%; refresh annually
 LEAGUE_AVG_3PT_RATE = 0.40  # 2024-25 league average 3PA/FGA; refresh annually
 
+# ---- Aging Curve Constants (Phase 5.5) ----
+# Annual EPM change rates by age bracket — used by engine/aging_curve.py to
+# project a player's impact forward year-by-year. Brackets follow established
+# NBA aging research: growth into mid-20s, prime around 27-29, then steepening
+# decline. The yearly rate is applied compounding-style (each year of aging is
+# a separate multiplier, picked from the bracket the player is in *that* year),
+# which keeps the curve continuous across bracket boundaries.
+AGING_GROWTH_RATE_20_24 = 0.04  # +4% per year — growth phase
+AGING_GROWTH_RATE_25_27 = 0.015  # +1.5% per year — approaching peak
+AGING_PLATEAU_RATE_28_29 = 0.0  # stable at peak
+AGING_DECLINE_RATE_30_32 = -0.03  # -3% per year — early decline
+AGING_DECLINE_RATE_33_35 = -0.065  # -6.5% per year — steeper decline
+AGING_DECLINE_RATE_36_PLUS = -0.10  # -10% per year — sharp decline
+
+# Multi-year valuation: discount future-year surplus to reflect both time value
+# and projection uncertainty. Year 2 is discounted 12%, year 3 ~23% (compounding),
+# year 4 ~33%, year 5 ~43% — naturally devalues speculative far-future production.
+PROJECTION_DISCOUNT_RATE = 0.12
+# Cap projection horizon — beyond 5 years out, uncertainty dominates signal and
+# any contract that long is being mis-modeled anyway (player options, ETOs, etc.).
+MAX_PROJECTION_YEARS = 5
+
+# DARKO DPM is ~40% compressed vs EPM (slope=0.608 across 491 players).
+# We intentionally do NOT rescale because DARKO's regression-to-mean
+# is a feature, not a scale artifact — its Kalman filter projects
+# conservative estimates that correctly discount variance in
+# single-season EPM peaks. Rescaling over-inflates elite projections.
+# See stress_test_multiyear.py analysis for details.
+DARKO_TO_EPM_SLOPE = 0.608
+DARKO_TO_EPM_INTERCEPT = 0.026
+
+# Future-year availability assumptions for multi-year valuation:
+# - PROJECTED_GP_HEALTHY: league-average healthy-season games played, used as
+#   the year 2+ baseline GP before applying the aging haircut.
+# - PROJECTED_GP_CAP: hard ceiling so aging-curve > 1.0 cases don't project a
+#   player into 80+ games next year.
+PROJECTED_GP_HEALTHY = 72
+PROJECTED_GP_CAP = 75
+
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
 # Fitted conceptually to EPM-based draft value research (Sports Appeal / Pelton).
