@@ -321,6 +321,51 @@ class _Acquired:
         return self.total_contract_surplus / max(self.years_remaining, 1)
 
 
+@dataclass(frozen=True)
+class _Sent:
+    """The slice of an outgoing player the prose needs to frame the trade.
+
+    A grade is about the delta between what you got and what you gave up, so
+    the verdict has to be able to talk about the players leaving, not just the
+    ones arriving — especially for a salary dump where the win *is* the exit.
+    """
+
+    name: str
+    salary: int
+    epm: float
+    total_contract_surplus: float
+
+
+def _enrich_sent(
+    assets: TradeAssets,
+    epm_df: pd.DataFrame | None,
+    darko_df: pd.DataFrame | None,
+) -> list[_Sent]:
+    out: list[_Sent] = []
+    for entry in assets.players:
+        player = entry.player
+        multi = evaluate_player_multiyear(
+            player, entry.contract, epm_df=epm_df, darko_df=darko_df
+        )
+        epm_row = get_player_epm(epm_df, player.name) if epm_df is not None else None
+        if epm_row is not None:
+            epm = float(epm_row["epm"])
+        else:
+            base = evaluate_player(
+                player, entry.contract, epm_df=epm_df, darko_df=darko_df
+            )
+            epm = float(base.adjusted_net_rating)
+        out.append(
+            _Sent(
+                name=player.name,
+                salary=entry.contract.salary,
+                epm=epm,
+                total_contract_surplus=multi.total_contract_surplus,
+            )
+        )
+    return out
+
+
 def _enrich_acquired(
     assets: TradeAssets,
     triples: list,
@@ -469,6 +514,40 @@ def _impact_metric(players: list[_Acquired], label: str) -> MetricBreakdown:
     )
 
 
+def _contract_sentence(p: _Acquired, label: str) -> str:
+    """Plain-English contract verdict for one player.
+
+    Deliberately omits the raw per-year deficit figure — a "-$47M/yr" number
+    reads as broken to a casual fan even when the math is right. The signed
+    deficit still lives in the metric's ``raw_label`` for analytics readers.
+    The salary itself is fair game; it is a real, intuitive number.
+    """
+    pv = p.base_player_value / _MILLION
+    sal = p.salary / _MILLION
+    py = p.per_year_surplus / _MILLION
+    if p.per_year_surplus >= 0:
+        return (
+            f"{p.name} is playing like a ${pv:.0f}M player on a ${sal:.0f}M deal "
+            f"— about ${py:.0f}M in extra value per season."
+        )
+    if p.per_year_surplus <= -15 * _MILLION:
+        return (
+            f"{p.name}'s ${sal:.0f}M salary is a major drag on the cap — his "
+            f"production doesn't come close to justifying the cost."
+        )
+    if p.per_year_surplus <= -5 * _MILLION:
+        if pv >= 0:
+            return (
+                f"{p.name} is paid ${sal:.0f}M but producing like a ${pv:.0f}M "
+                f"player — a notable overpay."
+            )
+        return (
+            f"{p.name} is paid ${sal:.0f}M but producing well below his pay "
+            f"grade — a notable overpay."
+        )
+    return f"{p.name} is slightly overpaid at ${sal:.0f}M relative to his production."
+
+
 def _contract_metric(players: list[_Acquired], label: str) -> MetricBreakdown:
     if not players:
         return MetricBreakdown(
@@ -482,32 +561,19 @@ def _contract_metric(players: list[_Acquired], label: str) -> MetricBreakdown:
     per_year = sum(p.per_year_surplus for p in players)
     tier = _contract_tier(per_year)
     if len(players) == 1:
-        p = players[0]
-        pv = p.base_player_value / _MILLION
-        sal = p.salary / _MILLION
-        py = p.per_year_surplus / _MILLION
-        if p.per_year_surplus >= 0:
+        explanation = _contract_sentence(players[0], label)
+    else:
+        salary_m = sum(p.salary for p in players) / _MILLION
+        if per_year >= 0:
             explanation = (
-                f"{p.name} is playing like a ${pv:.0f}M player on a ${sal:.0f}M "
-                f"deal — about ${py:.0f}M in extra value per season."
-            )
-        elif pv >= 0:
-            explanation = (
-                f"{p.name} is paid ${sal:.0f}M but producing like a ${pv:.0f}M "
-                f"player — the {label} are overpaying by ${abs(py):.0f}M per season."
+                f"The {label} take on ${salary_m:.0f}M in salary that grades out "
+                f"as solid value across the package."
             )
         else:
             explanation = (
-                f"{p.name} is paid ${sal:.0f}M but producing below replacement "
-                f"level — the {label} are overpaying by ${abs(py):.0f}M per season."
+                f"The {label} take on ${salary_m:.0f}M in salary that outstrips "
+                f"the group's on-court production."
             )
-    else:
-        salary_m = sum(p.salary for p in players) / _MILLION
-        verb = "a surplus" if per_year >= 0 else "a deficit"
-        explanation = (
-            f"The {label} take on ${salary_m:.0f}M in salary for "
-            f"{_surplus_label(per_year)} — {verb} across the package."
-        )
     return MetricBreakdown(
         category="Contract",
         raw_value=total,
@@ -719,27 +785,146 @@ def _draft_capital(
 # ---------------------------------------------------------------------------
 
 
+def _win_curve_phrase(tier: str) -> str:
+    """Turn a win-curve tier into a natural noun phrase — no raw multiplier."""
+    return "rebuilding team" if tier == "Rebuilding" else tier.lower()
+
+
+def _short_pick(pick: DraftPick) -> str:
+    round_word = "first" if pick.round == 1 else "second"
+    return f"a {pick.year} {round_word}-round pick"
+
+
+def _fit_noun(category: str) -> str:
+    return {
+        "Timeline": "timeline",
+        "Positional Fit": "positional",
+        "Spacing": "spacing",
+    }.get(category, category.lower())
+
+
+def _fit_sentence(
+    fit_metrics: list[MetricBreakdown],
+    win_curve: MetricBreakdown,
+    score: int,
+    label: str,
+) -> str:
+    """Frame the strongest fit signal by the *overall* grade (Issue 1).
+
+    A positive metric must never read as a "win" when the trade as a whole is
+    an overpay; below 45 it is at most a silver lining.
+    """
+    window = f"As a {_win_curve_phrase(win_curve.tier)}, the {label}"
+    best = max(fit_metrics, key=lambda m: m.raw_value, default=None)
+    worst = min(fit_metrics, key=lambda m: m.raw_value, default=None)
+    positive = best if best is not None and best.raw_value >= 0.03 else None
+    negative = worst if worst is not None and worst.raw_value <= -0.03 else None
+
+    if score >= 55:
+        if positive is not None:
+            return (
+                f"{window} bank a strong {_fit_noun(positive.category)} fit — "
+                f"{positive.explanation}"
+            )
+        if negative is not None:
+            return (
+                f"{window} take it on despite some {_fit_noun(negative.category)} risk."
+            )
+        return f"{window} make a move that fits their window."
+    if score < 45:
+        if positive is not None:
+            return (
+                f"The one bright spot: {positive.explanation} "
+                f"But it's not enough to offset the negatives."
+            )
+        return f"{window} are hard-pressed to justify this one."
+    # Even / fair-value band.
+    if positive is not None:
+        return f"On the positive side: {positive.explanation}"
+    if negative is not None:
+        return f"On the downside: {negative.explanation}"
+    return f"{window} make a roughly fair-value move."
+
+
 def _build_prose(
     label: str,
+    score: int,
     acquired: list[_Acquired],
+    sent: list[_Sent],
     impact: MetricBreakdown,
     contract: MetricBreakdown,
     win_curve: MetricBreakdown,
     fit_metrics: list[MetricBreakdown],
     draft: DraftCapitalBreakdown,
+    incoming_picks: list[DraftPick],
+    outgoing_picks: list[DraftPick],
 ) -> str:
-    """2-3 deterministic, template-filled sentences in basketball language."""
-    sentences: list[str] = []
-    headline = _headline(acquired)
+    """2-3 deterministic, score-aware sentences in basketball language.
 
-    # 1) What they acquire + impact tier.
-    if headline is not None:
+    The framing keys off the *overall* grade, references the outgoing players
+    (a grade is the delta between what you got and gave up, not just the
+    haul), and never quotes the win-curve multiplier or an absurd deficit.
+    """
+    inc = _headline(acquired)
+    incoming_weak = (
+        (not acquired)
+        or impact.raw_value < 1.0
+        or (sum(a.total_contract_surplus for a in acquired) <= 0)
+    )
+    pick_clause = ""
+    if incoming_picks:
+        pick_clause = " plus " + _natural_join([_short_pick(p) for p in incoming_picks])
+
+    sentences: list[str] = []
+
+    if score >= 55 and incoming_weak and sent:
+        # Salary-dump win: the exit is the story, not the incoming player.
+        worst = min(sent, key=lambda s: s.total_contract_surplus)
+        shed = abs(worst.total_contract_surplus) / _MILLION
+        if inc is not None:
+            sentences.append(
+                f"The {label} move off {worst.name}'s "
+                f"${worst.salary / _MILLION:.0f}M contract ({worst.epm:+.1f} EPM), "
+                f"bringing back {inc.name}{pick_clause}."
+            )
+            sentences.append(
+                f"While {inc.name}'s numbers aren't flashy, shedding roughly "
+                f"${shed:.0f}M in negative value is the real win here."
+            )
+        else:
+            sentences.append(
+                f"The {label} turn {worst.name}'s ${worst.salary / _MILLION:.0f}M "
+                f"contract ({worst.epm:+.1f} EPM) into draft capital and cap relief."
+            )
+            sentences.append(
+                f"Shedding roughly ${shed:.0f}M in negative value is the win here."
+            )
+        return " ".join(sentences)
+
+    if score < 45 and inc is not None:
+        # Losing side: lead with what they gave up to land this — including any
+        # picks they sent out, not the (empty) set they received.
+        given = _natural_join(
+            [s.name for s in sent] + [p.label for p in outgoing_picks]
+        )
+        given = given or "draft capital"
+        tier_phrase = impact.tier.split(" (")[0].lower()
+        sentences.append(
+            f"The {label} send {given} to acquire {inc.name}, who is producing at "
+            f"{tier_phrase} ({inc.epm:+.1f} EPM) on a ${inc.salary / _MILLION:.0f}M deal."
+        )
+        sentences.append(contract.explanation)
+        sentences.append(_fit_sentence(fit_metrics, win_curve, score, label))
+        return " ".join(sentences)
+
+    # Default: incoming player carries the trade (winning-strong or fair).
+    if inc is not None:
         extra = ""
         if len(acquired) > 1:
             others = len(acquired) - 1
             extra = f" and {others} other piece" + ("s" if others > 1 else "")
         sentences.append(
-            f"The {label} add {headline.name}{extra}, "
+            f"The {label} add {inc.name}{extra}, "
             f"{impact.tier.split(' (')[0].lower()} on impact at {impact.raw_label}."
         )
     elif draft.total_pick_value > 0:
@@ -748,27 +933,8 @@ def _build_prose(
         )
     else:
         sentences.append(f"The {label} mostly move salary in this deal.")
-
-    # 2) Contract context.
     sentences.append(contract.explanation)
-
-    # 3) Competitive window + the strongest fit signal (positive or negative).
-    strongest = max(fit_metrics, key=lambda m: abs(m.raw_value), default=None)
-    window = f"As a {win_curve.tier.lower()} ({win_curve.raw_label}), the {label}"
-    if strongest is not None and strongest.raw_value >= 0.03:
-        sentences.append(f"{window} bank a clear win on fit — {strongest.explanation}")
-    elif strongest is not None and strongest.raw_value <= -0.03:
-        sentences.append(
-            f"{window} have to weigh a real drawback — {strongest.explanation}"
-        )
-    elif draft.total_pick_value > 0:
-        sentences.append(
-            f"{window} also land ${draft.total_pick_value / _MILLION:.0f}M in "
-            f"draft capital."
-        )
-    else:
-        sentences.append(f"{window} make a move that fits their current window.")
-
+    sentences.append(_fit_sentence(fit_metrics, win_curve, score, label))
     return " ".join(sentences)
 
 
@@ -839,6 +1005,7 @@ def _grade_team_side(
         incoming, context, epm_df=epm_df, darko_df=darko_df
     )
     acquired = _enrich_acquired(incoming, triples, epm_df, stats_df)
+    sent = _enrich_sent(outgoing, epm_df, darko_df)
 
     minutes_by_pos = _minutes_by_position(roster)
     core_ages = _team_core_ages(roster)
@@ -855,12 +1022,16 @@ def _grade_team_side(
 
     prose = _build_prose(
         label,
+        score,
         acquired,
+        sent,
         impact,
         contract,
         win_curve,
         [timeline, positional, spacing],
         draft,
+        list(incoming.picks),
+        list(outgoing.picks),
     )
 
     return TeamGrade(

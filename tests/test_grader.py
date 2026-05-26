@@ -469,3 +469,60 @@ def test_fair_trade_scores_balanced():
     grade = _grade(_fair_trade())
     assert 40 <= grade.team_a_grade.score <= 60
     assert 40 <= grade.team_b_grade.score <= 60
+
+
+# ---------------------------------------------------------------------------
+# Prose clarity / display regressions
+# ---------------------------------------------------------------------------
+
+
+_LOPSIDED_EXTRA = [
+    _spec("Cheap Star", "MIN", 6.5, position="F", age=25, w=40),
+    _spec("Bad Deal", "NYK", -1.0, position="F", age=31, w=42),
+]
+
+
+def test_prose_does_not_contradict_a_losing_grade():
+    # Issue 1: a positive metric must never read as a "win" when the overall
+    # verdict is an overpay.
+    grade = _grade(_lopsided_trade(), extra=_LOPSIDED_EXTRA)
+    loser = grade.team_b_grade  # MIN acquires the bad contract → low score
+    assert loser.score < 45
+    lowered = loser.prose.lower()
+    assert "clear win" not in lowered
+    assert "strong win" not in lowered
+
+
+def test_prose_references_outgoing_players():
+    # Issue 2: the verdict must reflect the delta — what was sent, not just
+    # what was acquired.
+    grade = _grade(_lopsided_trade(), extra=_LOPSIDED_EXTRA)
+    loser = grade.team_b_grade  # MIN sent "Cheap Star" to get "Bad Deal"
+    assert "Cheap Star" in loser.prose
+    assert "Bad Deal" in loser.prose
+
+
+def test_losing_prose_lists_sent_picks():
+    # Issue 2: a pick sent out should appear in the losing side's verdict.
+    grade = _grade(_trade_with_picks())
+    # MIN sends a player + a 2027 pick to NYK and comes out behind.
+    minn = grade.team_b_grade
+    assert minn.score < 45
+    assert "2027 MIN 1st" in minn.prose
+
+
+def test_contract_explanation_omits_deficit_dollars():
+    # Issue 3: the plain-English sentence must not quote the raw deficit; that
+    # number lives only in raw_label.
+    grade = _grade(_lopsided_trade(), extra=_LOPSIDED_EXTRA)
+    contract = grade.team_b_grade.contract  # acquired the bad contract
+    assert "overpaying by $" not in contract.explanation
+    assert "/yr" not in contract.explanation
+    assert "deficit" in contract.raw_label  # ...still surfaced for analytics
+
+
+def test_win_curve_multiplier_not_leaked_into_prose():
+    # Issue 4: the "x" multiplier belongs in the Win Curve breakdown only.
+    grade = _grade(_lopsided_trade(), extra=_LOPSIDED_EXTRA)
+    for tg in (grade.team_a_grade, grade.team_b_grade):
+        assert tg.win_curve.raw_label not in tg.prose
