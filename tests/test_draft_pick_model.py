@@ -104,6 +104,21 @@ def test_estimate_position_monotonic_in_wins():
     assert positions == sorted(positions)
 
 
+def test_contender_maps_to_late_first_round():
+    # A 60-win top seed should land in the high 20s, not the low 20s — the slot
+    # map spans the realistic win range, not 0-82 (which made good teams' picks
+    # too early). This is the BUG-3 regression: 60 wins must be ~28-30.
+    assert 28.0 <= estimate_pick_position(CONTENDER_WINS, year_offset=0) <= 30.0
+
+
+def test_record_extremes_map_to_slot_extremes():
+    # Worst realistic record picks 1st; best picks 30th.
+    assert estimate_pick_position(15.0, year_offset=0) == pytest.approx(1.0)
+    assert estimate_pick_position(62.0, year_offset=0) == pytest.approx(30.0)
+    # The league-average team lands mid-first-round.
+    assert 14.0 <= estimate_pick_position(LEAGUE_MEAN_WINS, year_offset=0) <= 18.0
+
+
 # --------------------------------------------------------------------------- #
 # 4. estimate_pick_position — future regression toward the mean
 # --------------------------------------------------------------------------- #

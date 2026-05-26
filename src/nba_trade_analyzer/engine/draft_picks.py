@@ -26,8 +26,14 @@ FIRST_PICK = 1
 LAST_PICK = 60
 SECOND_ROUND_START = 31
 FIRST_ROUND_PICKS = 30
-NUM_TEAMS = 30
-REGULAR_SEASON_GAMES = 82
+
+# Realistic win range that the wins-to-pick-slot map spans. League records run
+# from the mid-teens (worst team) to the low 60s (best team); no team approaches
+# 82, so anchoring the map on 0-82 placed contenders' picks far too early — a
+# 60-win top seed landed at slot ~22 instead of the high 20s it actually earns.
+# These anchors pin the worst realistic record to pick 1 and the best to pick 30.
+PICK_MAP_WORST_WINS = 15.0
+PICK_MAP_BEST_WINS = 62.0
 
 # Multiplicative discount applied to a protected pick's value. The chance a
 # protected pick simply doesn't convey (and the holder gets a worse asset, or
@@ -104,10 +110,11 @@ def estimate_pick_position(team_projected_wins: float, year_offset: int = 0) -> 
     Returns a (possibly fractional) pick number in ``[1, 30]``. Second-round
     handling lives in :func:`evaluate_draft_pick`.
 
-    NOTE: the originating spec wrote this map as ``30 - (wins / 82) * 29``,
-    which inverts the orientation it states in the same breath ("worst = pick 1,
-    best = pick 30") and would make a contender's pick more valuable than a
-    tanking team's. We implement the stated orientation instead.
+    The map is linear across the *realistic* win range (``PICK_MAP_WORST_WINS``
+    to ``PICK_MAP_BEST_WINS``), not 0-82. Anchoring on 0-82 — which no team
+    reaches — made good teams' picks land too early: a 60-win team mapped to
+    slot ~22 instead of the high 20s a top seed earns. With the realistic range,
+    60 wins maps to ~29.
     """
     if year_offset > 0:
         regression_factor = 1.0 - PICK_REGRESSION_RATE**year_offset
@@ -118,7 +125,10 @@ def estimate_pick_position(team_projected_wins: float, year_offset: int = 0) -> 
     else:
         adjusted_wins = team_projected_wins
 
-    position = 1.0 + (adjusted_wins / REGULAR_SEASON_GAMES) * (NUM_TEAMS - 1)
+    win_span = PICK_MAP_BEST_WINS - PICK_MAP_WORST_WINS
+    position = 1.0 + (adjusted_wins - PICK_MAP_WORST_WINS) / win_span * (
+        FIRST_ROUND_PICKS - 1
+    )
     return min(float(FIRST_ROUND_PICKS), max(float(FIRST_PICK), position))
 
 
