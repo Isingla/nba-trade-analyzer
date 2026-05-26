@@ -718,7 +718,16 @@ def _spacing_metric(
     tier = _spacing_tier(modifier)
     p = _headline(players)
     assert p is not None
-    if not p.fg3_data_present or p.fg3a < 1.0:
+    if not p.fg3_data_present:
+        # No usable shooting data — most often a player who hasn't logged
+        # current-season minutes (injury/absence). Don't assert "0.0 attempts,
+        # not a threat" as if confirmed; the modifier already falls back to a
+        # league-average (neutral) profile, so say so plainly.
+        explanation = (
+            f"No current shooting data for {p.name}, so the spacing impact for "
+            f"the {label} is treated as neutral."
+        )
+    elif p.fg3a < 1.0:
         explanation = (
             f"{p.name} isn't a three-point threat ({p.fg3a:.1f} attempts/game) — "
             f"spacing impact for the {label} is negligible."

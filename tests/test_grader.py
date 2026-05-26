@@ -413,6 +413,28 @@ def test_explanations_reference_names():
     assert "Knicks" in tg.win_curve.explanation
 
 
+def test_spacing_prose_handles_missing_shooting_data():
+    # BUG 2: a player absent from current-season stats (injured all year, like
+    # Kyrie post-ACL) has no FG3A to find. The spacing prose must acknowledge
+    # the missing data, not assert "0.0 attempts, isn't a three-point threat."
+    injured = _spec("Injured Star", "MIN", 3.0, position="G", age=33)
+    epm_df = _epm_df(_NYK_ROSTER + _MIN_ROSTER + [injured])
+    stats_df = _stats_df(_NYK_ROSTER + _MIN_ROSTER)  # injured star absent from stats
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves"),
+        team_a_sends=TradeAssets(players=[_entry(_NYK_ROSTER[0], 30_000_000)]),
+        team_b_sends=TradeAssets(players=[_entry(injured, 30_000_000)]),
+    )
+    grade = grade_trade(
+        trade, player_stats_df=stats_df, epm_df=epm_df, darko_df=_empty_darko()
+    )
+    spacing = grade.team_a_grade.spacing  # NYK acquires the injured star
+    assert "no current shooting data" in spacing.explanation.lower()
+    assert "0.0 attempts" not in spacing.explanation
+    assert "isn't a three-point threat" not in spacing.explanation
+
+
 # ---------------------------------------------------------------------------
 # 8. Prose verdict
 # ---------------------------------------------------------------------------
