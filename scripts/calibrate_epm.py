@@ -17,6 +17,7 @@ import math
 
 from nba_trade_analyzer.data.epm import fetch_epm_data, get_player_epm, normalize_name
 from nba_trade_analyzer.data.players import fetch_player_stats
+from nba_trade_analyzer.data.salaries import fetch_all_salaries, get_player_salary
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
     EPM_TO_WINS_FACTOR,
@@ -30,9 +31,11 @@ from nba_trade_analyzer.engine.valuation import (
 from nba_trade_analyzer.models.player import Contract, Player
 
 # ---------------------------------------------------------------------------
-# HARDCODED 2025-26 SALARIES — TODO: replace once data/salaries.py exists.
-# Approximate figures sourced from public salary trackers (Spotrac / HoopsHype).
-# Players not in this dict fall back to a placeholder shown in the output.
+# FALLBACK 2025-26 SALARIES. The live source is now data/salaries.py (scraped
+# from Basketball Reference, with a committed CSV offline fallback); this dict
+# is only consulted for players the source doesn't return, and the placeholder
+# below covers anyone in neither. Kept for backward-compatibility during the
+# transition. Approximate figures from public trackers (Spotrac / HoopsHype).
 # ---------------------------------------------------------------------------
 SALARIES_2025_26: dict[str, int] = {
     # Supermax / 35% max
@@ -95,7 +98,20 @@ VALIDATION_TARGETS: list[tuple[str, int, int, str]] = [
     ("Derrick White", 18_000_000, 3, "should show positive value"),
 ]
 
-PLACEHOLDER_SALARY = 5_000_000  # used for any top-30 player missing from the dict
+PLACEHOLDER_SALARY = 5_000_000  # used for any top-30 player missing everywhere
+
+
+def _resolve_salary(salary_df, name: str) -> tuple[int, bool]:
+    """Return ``(salary, found)`` preferring the live source, then the
+    hardcoded fallback dict. ``found`` is False only when both miss (the
+    caller then uses ``PLACEHOLDER_SALARY`` and reports the gap)."""
+    row = get_player_salary(salary_df, name)
+    if row is not None:
+        return int(row["salary"]), True
+    fallback = SALARIES_2025_26.get(name)
+    if fallback is not None:
+        return fallback, True
+    return PLACEHOLDER_SALARY, False
 
 
 def _build_player(name: str, team: str, age: int, stats_row) -> Player:
@@ -127,7 +143,11 @@ def main() -> None:
 
     print("Fetching player stats from nba_api...")
     stats_df = fetch_player_stats()
-    print(f"  {len(stats_df)} player-stat rows loaded\n")
+    print(f"  {len(stats_df)} player-stat rows loaded")
+
+    print("Fetching salaries from Basketball Reference...")
+    salary_df = fetch_all_salaries()
+    print(f"  {len(salary_df)} contracts loaded\n")
 
     # Build a normalized-name lookup into the nba_api stats frame so we can
     # match EPM rows (which may have diacritics) to their GP/MPG.
@@ -179,9 +199,8 @@ def main() -> None:
         # player_value and surplus comes from the real pipeline below.
         tanh_wins_expected = MAX_WINS_ADDED * math.tanh(raw_wins / MAX_WINS_ADDED)
 
-        salary = SALARIES_2025_26.get(name)
-        if salary is None:
-            salary = PLACEHOLDER_SALARY
+        salary, found = _resolve_salary(salary_df, name)
+        if not found:
             missing_salaries.append(name)
 
         player = _build_player(
