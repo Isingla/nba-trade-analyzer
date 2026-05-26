@@ -118,10 +118,10 @@ def test_young_player_on_rookie_deal_total_surplus_strongly_positive() -> None:
 
 def test_cade_growth_projection_lifts_per_year_value() -> None:
     # 23, +3.75 EPM, 4 years at $46.4M — the canonical Phase 5.5 example.
-    # Cade is tanh-compressed near MAX_WINS_ADDED already, so aging growth
-    # adds only a few wins of headroom — not enough to flip total surplus
-    # positive at a $46M salary, but enough that per-year value is visibly
-    # better than the single-season snapshot.
+    # After the replacement-level recalibration (Issue 1), a young All-Star on
+    # a max is priced as roughly fair / modestly positive value rather than
+    # deeply underwater. The aging curve still lifts out-year production, which
+    # is the property this test locks in.
     player = _make_player("Cade Cunningham", age=23)
     contract = Contract(salary=46_400_000, years_remaining=4)
 
@@ -138,18 +138,16 @@ def test_cade_growth_projection_lifts_per_year_value() -> None:
         darko_df=_empty_darko(),
     )
 
-    assert single.surplus_value < 0  # single-season: underwater
+    # An All-Star-level player on a max grades out near fair value — a modest
+    # positive, not the old ~-$10M/yr overpay.
+    assert 0 < single.surplus_value < 10_000_000
     # Growth phase: projected EPM increases year-over-year.
     assert mv.year_by_year[-1].projected_epm > mv.year_by_year[0].projected_epm
-    # Multi-year total is meaningfully better than naively multiplying the
-    # single-season deficit by years_remaining — discount + aging lift help.
-    naive_4x = single.surplus_value * mv.years_remaining
-    assert mv.total_contract_surplus > naive_4x
-    # Last-year discounted surplus is closer to zero than year 1 (improving
-    # raw value + steeper discount both reduce the per-year drag).
-    assert (
-        mv.year_by_year[-1].discounted_surplus > mv.year_by_year[0].discounted_surplus
-    )
+    # The aging lift raises raw projected production from year 1 to the final
+    # year (before discounting), which is the growth signal we want visible.
+    assert mv.year_by_year[-1].projected_value > mv.year_by_year[0].projected_value
+    # The full contract is a net-positive asset across all years.
+    assert mv.total_contract_surplus > 0
 
 
 def test_prime_max_player_strongly_positive() -> None:
@@ -217,10 +215,10 @@ def test_lebron_one_year_damage_capped() -> None:
 
 
 def test_young_star_new_max_growth_visible() -> None:
-    # 24, +3.75 EPM (Cade-level), 4 years at $46M/yr. Like Cade, tanh
-    # compression near MAX_WINS_ADDED limits how much the aging curve can
-    # lift wins, so the contract doesn't fully flip positive. What we do
-    # want to see: out-year EPM > year-1 EPM (model recognizes growth).
+    # 24, +3.75 EPM (Cade-level), 4 years at $46M/yr. The model should
+    # recognize growth (out-year EPM > year-1 EPM) and, post-recalibration,
+    # treat a young ascending star on a max as a net-positive asset rather
+    # than a cap drag.
     player = _make_player("Young Star", age=24)
     contract = Contract(salary=46_000_000, years_remaining=4)
     mv = evaluate_player_multiyear(
@@ -230,11 +228,10 @@ def test_young_star_new_max_growth_visible() -> None:
         darko_df=_empty_darko(),
     )
     assert mv.year_by_year[-1].projected_epm > mv.year_by_year[0].projected_epm
-    # Per-year average surplus is less negative than single-season alone,
-    # showing the aging-lift + discount don't compound the salary deficit
-    # naively across 4 years.
-    avg_per_year = mv.total_contract_surplus / mv.years_remaining
-    assert avg_per_year > mv.current_season_surplus
+    # The aging lift raises raw projected production across the contract.
+    assert mv.year_by_year[-1].projected_value > mv.year_by_year[0].projected_value
+    # A young All-Star on a max is a positive-value commitment overall.
+    assert mv.total_contract_surplus > 0
 
 
 # ----- discount rate visibility -------------------------------------------

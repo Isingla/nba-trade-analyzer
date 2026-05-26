@@ -7,6 +7,7 @@ import pytest
 
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
+    EPM_REPLACEMENT_LEVEL,
     EPM_TO_WINS_FACTOR,
     MAX_WINS_ADDED,
     NET_RATING_TO_WINS_FACTOR,
@@ -360,7 +361,8 @@ def test_evaluate_with_epm_sets_metric_source_and_skips_team_adjustment():
     # adjusted_net_rating field now stores the raw EPM impact on this path.
     assert v.adjusted_net_rating == pytest.approx(7.4)
     minutes = 78 * 38
-    expected_raw = 7.4 * (minutes / 2952) * EPM_TO_WINS_FACTOR
+    # Wins are scored above replacement level (EPM 0.0 = league average).
+    expected_raw = (7.4 - EPM_REPLACEMENT_LEVEL) * (minutes / 2952) * EPM_TO_WINS_FACTOR
     assert v.wins_added == pytest.approx(
         MAX_WINS_ADDED * math.tanh(expected_raw / MAX_WINS_ADDED)
     )
@@ -402,11 +404,90 @@ def test_epm_path_applies_tanh_compression():
     assert 0 < v.wins_added < MAX_WINS_ADDED
 
 
-def test_calculate_wins_added_from_impact_no_replacement_subtraction():
-    # Zero-impact player gets zero wins added — no implicit floor.
-    assert calculate_wins_added_from_impact(0.0, minutes_played=2952) == pytest.approx(
-        0.0
+def test_calculate_wins_added_from_impact_uses_replacement_level():
+    # EPM 0.0 is league average, not replacement level. A full-season average
+    # player produces (0 - EPM_REPLACEMENT_LEVEL) above the minimum-salary body
+    # he'd be replaced by, so wins added are positive — not zero.
+    wins = calculate_wins_added_from_impact(0.0, minutes_played=2952)
+    expected_raw = (0.0 - EPM_REPLACEMENT_LEVEL) * 1.0 * EPM_TO_WINS_FACTOR
+    assert wins == pytest.approx(
+        MAX_WINS_ADDED * math.tanh(expected_raw / MAX_WINS_ADDED)
     )
+    assert wins > 0
+
+
+def test_replacement_level_player_has_zero_wins():
+    # A player exactly at replacement level produces no value above the
+    # minimum-salary alternative.
+    wins = calculate_wins_added_from_impact(EPM_REPLACEMENT_LEVEL, minutes_played=2952)
+    assert wins == pytest.approx(0.0)
+
+
+# ----- replacement-level calibration (Issue 1) ----------------------------
+
+
+def _full_season_epm_player(name: str = "Calib") -> Player:
+    # 82 GP × 36 MPG = 2952 minutes → minutes_fraction of exactly 1.0.
+    return Player(
+        name=name, team="TST", age=27, stats={"NET_RATING": 0.0, "GP": 82, "MPG": 36.0}
+    )
+
+
+def test_average_starter_on_market_salary_is_roughly_fair():
+    # A 0.0 EPM (league-average) starter on a $15M deal should grade out near
+    # break-even — the median-starter overpay bug is gone.
+    player = _full_season_epm_player()
+    contract = Contract(salary=15_000_000, years_remaining=1)
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_epm_with("Calib", 0.0),
+        darko_df=_empty_darko(),
+    )
+    assert abs(v.surplus_value) < 3_000_000
+
+
+def test_elite_player_on_max_still_large_positive_surplus():
+    player = _full_season_epm_player()
+    contract = Contract(salary=30_000_000, years_remaining=1)
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_epm_with("Calib", 5.0),
+        darko_df=_empty_darko(),
+    )
+    assert v.surplus_value > 20_000_000
+
+
+def test_below_replacement_player_on_market_salary_is_negative():
+    # -2.0 EPM is below replacement level → negative production value, so any
+    # real salary is an overpay.
+    player = _full_season_epm_player()
+    contract = Contract(salary=15_000_000, years_remaining=1)
+    v = evaluate_player(
+        player,
+        contract,
+        epm_df=_epm_with("Calib", -2.0),
+        darko_df=_empty_darko(),
+    )
+    assert v.surplus_value < 0
+
+
+def test_surplus_ordering_preserved_by_replacement_offset():
+    # The offset is a constant shift, so higher EPM must still mean higher
+    # surplus across the spectrum, all else equal.
+    contract = Contract(salary=15_000_000, years_remaining=1)
+    surpluses = [
+        evaluate_player(
+            _full_season_epm_player(),
+            contract,
+            epm_df=_epm_with("Calib", epm),
+            darko_df=_empty_darko(),
+        ).surplus_value
+        for epm in (-3.0, -1.0, 0.0, 2.0, 5.0)
+    ]
+    assert surpluses == sorted(surpluses)
+    assert len(set(surpluses)) == len(surpluses)  # strictly increasing
 
 
 # ----- DARKO path ---------------------------------------------------------
