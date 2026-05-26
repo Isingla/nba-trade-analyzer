@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team import CapStatus, Roster, RosterEntry, Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets, TradeResult
@@ -112,11 +113,13 @@ def test_roster_holds_players_with_contracts():
 
 def test_trade_construction_with_assets_each_side():
     lebron_entry = RosterEntry(player=_lebron(), contract=_max_contract())
+    lal_pick = DraftPick(team="LAL", year=2027, round=1)
+    den_pick = DraftPick(team="DEN", year=2028, round=1, protections="top-4 protected")
     trade = Trade(
         team_a=_lakers(),
         team_b=_nuggets(),
-        team_a_sends=TradeAssets(players=[lebron_entry], picks=["2027 LAL 1st"]),
-        team_b_sends=TradeAssets(picks=["2028 DEN 1st (top-4 prot)"]),
+        team_a_sends=TradeAssets(players=[lebron_entry], picks=[lal_pick]),
+        team_b_sends=TradeAssets(picks=[den_pick]),
     )
     assert trade.team_a.abbreviation == "LAL"
     assert trade.team_b.abbreviation == "DEN"
@@ -125,7 +128,8 @@ def test_trade_construction_with_assets_each_side():
     assert trade.team_a_sends.total_salary == 52_627_153
     assert trade.team_b_sends.players == []
     assert trade.team_b_sends.total_salary == 0
-    assert trade.team_b_sends.picks == ["2028 DEN 1st (top-4 prot)"]
+    assert trade.team_b_sends.picks == [den_pick]
+    assert trade.team_b_sends.picks[0].label == "2028 DEN 1st (top-4 protected)"
 
 
 def test_trade_result_legal_and_illegal():

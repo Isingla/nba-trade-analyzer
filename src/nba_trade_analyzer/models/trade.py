@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.team import RosterEntry, Team
 
 
@@ -14,9 +15,10 @@ class TradeAssets(BaseModel):
         default_factory=list,
         description="Players being sent, each paired with their contract.",
     )
-    picks: list[str] = Field(
+    picks: list[DraftPick] = Field(
         default_factory=list,
-        description="Draft pick identifiers, e.g. '2027 LAL 1st (top-4 protected)'.",
+        description="Draft picks being sent, e.g. DraftPick(team='LAL', year=2027, "
+        "round=1, protections='top-4 protected').",
     )
 
     @property

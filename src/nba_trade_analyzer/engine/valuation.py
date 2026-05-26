@@ -26,11 +26,13 @@ import pandas as pd
 
 from nba_trade_analyzer.data.darko import fetch_darko_data, get_player_darko
 from nba_trade_analyzer.data.epm import fetch_epm_data, get_player_epm
+from nba_trade_analyzer.data.players import get_team_projected_wins
 from nba_trade_analyzer.engine.aging_curve import get_aging_factor
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
     EPM_TO_WINS_FACTOR,
     FULL_SEASON_MINUTES,
+    LEAGUE_MEAN_WINS,
     MAX_PROJECTION_YEARS,
     MAX_WINS_ADDED,
     NET_RATING_TO_WINS_FACTOR,
@@ -40,7 +42,9 @@ from nba_trade_analyzer.engine.constants import (
     REPLACEMENT_LEVEL_NET_RATING,
     TEAM_ADJUSTMENT_WEIGHT,
 )
+from nba_trade_analyzer.engine.draft_picks import evaluate_draft_pick
 from nba_trade_analyzer.engine.team_context import evaluate_player_in_team_context
+from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team_context import TeamContextValuation
 from nba_trade_analyzer.models.trade import TradeAssets
@@ -360,14 +364,31 @@ def evaluate_player_multiyear(
     )
 
 
+def _draft_pick_team_wins(
+    pick: DraftPick, player_stats_df: pd.DataFrame | None
+) -> float:
+    """Projected wins of the team whose record sets ``pick``'s position.
+
+    Falls back to the league mean when no stats are supplied, or when the
+    originating team isn't found in the data (``get_team_projected_wins``
+    returns 0.0 in that case, which would otherwise read as a 0-win team and
+    wrongly value the pick as a number-one slot).
+    """
+    if player_stats_df is None:
+        return LEAGUE_MEAN_WINS
+    wins = get_team_projected_wins(player_stats_df, pick.team)
+    return wins if wins > 0 else LEAGUE_MEAN_WINS
+
+
 def evaluate_trade_assets(
     trade_assets: TradeAssets,
     team_net_rating: float = 0.0,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
     team_context: TeamContext | None = None,
+    player_stats_df: pd.DataFrame | None = None,
 ) -> float:
-    """Sum total-contract surplus across the player package.
+    """Sum total-contract surplus across the player package, plus draft picks.
 
     Multi-year by default: each player's full contract is projected
     via ``evaluate_player_multiyear`` and the discounted surplus across
@@ -381,7 +402,10 @@ def evaluate_trade_assets(
     team-context computation for every projected year while still
     letting team fit shape the immediate trade impact.
 
-    Draft picks are scored separately.
+    Draft picks are valued team-aware via ``evaluate_draft_pick``: each pick's
+    position is estimated from its originating team's projected wins, read from
+    ``player_stats_df`` (or ``team_context.player_stats_df`` when omitted).
+    Without any stats, picks fall back to a league-average team.
     """
     total = 0.0
     for entry in trade_assets.players:
@@ -418,6 +442,13 @@ def evaluate_trade_assets(
         total += adjusted.team_surplus + (
             multi.total_contract_surplus - multi.current_season_surplus
         )
+
+    pick_stats_df = player_stats_df
+    if pick_stats_df is None and team_context is not None:
+        pick_stats_df = team_context.player_stats_df
+    for pick in trade_assets.picks:
+        total += evaluate_draft_pick(pick, _draft_pick_team_wins(pick, pick_stats_df))
+
     return total
 
 

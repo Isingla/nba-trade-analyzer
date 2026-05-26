@@ -23,16 +23,18 @@ from nba_trade_analyzer.engine.constants import (
     FIRST_APRON,
     LEAGUE_AVG_3PT_PCT,
     LEAGUE_AVG_3PT_RATE,
+    LEAGUE_MEAN_WINS,
     SALARY_CAP,
     SECOND_APRON,
 )
-from nba_trade_analyzer.engine.draft_picks import calculate_pick_value_with_protections
+from nba_trade_analyzer.engine.draft_picks import evaluate_draft_pick
 from nba_trade_analyzer.engine.salary_rules import check_trade_legality
 from nba_trade_analyzer.engine.team_context import (
     _effective_win_curve,
     evaluate_player_in_team_context,
 )
 from nba_trade_analyzer.engine.valuation import evaluate_player
+from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team import CapStatus, RosterEntry, Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
@@ -107,17 +109,6 @@ TEAM_PROJECTED_WINS: dict[str, float] = {
     "OKC": 60.0,
 }
 
-# Estimated landing pick numbers for the picks referenced in the trades. Pick
-# numbers track team strength loosely (worse team → higher pick). Protections
-# are encoded as the top-N "doesn't convey" cutoff used by the pick-value
-# helper. TODO: integrate with a real pick-projection source.
-PICK_ESTIMATES: dict[str, tuple[int, int | None]] = {
-    "2027 LAL 1st (top-10 protected)": (17, 10),
-    "2026 GSW 1st (unprotected)": (17, None),
-    "2028 GSW 1st (top-5 protected)": (18, 5),
-    "2027 OKC 2nd": (58, None),
-}
-
 # Fallback when a player has no GP/MPG row in nba_api (early season, injured,
 # new acquisition). Picks a reasonable "regular starter" load so wins_added
 # isn't pinned to zero.
@@ -137,8 +128,8 @@ class TradeScenario:
     team_b_abbr: str
     team_a_players: tuple[str, ...]
     team_b_players: tuple[str, ...]
-    team_a_picks: tuple[str, ...] = ()
-    team_b_picks: tuple[str, ...] = ()
+    team_a_picks: tuple[DraftPick, ...] = ()
+    team_b_picks: tuple[DraftPick, ...] = ()
     context_summary: str = ""
 
 
@@ -161,7 +152,9 @@ SCENARIOS: list[TradeScenario] = [
         team_b_abbr="LAL",
         team_a_players=("Kyle Kuzma",),
         team_b_players=("Rui Hachimura",),
-        team_b_picks=("2027 LAL 1st (top-10 protected)",),
+        team_b_picks=(
+            DraftPick(team="LAL", year=2027, round=1, protections="top-10 protected"),
+        ),
         context_summary=(
             "Wizards ~20 wins (tanking), Lakers ~48 (contending). Tests win "
             "curve asymmetry and timeline: Kuzma (30) into older LAL core, "
@@ -175,8 +168,8 @@ SCENARIOS: list[TradeScenario] = [
         team_a_players=("Jimmy Butler",),
         team_b_players=("Andrew Wiggins", "Kevon Looney"),
         team_b_picks=(
-            "2026 GSW 1st (unprotected)",
-            "2028 GSW 1st (top-5 protected)",
+            DraftPick(team="GSW", year=2026, round=1),
+            DraftPick(team="GSW", year=2028, round=1, protections="top-5 protected"),
         ),
         context_summary=(
             "Heat ~46 wins, Warriors ~47. Tests large salary mismatch, draft "
@@ -189,7 +182,7 @@ SCENARIOS: list[TradeScenario] = [
         team_b_abbr="OKC",
         team_a_players=("Mark Williams", "Gordon Hayward"),
         team_b_players=("Kenrich Williams",),
-        team_b_picks=("2027 OKC 2nd",),
+        team_b_picks=(DraftPick(team="OKC", year=2027, round=2),),
         context_summary=(
             "Hornets ~25 wins, Thunder ~60. Tests salary-dump mechanics, "
             "positional fit (OKC center need), win-curve extremes."
@@ -330,9 +323,9 @@ def _augment_with_epm_position(
     return stats_df
 
 
-def _pick_value(pick_label: str) -> float:
-    pick_number, protection_top = PICK_ESTIMATES[pick_label]
-    return calculate_pick_value_with_protections(pick_number, protection_top)
+def _pick_value(pick: DraftPick) -> float:
+    team_wins = TEAM_PROJECTED_WINS.get(pick.team, LEAGUE_MEAN_WINS)
+    return evaluate_draft_pick(pick, team_wins)
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +336,8 @@ def _pick_value(pick_label: str) -> float:
 def _evaluate_side(
     incoming_entries: list[RosterEntry],
     outgoing_entries: list[RosterEntry],
-    incoming_picks: tuple[str, ...],
-    outgoing_picks: tuple[str, ...],
+    incoming_picks: tuple[DraftPick, ...],
+    outgoing_picks: tuple[DraftPick, ...],
     acquiring_team_abbr: str,
     epm_df: pd.DataFrame,
     stats_df: pd.DataFrame,
@@ -657,7 +650,7 @@ def _build_verdict(
     if incoming_picks:
         pick_value_m = winner_side["incoming_pick_value"] / 1_000_000
         in_segment += (
-            f", plus {' + '.join(incoming_picks)} "
+            f", plus {' + '.join(p.label for p in incoming_picks)} "
             f"(~${pick_value_m:.1f}M expected pick surplus)"
         )
 
