@@ -70,6 +70,7 @@ def _force_utf8_stdout() -> None:
             sys.stdout.buffer, encoding="utf-8", line_buffering=True
         )
 
+
 # ============================================================================
 # Hardcoded 2025-26 figures (TODO: replace with real data sources)
 # ============================================================================
@@ -195,9 +196,7 @@ class TestRunner:
         if abs(actual - expected) <= tol:
             self.passed(name)
         else:
-            self.failed(
-                name, f"expected {expected:.6f} +/- {tol}, got {actual:.6f}"
-            )
+            self.failed(name, f"expected {expected:.6f} +/- {tol}, got {actual:.6f}")
 
     def assert_legal(self, name: str, trade: Trade, expected_legal: bool) -> None:
         result = check_trade_legality(trade)
@@ -388,16 +387,12 @@ def test_salary_matching(runner: TestRunner) -> None:
     # outgoing $7,249,999 -> limit = 2*7,249,999 + 250,000 = 14,749,998.
     runner.assert_legal(
         "1b exactly at 200%+$250K threshold ($14,749,998 vs limit $14,749,998)",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [7_249_999], [14_749_998]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [7_249_999], [14_749_998]),
         True,
     )
     runner.assert_legal(
         "1b one dollar over 200%+$250K threshold ($14,749,999)",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [7_249_999], [14_749_999]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [7_249_999], [14_749_999]),
         False,
     )
 
@@ -405,25 +400,19 @@ def test_salary_matching(runner: TestRunner) -> None:
     # outgoing $7,250,000 -> middle-band limit = 7.25M + 8.527M = 15.777M.
     runner.assert_legal(
         "1c $7.25M boundary: outgoing $7.25M, incoming $15.777M (middle band)",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [7_250_000], [15_777_000]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [7_250_000], [15_777_000]),
         True,
     )
     runner.assert_legal(
         "1c $7.25M boundary: outgoing $7.25M, incoming $15,777,001 illegal",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [7_250_000], [15_777_001]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [7_250_000], [15_777_001]),
         False,
     )
     # Sanity: at outgoing $7.25M, incoming $14.75M should still be legal
     # (15.777M >> 14.75M).
     runner.assert_legal(
         "1c boundary jump: bumping outgoing to $7.25M re-legalizes incoming $14.75M",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [7_250_000], [14_750_000]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [7_250_000], [14_750_000]),
         True,
     )
 
@@ -432,23 +421,17 @@ def test_salary_matching(runner: TestRunner) -> None:
     # outgoing $29,000,001 -> high-band limit = (5 * 29,000,001) // 4 = 36,250,001.
     runner.assert_legal(
         "1c $29M boundary middle: outgoing $29M, incoming $37.527M legal",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [29_000_000], [37_527_000]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [29_000_000], [37_527_000]),
         True,
     )
     runner.assert_legal(
         "1c $29M+$1 boundary: outgoing $29,000,001, incoming $36,250,001 legal",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [29_000_001], [36_250_001]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [29_000_001], [36_250_001]),
         True,
     )
     runner.assert_legal(
         "1c $29M+$1 boundary: outgoing $29,000,001, incoming $36,250,002 illegal",
-        make_trade(
-            "CHI", 170_000_000, "ATL", 170_000_000, [29_000_001], [36_250_002]
-        ),
+        make_trade("CHI", 170_000_000, "ATL", 170_000_000, [29_000_001], [36_250_002]),
         False,
     )
 
@@ -456,16 +439,12 @@ def test_salary_matching(runner: TestRunner) -> None:
     fa_payroll = 200_000_000
     runner.assert_legal(
         "1d first apron: outgoing $20M, incoming $20M (exact match) legal",
-        make_trade(
-            "NYK", fa_payroll, "ATL", 170_000_000, [20_000_000], [20_000_000]
-        ),
+        make_trade("NYK", fa_payroll, "ATL", 170_000_000, [20_000_000], [20_000_000]),
         True,
     )
     runner.assert_legal(
         "1d first apron: outgoing $20M, incoming $20,000,001 illegal (no cushion)",
-        make_trade(
-            "NYK", fa_payroll, "ATL", 170_000_000, [20_000_000], [20_000_001]
-        ),
+        make_trade("NYK", fa_payroll, "ATL", 170_000_000, [20_000_000], [20_000_001]),
         False,
     )
 
@@ -485,16 +464,12 @@ def test_salary_matching(runner: TestRunner) -> None:
     )
     runner.assert_legal(
         "1e second apron: one-for-one exact $18M match legal (no aggregation)",
-        make_trade(
-            "PHX", sa_payroll, "ATL", 170_000_000, [18_000_000], [18_000_000]
-        ),
+        make_trade("PHX", sa_payroll, "ATL", 170_000_000, [18_000_000], [18_000_000]),
         True,
     )
     runner.assert_legal(
         "1e second apron: one-for-one $18M sending, $18M+1 incoming illegal",
-        make_trade(
-            "PHX", sa_payroll, "ATL", 170_000_000, [18_000_000], [18_000_001]
-        ),
+        make_trade("PHX", sa_payroll, "ATL", 170_000_000, [18_000_000], [18_000_001]),
         False,
     )
 
@@ -539,7 +514,11 @@ def test_valuation_paths(
         runner.failed("2a Jokic should be in EPM data", "lookup returned None")
     else:
         stats_row = stats_lookup.get(normalize_name(name))
-        gp = int(stats_row.get("GP", DEFAULT_GP)) if stats_row is not None else DEFAULT_GP
+        gp = (
+            int(stats_row.get("GP", DEFAULT_GP))
+            if stats_row is not None
+            else DEFAULT_GP
+        )
         mpg = (
             float(stats_row.get("MPG", DEFAULT_MPG))
             if stats_row is not None
@@ -611,7 +590,9 @@ def test_valuation_paths(
         epm_df=pd.DataFrame(),
         darko_df=pd.DataFrame(),
     )
-    runner.assert_eq("2c unknown player falls through to 'net_rating'", v.metric_source, "net_rating")
+    runner.assert_eq(
+        "2c unknown player falls through to 'net_rating'", v.metric_source, "net_rating"
+    )
 
     # (d) EPM precedence — when both EPM and DARKO have a row, EPM wins.
     # Build a synthetic player present in both, with very different impact
@@ -643,7 +624,9 @@ def test_valuation_paths(
         epm_df=syn_epm,
         darko_df=syn_darko,
     )
-    runner.assert_eq("2d EPM takes precedence over DARKO when both present", v.metric_source, "epm")
+    runner.assert_eq(
+        "2d EPM takes precedence over DARKO when both present", v.metric_source, "epm"
+    )
     runner.assert_true(
         "2d EPM-source wins_added is positive (EPM was +4.0)",
         v.wins_added > 0,
@@ -823,12 +806,33 @@ def test_timeline_scenarios(runner: TestRunner) -> None:
 
 def _three_position_roster(g_mpg: float, f_mpg: float, c_mpg: float) -> list[dict]:
     return [
-        {"player_name": "G1", "MPG": g_mpg, "GP": 70, "age": 25, "position": "G",
-         "FG3_RATE": 0.35, "FG3_PCT": 0.36},
-        {"player_name": "F1", "MPG": f_mpg, "GP": 70, "age": 25, "position": "F",
-         "FG3_RATE": 0.35, "FG3_PCT": 0.36},
-        {"player_name": "C1", "MPG": c_mpg, "GP": 70, "age": 25, "position": "C",
-         "FG3_RATE": 0.05, "FG3_PCT": 0.20},
+        {
+            "player_name": "G1",
+            "MPG": g_mpg,
+            "GP": 70,
+            "age": 25,
+            "position": "G",
+            "FG3_RATE": 0.35,
+            "FG3_PCT": 0.36,
+        },
+        {
+            "player_name": "F1",
+            "MPG": f_mpg,
+            "GP": 70,
+            "age": 25,
+            "position": "F",
+            "FG3_RATE": 0.35,
+            "FG3_PCT": 0.36,
+        },
+        {
+            "player_name": "C1",
+            "MPG": c_mpg,
+            "GP": 70,
+            "age": 25,
+            "position": "C",
+            "FG3_RATE": 0.05,
+            "FG3_PCT": 0.20,
+        },
     ]
 
 
@@ -871,14 +875,42 @@ def test_positional_scenarios(runner: TestRunner) -> None:
     # verify the incoming center now scores as "need" instead of "logjam".
     # Build a heavier roster with two centers totaling 50 MPG at C.
     roster = [
-        {"player_name": "G1", "MPG": 60, "GP": 70, "age": 25, "position": "G",
-         "FG3_RATE": 0.35, "FG3_PCT": 0.36},
-        {"player_name": "F1", "MPG": 60, "GP": 70, "age": 25, "position": "F",
-         "FG3_RATE": 0.35, "FG3_PCT": 0.36},
-        {"player_name": "C_Star", "MPG": 36, "GP": 70, "age": 25, "position": "C",
-         "FG3_RATE": 0.05, "FG3_PCT": 0.20},
-        {"player_name": "C_Backup", "MPG": 14, "GP": 60, "age": 24, "position": "C",
-         "FG3_RATE": 0.05, "FG3_PCT": 0.20},
+        {
+            "player_name": "G1",
+            "MPG": 60,
+            "GP": 70,
+            "age": 25,
+            "position": "G",
+            "FG3_RATE": 0.35,
+            "FG3_PCT": 0.36,
+        },
+        {
+            "player_name": "F1",
+            "MPG": 60,
+            "GP": 70,
+            "age": 25,
+            "position": "F",
+            "FG3_RATE": 0.35,
+            "FG3_PCT": 0.36,
+        },
+        {
+            "player_name": "C_Star",
+            "MPG": 36,
+            "GP": 70,
+            "age": 25,
+            "position": "C",
+            "FG3_RATE": 0.05,
+            "FG3_PCT": 0.20,
+        },
+        {
+            "player_name": "C_Backup",
+            "MPG": 14,
+            "GP": 60,
+            "age": 24,
+            "position": "C",
+            "FG3_RATE": 0.05,
+            "FG3_PCT": 0.20,
+        },
     ]
     fake_incoming = Player(
         name="Incoming_C",
@@ -1051,7 +1083,9 @@ def _evaluate_combined(
             "FG3_PCT": team_3pt_pct,
         },
     ]
-    epm_df = _make_synthetic_epm_df(player.name, epm=epm_value, position=position, age=player.age)
+    epm_df = _make_synthetic_epm_df(
+        player.name, epm=epm_value, position=position, age=player.age
+    )
     player_stats_df = pd.DataFrame(
         [
             {
@@ -1091,9 +1125,7 @@ def _evaluate_combined(
         f"    wins_added={base.wins_added:+5.2f}  base_value={_money(base.player_value)}  "
         f"base_surplus={_money(base.surplus_value)}"
     )
-    effective = _effective_win_curve(
-        adjusted.win_curve_multiplier, base.wins_added
-    )
+    effective = _effective_win_curve(adjusted.win_curve_multiplier, base.wins_added)
     print(
         f"    team_curve x{adjusted.win_curve_multiplier:.2f}  "
         f"effective_curve x{effective:.2f}  "
@@ -1128,30 +1160,66 @@ def test_combined_scenarios(runner: TestRunner) -> None:
     # (a) Young star -> rebuilder
     _evaluate_combined(
         "7a young star (23, +4 EPM) -> 20-win rebuilder (22-avg core)",
-        runner, star_young, epm_value=4.0, position="G", contract_salary=30_000_000,
-        acquiring_wins=20.0, core_age=22, g_mpg=30, f_mpg=60, c_mpg=40,
-        team_3pt_rate=LEAGUE_AVG_3PT_RATE, team_3pt_pct=LEAGUE_AVG_3PT_PCT,
+        runner,
+        star_young,
+        epm_value=4.0,
+        position="G",
+        contract_salary=30_000_000,
+        acquiring_wins=20.0,
+        core_age=22,
+        g_mpg=30,
+        f_mpg=60,
+        c_mpg=40,
+        team_3pt_rate=LEAGUE_AVG_3PT_RATE,
+        team_3pt_pct=LEAGUE_AVG_3PT_PCT,
     )
     # (b) Young star -> contender (good timeline AND win curve)
     _evaluate_combined(
         "7b young star (23, +4 EPM) -> 50-win contender (26-avg core)",
-        runner, star_young, epm_value=4.0, position="G", contract_salary=30_000_000,
-        acquiring_wins=50.0, core_age=26, g_mpg=30, f_mpg=60, c_mpg=40,
-        team_3pt_rate=LEAGUE_AVG_3PT_RATE, team_3pt_pct=LEAGUE_AVG_3PT_PCT,
+        runner,
+        star_young,
+        epm_value=4.0,
+        position="G",
+        contract_salary=30_000_000,
+        acquiring_wins=50.0,
+        core_age=26,
+        g_mpg=30,
+        f_mpg=60,
+        c_mpg=40,
+        team_3pt_rate=LEAGUE_AVG_3PT_RATE,
+        team_3pt_pct=LEAGUE_AVG_3PT_PCT,
     )
     # (c) Aging vet -> contender (bad timeline, good win curve)
     _evaluate_combined(
         "7c aging vet (35, +3 EPM) -> 50-win contender (28-avg core)",
-        runner, vet_aging, epm_value=3.0, position="F", contract_salary=35_000_000,
-        acquiring_wins=50.0, core_age=28, g_mpg=60, f_mpg=30, c_mpg=40,
-        team_3pt_rate=LEAGUE_AVG_3PT_RATE, team_3pt_pct=LEAGUE_AVG_3PT_PCT,
+        runner,
+        vet_aging,
+        epm_value=3.0,
+        position="F",
+        contract_salary=35_000_000,
+        acquiring_wins=50.0,
+        core_age=28,
+        g_mpg=60,
+        f_mpg=30,
+        c_mpg=40,
+        team_3pt_rate=LEAGUE_AVG_3PT_RATE,
+        team_3pt_pct=LEAGUE_AVG_3PT_PCT,
     )
     # (d) Aging vet -> rebuilder (bad timeline AND bad win curve)
     _evaluate_combined(
         "7d aging vet (35, +3 EPM) -> 20-win rebuilder (23-avg core)",
-        runner, vet_aging, epm_value=3.0, position="F", contract_salary=35_000_000,
-        acquiring_wins=20.0, core_age=23, g_mpg=60, f_mpg=30, c_mpg=40,
-        team_3pt_rate=LEAGUE_AVG_3PT_RATE, team_3pt_pct=LEAGUE_AVG_3PT_PCT,
+        runner,
+        vet_aging,
+        epm_value=3.0,
+        position="F",
+        contract_salary=35_000_000,
+        acquiring_wins=20.0,
+        core_age=23,
+        g_mpg=60,
+        f_mpg=30,
+        c_mpg=40,
+        team_3pt_rate=LEAGUE_AVG_3PT_RATE,
+        team_3pt_pct=LEAGUE_AVG_3PT_PCT,
     )
 
     # (e) Non-shooter to spacing-poor contender
@@ -1163,10 +1231,20 @@ def test_combined_scenarios(runner: TestRunner) -> None:
     )
     _evaluate_combined(
         "7e non-shooter (28, +2 EPM, C) -> 52-win spacing-poor contender",
-        runner, non_shooter, epm_value=2.0, position="C", contract_salary=20_000_000,
-        acquiring_wins=52.0, core_age=27, g_mpg=60, f_mpg=60, c_mpg=10,
-        team_3pt_rate=0.28, team_3pt_pct=0.33,
-        player_3pt_rate=0.05, player_3pt_pct=0.20,
+        runner,
+        non_shooter,
+        epm_value=2.0,
+        position="C",
+        contract_salary=20_000_000,
+        acquiring_wins=52.0,
+        core_age=27,
+        g_mpg=60,
+        f_mpg=60,
+        c_mpg=10,
+        team_3pt_rate=0.28,
+        team_3pt_pct=0.33,
+        player_3pt_rate=0.05,
+        player_3pt_pct=0.20,
     )
     # (f) Elite shooter to spacing-poor contender
     elite_shooter = Player(
@@ -1177,10 +1255,20 @@ def test_combined_scenarios(runner: TestRunner) -> None:
     )
     _evaluate_combined(
         "7f elite shooter (27, +3 EPM, G) -> 52-win spacing-poor contender",
-        runner, elite_shooter, epm_value=3.0, position="G", contract_salary=25_000_000,
-        acquiring_wins=52.0, core_age=27, g_mpg=20, f_mpg=60, c_mpg=40,
-        team_3pt_rate=0.28, team_3pt_pct=0.33,
-        player_3pt_rate=0.55, player_3pt_pct=0.41,
+        runner,
+        elite_shooter,
+        epm_value=3.0,
+        position="G",
+        contract_salary=25_000_000,
+        acquiring_wins=52.0,
+        core_age=27,
+        g_mpg=20,
+        f_mpg=60,
+        c_mpg=40,
+        team_3pt_rate=0.28,
+        team_3pt_pct=0.33,
+        player_3pt_rate=0.55,
+        player_3pt_pct=0.41,
     )
 
 
@@ -1321,12 +1409,12 @@ def _evaluate_blockbuster_side(
     outgoing = [_eval(e) for e in outgoing_entries]
     incoming_pick_value = sum(_pick_value(p) for p in incoming_picks)
     outgoing_pick_value = sum(_pick_value(p) for p in outgoing_picks)
-    net_adjusted = (
-        sum(d["team_surplus"] for d in incoming) + incoming_pick_value
-    ) - (sum(d["team_surplus"] for d in outgoing) + outgoing_pick_value)
-    net_base = (
-        sum(d["base_surplus"] for d in incoming) + incoming_pick_value
-    ) - (sum(d["base_surplus"] for d in outgoing) + outgoing_pick_value)
+    net_adjusted = (sum(d["team_surplus"] for d in incoming) + incoming_pick_value) - (
+        sum(d["team_surplus"] for d in outgoing) + outgoing_pick_value
+    )
+    net_base = (sum(d["base_surplus"] for d in incoming) + incoming_pick_value) - (
+        sum(d["base_surplus"] for d in outgoing) + outgoing_pick_value
+    )
     return {
         "incoming": incoming,
         "outgoing": outgoing,
@@ -1337,9 +1425,7 @@ def _evaluate_blockbuster_side(
     }
 
 
-def _prose_for_blockbuster(
-    scenario: Blockbuster, side_a: dict, side_b: dict
-) -> str:
+def _prose_for_blockbuster(scenario: Blockbuster, side_a: dict, side_b: dict) -> str:
     delta = side_a["net_adjusted"] - side_b["net_adjusted"]
     if abs(delta) < 1_000_000:
         return f"{scenario.team_a_abbr} and {scenario.team_b_abbr} are within $1M -- a wash."
@@ -1364,9 +1450,7 @@ def _prose_for_blockbuster(
             f"timeline {headline_in_loser['timeline']:+.2f}, "
             f"positional {headline_in_loser['positional']:+.2f})."
         )
-    return (
-        f"{winner} wins by ${abs(delta) / 1_000_000:.1f}M adjusted surplus.{extra}"
-    )
+    return f"{winner} wins by ${abs(delta) / 1_000_000:.1f}M adjusted surplus.{extra}"
 
 
 def test_blockbusters(
@@ -1412,17 +1496,15 @@ def test_blockbusters(
         trade = Trade(
             team_a=team_a,
             team_b=team_b,
-            team_a_sends=TradeAssets(
-                players=a_entries, picks=list(scenario.a_picks)
-            ),
-            team_b_sends=TradeAssets(
-                players=b_entries, picks=list(scenario.b_picks)
-            ),
+            team_a_sends=TradeAssets(players=a_entries, picks=list(scenario.a_picks)),
+            team_b_sends=TradeAssets(players=b_entries, picks=list(scenario.b_picks)),
         )
 
         # Salary legality
         legality = check_trade_legality(trade)
-        legality_str = "LEGAL" if legality.legal else f"ILLEGAL: {legality.error_reason}"
+        legality_str = (
+            "LEGAL" if legality.legal else f"ILLEGAL: {legality.error_reason}"
+        )
         print(f"    salary matching: {legality_str}")
 
         # Per-side evaluation

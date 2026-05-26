@@ -23,7 +23,10 @@ from nba_trade_analyzer.engine.constants import (
     FULL_SEASON_MINUTES,
     MAX_WINS_ADDED,
 )
-from nba_trade_analyzer.engine.valuation import evaluate_player
+from nba_trade_analyzer.engine.valuation import (
+    evaluate_player,
+    evaluate_player_multiyear,
+)
 from nba_trade_analyzer.models.player import Contract, Player
 
 # ---------------------------------------------------------------------------
@@ -81,14 +84,15 @@ SALARIES_2025_26: dict[str, int] = {
 
 # Validation targets called out in the phase 1.5 task. Salaries match the
 # numbers in the task description verbatim — do not adjust without updating
-# the task spec too.
-VALIDATION_TARGETS: list[tuple[str, int, str]] = [
-    ("Nikola Jokic", 55_200_000, "should be positive surplus"),
-    ("LeBron James", 52_600_000, "should be less extreme than -$28.4M"),
-    ("Cade Cunningham", 46_400_000, "should be positive surplus"),
-    ("Jalen Brunson", 34_900_000, "should be ~+$10M+ surplus"),
-    ("Herb Jones", 4_500_000, "should show meaningful positive value"),
-    ("Derrick White", 18_000_000, "should show positive value"),
+# the task spec too. ``years_remaining`` was added in Phase 5.5 so we can
+# print multi-year contract surplus next to the single-season number.
+VALIDATION_TARGETS: list[tuple[str, int, int, str]] = [
+    ("Nikola Jokic", 55_200_000, 3, "should be positive surplus"),
+    ("LeBron James", 52_600_000, 1, "should be less extreme than -$28.4M"),
+    ("Cade Cunningham", 46_400_000, 4, "single-year negative, multi-year positive"),
+    ("Jalen Brunson", 34_900_000, 3, "should be ~+$10M+ surplus"),
+    ("Herb Jones", 4_500_000, 3, "should show meaningful positive value"),
+    ("Derrick White", 18_000_000, 3, "should show positive value"),
 ]
 
 PLACEHOLDER_SALARY = 5_000_000  # used for any top-30 player missing from the dict
@@ -240,20 +244,19 @@ def main() -> None:
     print("=" * 130)
     v_headers = [
         "player_name",
+        "age",
         "EPM",
-        "GP",
-        "MPG",
-        "tanh_wins",
-        "player_value",
+        "yrs",
+        "1yr_surplus",
+        "total_surplus",
         "salary",
-        "surplus_value",
         "expected",
     ]
-    v_widths = [22, 6, 4, 5, 9, 12, 11, 13, 40]
+    v_widths = [22, 4, 6, 4, 13, 14, 11, 45]
     print(_format_row(v_headers, v_widths))
-    print("-" * 130)
+    print("-" * 140)
 
-    for name, salary, note in VALIDATION_TARGETS:
+    for name, salary, years_remaining, note in VALIDATION_TARGETS:
         epm_row = get_player_epm(epm_df, name)
         if epm_row is None:
             print(f"{name}: NOT FOUND in EPM data")
@@ -270,9 +273,16 @@ def main() -> None:
         player = _build_player(
             name, epm_row["team"], age, stats_row if stats_row is not None else {}
         )
-        valuation = evaluate_player(
+        contract = Contract(salary=salary, years_remaining=years_remaining)
+        single = evaluate_player(
             player,
-            Contract(salary=salary, years_remaining=1),
+            contract,
+            epm_df=epm_df,
+            darko_df=None,
+        )
+        multi = evaluate_player_multiyear(
+            player,
+            contract,
             epm_df=epm_df,
             darko_df=None,
         )
@@ -281,13 +291,12 @@ def main() -> None:
             _format_row(
                 [
                     name,
+                    age,
                     f"{float(epm_row['epm']):+.2f}",
-                    gp,
-                    f"{mpg:.1f}",
-                    f"{valuation.wins_added:+.2f}",
-                    _money(valuation.player_value),
+                    years_remaining,
+                    _money(single.surplus_value),
+                    _money(multi.total_contract_surplus),
                     _money(salary),
-                    _money(valuation.surplus_value),
                     note,
                 ],
                 v_widths,

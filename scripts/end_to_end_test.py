@@ -47,6 +47,7 @@ def _force_utf8_stdout() -> None:
             sys.stdout.buffer, encoding="utf-8", line_buffering=True
         )
 
+
 # ---------------------------------------------------------------------------
 # HARDCODED 2025-26 SALARIES — TODO: replace once data/salaries.py exists.
 # Approximate figures sourced from public salary trackers (Spotrac / HoopsHype).
@@ -492,9 +493,7 @@ def _archetype(epm_off: float, epm_def: float) -> str:
     return "fringe rotation player"
 
 
-def _shooting_profile(
-    rate: float, pct: float, fg3a: float, data_present: bool
-) -> str:
+def _shooting_profile(rate: float, pct: float, fg3a: float, data_present: bool) -> str:
     """One-phrase shooting/spacing profile.
 
     When ``data_present`` is False the inputs are league-average fallbacks
@@ -650,9 +649,7 @@ def _build_verdict(
             f"(~${pick_value_m:.1f}M expected pick surplus)"
         )
 
-    sentences.append(
-        f"{winner_label} land {in_segment}, and ship out {out_phrase}."
-    )
+    sentences.append(f"{winner_label} land {in_segment}, and ship out {out_phrase}.")
 
     # Sentence 3: why team context tilts it. Anchor on the loser's headline
     # incoming player — that's the piece they're "paying for" through the curve.
@@ -673,8 +670,7 @@ def _build_verdict(
             tl = loser_headline_in["timeline"]
             if tl <= -0.04:
                 tl_clause = (
-                    f", and the timeline misalignment "
-                    f"({tl:+.2f}) compounds the issue"
+                    f", and the timeline misalignment ({tl:+.2f}) compounds the issue"
                 )
             elif tl >= 0.04:
                 tl_clause = (
@@ -763,13 +759,9 @@ def _print_trade_report(
     print("[1] SALARY MATCHING")
     out_a = trade.team_a_sends.total_salary
     out_b = trade.team_b_sends.total_salary
-    print(
-        f"    {a_abbr} payroll ${a_payroll:,} -> rule: {_matching_rule(a_payroll)}"
-    )
+    print(f"    {a_abbr} payroll ${a_payroll:,} -> rule: {_matching_rule(a_payroll)}")
     print(f"        sending ${out_a:,}, receiving ${out_b:,}")
-    print(
-        f"    {b_abbr} payroll ${b_payroll:,} -> rule: {_matching_rule(b_payroll)}"
-    )
+    print(f"    {b_abbr} payroll ${b_payroll:,} -> rule: {_matching_rule(b_payroll)}")
     print(f"        sending ${out_b:,}, receiving ${out_a:,}")
     if legality.legal:
         print("    Result: LEGAL")
@@ -795,7 +787,9 @@ def _print_trade_report(
 
     # --- (3) Team-context breakdown per player ----------------------------
     print("[3] TEAM CONTEXT BREAKDOWN")
-    print(f"    {a_abbr} acquiring (projected wins = {TEAM_PROJECTED_WINS[a_abbr]:.0f})")
+    print(
+        f"    {a_abbr} acquiring (projected wins = {TEAM_PROJECTED_WINS[a_abbr]:.0f})"
+    )
     if side_a["incoming_player_details"]:
         print(f"      Incoming to {a_abbr}:")
         for d in side_a["incoming_player_details"]:
@@ -804,7 +798,9 @@ def _print_trade_report(
         print(f"      Outgoing from {a_abbr} (loss valued in {a_abbr} context):")
         for d in side_a["outgoing_player_details"]:
             _print_player_detail(d, indent="        ")
-    print(f"    {b_abbr} acquiring (projected wins = {TEAM_PROJECTED_WINS[b_abbr]:.0f})")
+    print(
+        f"    {b_abbr} acquiring (projected wins = {TEAM_PROJECTED_WINS[b_abbr]:.0f})"
+    )
     if side_b["incoming_player_details"]:
         print(f"      Incoming to {b_abbr}:")
         for d in side_b["incoming_player_details"]:
@@ -856,7 +852,9 @@ def main() -> None:
     print(f"  {len(stats_df)} player-stat rows loaded")
 
     stats_df = _augment_with_epm_position(stats_df, epm_df)
-    stats_lookup = {row["player_name_normalized"]: row for _, row in stats_df.iterrows()}
+    stats_lookup = {
+        row["player_name_normalized"]: row for _, row in stats_df.iterrows()
+    }
     print()
 
     for scenario in SCENARIOS:

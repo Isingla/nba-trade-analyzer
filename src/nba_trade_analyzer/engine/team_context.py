@@ -98,9 +98,7 @@ def _coarse_position(label: str | None) -> tuple[tuple[str, float], ...]:
     return ((_COARSE_POSITION.get(label, label), 1.0),)
 
 
-def _trim_outgoing(
-    roster: list[dict], outgoing_names: list[str] | None
-) -> list[dict]:
+def _trim_outgoing(roster: list[dict], outgoing_names: list[str] | None) -> list[dict]:
     """Drop outgoing players from the roster by case-insensitive name match.
 
     Used by the positional-fit calc so an incoming player is scored against

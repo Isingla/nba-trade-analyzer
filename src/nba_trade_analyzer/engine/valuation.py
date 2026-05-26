@@ -26,12 +26,17 @@ import pandas as pd
 
 from nba_trade_analyzer.data.darko import fetch_darko_data, get_player_darko
 from nba_trade_analyzer.data.epm import fetch_epm_data, get_player_epm
+from nba_trade_analyzer.engine.aging_curve import get_aging_factor
 from nba_trade_analyzer.engine.constants import (
     DOLLARS_PER_WIN,
     EPM_TO_WINS_FACTOR,
     FULL_SEASON_MINUTES,
+    MAX_PROJECTION_YEARS,
     MAX_WINS_ADDED,
     NET_RATING_TO_WINS_FACTOR,
+    PROJECTED_GP_CAP,
+    PROJECTED_GP_HEALTHY,
+    PROJECTION_DISCOUNT_RATE,
     REPLACEMENT_LEVEL_NET_RATING,
     TEAM_ADJUSTMENT_WEIGHT,
 )
@@ -39,7 +44,11 @@ from nba_trade_analyzer.engine.team_context import evaluate_player_in_team_conte
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team_context import TeamContextValuation
 from nba_trade_analyzer.models.trade import TradeAssets
-from nba_trade_analyzer.models.valuation import PlayerValuation
+from nba_trade_analyzer.models.valuation import (
+    MultiYearValuation,
+    PlayerValuation,
+    YearProjection,
+)
 
 
 @dataclass(frozen=True)
@@ -214,6 +223,143 @@ def evaluate_player(
     )
 
 
+def evaluate_player_multiyear(
+    player: Player,
+    contract: Contract,
+    team_net_rating: float = 0.0,
+    epm_df: pd.DataFrame | None = None,
+    darko_df: pd.DataFrame | None = None,
+) -> MultiYearValuation:
+    """Project surplus across every remaining contract year.
+
+    Year 1 mirrors ``evaluate_player`` exactly. Year 2 prefers DARKO's
+    forward projection when the year-1 source was EPM (so DARKO is used
+    as a true projection, not redundantly with itself); otherwise it
+    falls back to the aging curve applied to the year-1 impact. Years 3+
+    anchor on the year-2 EPM and apply the aging curve compounding for
+    each additional year. Each year is discounted by
+    ``PROJECTION_DISCOUNT_RATE`` to reflect projection uncertainty, and
+    the horizon is capped at ``MAX_PROJECTION_YEARS``.
+
+    Salary is held flat across years until a salary data source exists
+    that exposes per-year salary escalation.
+    """
+    if epm_df is None:
+        epm_df = fetch_epm_data()
+    if darko_df is None:
+        darko_df = fetch_darko_data()
+
+    base = evaluate_player(
+        player, contract, team_net_rating, epm_df=epm_df, darko_df=darko_df
+    )
+
+    horizon = min(contract.years_remaining, MAX_PROJECTION_YEARS)
+    if horizon == 0:
+        return MultiYearValuation(
+            player_name=player.name,
+            current_age=player.age,
+            years_remaining=0,
+            current_season_surplus=0.0,
+            total_contract_surplus=0.0,
+            year_by_year=[],
+            primary_metric_source=base.metric_source,
+        )
+
+    # adjusted_net_rating holds EPM / DPM / adjusted NR depending on the
+    # year-1 source — it's our impact anchor in the metric's native units.
+    current_impact = base.adjusted_net_rating
+    current_mpg = float(player.stats.get("MPG", 0.0))
+
+    # Only override year 2 with DARKO when the year-1 source was EPM. If
+    # DARKO was already year 1, projecting it again as a "forward look"
+    # would be circular.
+    darko_row = None
+    if base.metric_source == "epm" and darko_df is not None:
+        darko_row = get_player_darko(darko_df, player.name)
+
+    year_results: list[YearProjection] = []
+    year_2_anchor: float = current_impact  # placeholder; set in year_offset == 1
+
+    for year_offset in range(horizon):
+        if year_offset == 0:
+            year_results.append(
+                YearProjection(
+                    year=1,
+                    projected_age=player.age,
+                    projected_epm=current_impact,
+                    projected_wins_added=base.wins_added,
+                    projected_value=base.player_value,
+                    salary=float(contract.salary),
+                    discount_factor=1.0,
+                    discounted_surplus=float(base.surplus_value),
+                    projection_source=base.metric_source,
+                )
+            )
+            continue
+
+        if year_offset == 1:
+            if darko_row is not None:
+                # DARKO DPM is on a ~40%-compressed scale vs EPM (see
+                # DARKO_TO_EPM_SLOPE in constants.py). We intentionally use
+                # the raw DPM value — its regression-to-mean is a feature
+                # of DARKO's Kalman filter that we want to preserve as a
+                # conservative year-2 projection.
+                projected_impact = float(darko_row["dpm"])
+                source = "darko"
+            else:
+                projected_impact = current_impact * get_aging_factor(player.age, 1)
+                source = "aging_curve"
+            year_2_anchor = projected_impact
+        else:
+            projected_impact = year_2_anchor * get_aging_factor(
+                player.age + 1, year_offset - 1
+            )
+            source = "aging_curve"
+
+        # Project minutes: hold current MPG flat, haircut GP by the aging
+        # availability proxy (older players miss more games), cap at the
+        # league-healthy ceiling so growth-phase aging factors > 1.0 don't
+        # inflate a player into an 80+ GP season.
+        availability_factor = min(1.0, get_aging_factor(player.age, year_offset))
+        projected_gp = min(PROJECTED_GP_CAP, PROJECTED_GP_HEALTHY * availability_factor)
+        projected_minutes = current_mpg * projected_gp
+
+        wins_added = calculate_wins_added_from_impact(
+            projected_impact, projected_minutes
+        )
+        player_value = calculate_player_value(wins_added)
+
+        year_salary = float(contract.salary)
+        discount_factor = 1.0 / (1.0 + PROJECTION_DISCOUNT_RATE) ** year_offset
+        year_surplus = (player_value - year_salary) * discount_factor
+
+        year_results.append(
+            YearProjection(
+                year=year_offset + 1,
+                projected_age=player.age + year_offset,
+                projected_epm=projected_impact,
+                projected_wins_added=wins_added,
+                projected_value=player_value,
+                salary=year_salary,
+                discount_factor=discount_factor,
+                discounted_surplus=year_surplus,
+                projection_source=source,
+            )
+        )
+
+    total_surplus = sum(yr.discounted_surplus for yr in year_results)
+
+    return MultiYearValuation(
+        player_name=player.name,
+        current_age=player.age,
+        years_remaining=horizon,
+        current_season_surplus=float(base.surplus_value),
+        total_contract_surplus=total_surplus,
+        year_by_year=year_results,
+        primary_metric_source=base.metric_source,
+    )
+
+
 def evaluate_trade_assets(
     trade_assets: TradeAssets,
     team_net_rating: float = 0.0,
@@ -221,27 +367,37 @@ def evaluate_trade_assets(
     darko_df: pd.DataFrame | None = None,
     team_context: TeamContext | None = None,
 ) -> float:
-    """Sum surplus value across the player package.
+    """Sum total-contract surplus across the player package.
 
-    Without ``team_context``, returns the base (team-agnostic) surplus —
-    same behavior as before Phase 5. With ``team_context``, runs each
-    player through ``evaluate_player_in_team_context`` and sums the
-    team-adjusted surplus instead. Draft picks are scored separately.
+    Multi-year by default: each player's full contract is projected
+    via ``evaluate_player_multiyear`` and the discounted surplus across
+    all remaining years is summed. Single-season surplus is still
+    available per-player via the detailed breakdown.
+
+    When ``team_context`` is provided, year 1 surplus is replaced with
+    the team-context-adjusted year-1 surplus from
+    ``evaluate_player_in_team_context``; years 2+ are still projected
+    via the multi-year pipeline. This avoids re-running the (expensive)
+    team-context computation for every projected year while still
+    letting team fit shape the immediate trade impact.
+
+    Draft picks are scored separately.
     """
-    if team_context is None:
-        return sum(
-            evaluate_player(
-                entry.player,
-                entry.contract,
-                team_net_rating,
-                epm_df=epm_df,
-                darko_df=darko_df,
-            ).surplus_value
-            for entry in trade_assets.players
-        )
-
     total = 0.0
     for entry in trade_assets.players:
+        multi = evaluate_player_multiyear(
+            entry.player,
+            entry.contract,
+            team_net_rating,
+            epm_df=epm_df,
+            darko_df=darko_df,
+        )
+
+        if team_context is None:
+            total += multi.total_contract_surplus
+            continue
+
+        # Replace year-1 surplus with team-adjusted year-1 surplus
         base = evaluate_player(
             entry.player,
             entry.contract,
@@ -259,7 +415,9 @@ def evaluate_trade_assets(
             epm_df=epm_df,
             player_stats_df=team_context.player_stats_df,
         )
-        total += adjusted.team_surplus
+        total += adjusted.team_surplus + (
+            multi.total_contract_surplus - multi.current_season_surplus
+        )
     return total
 
 
@@ -269,13 +427,14 @@ def evaluate_trade_assets_detailed(
     team_net_rating: float = 0.0,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
-) -> list[tuple[PlayerValuation, TeamContextValuation]]:
-    """Per-player breakdown of base valuation and team-adjusted valuation.
+) -> list[tuple[PlayerValuation, TeamContextValuation, MultiYearValuation]]:
+    """Per-player breakdown: single-season base, team-adjusted, multi-year.
 
-    Useful for the trade grader and for eyeballing Phase 5 outputs against
-    real player/team pairs.
+    Returned triples expose all three views so callers can show the
+    single-season number (transparency), the team-context-adjusted year-1
+    number (fit), and the full-contract surplus (trade-decisive metric).
     """
-    out: list[tuple[PlayerValuation, TeamContextValuation]] = []
+    out: list[tuple[PlayerValuation, TeamContextValuation, MultiYearValuation]] = []
     for entry in trade_assets.players:
         base = evaluate_player(
             entry.player,
@@ -294,5 +453,12 @@ def evaluate_trade_assets_detailed(
             epm_df=epm_df,
             player_stats_df=team_context.player_stats_df,
         )
-        out.append((base, adjusted))
+        multi = evaluate_player_multiyear(
+            entry.player,
+            entry.contract,
+            team_net_rating,
+            epm_df=epm_df,
+            darko_df=darko_df,
+        )
+        out.append((base, adjusted, multi))
     return out
