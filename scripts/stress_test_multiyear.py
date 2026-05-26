@@ -559,7 +559,9 @@ def category_6_extreme_epm() -> None:
     ]
 
     for label, epm, age, years, salary, sign, note in cases:
-        print(f"\n-- {label}: EPM={epm:+.1f}, age={age}, {years}yr/${salary / 1e6:.0f}M ({note})")
+        print(
+            f"\n-- {label}: EPM={epm:+.1f}, age={age}, {years}yr/${salary / 1e6:.0f}M ({note})"
+        )
         player = _make_player(label, age=age, gp=75, mpg=34.0)
         contract = Contract(salary=salary, years_remaining=years)
         mv = evaluate_player_multiyear(
@@ -664,9 +666,7 @@ def category_7_real_players(epm_df: pd.DataFrame, stats_df: pd.DataFrame) -> Non
                 },
             )
         contract = Contract(salary=salary, years_remaining=years_remaining)
-        mv = evaluate_player_multiyear(
-            player, contract, epm_df=epm_df, darko_df=None
-        )
+        mv = evaluate_player_multiyear(player, contract, epm_df=epm_df, darko_df=None)
         print(
             f"\n-- {name} ({note}): age {player.age}, EPM "
             f"{float(epm_row['epm']):+.2f}, {years_remaining}yr / ${salary / 1e6:.1f}M"
@@ -820,7 +820,8 @@ def category_8_minutes_projection() -> None:
     # GP haircut combined).
     expect(
         "cat8.d age-38 wins decline year-over-year",
-        mv.year_by_year[2].projected_wins_added < mv.year_by_year[1].projected_wins_added,
+        mv.year_by_year[2].projected_wins_added
+        < mv.year_by_year[1].projected_wins_added,
         f"yr2={mv.year_by_year[1].projected_wins_added:.2f}, "
         f"yr3={mv.year_by_year[2].projected_wins_added:.2f}",
     )
@@ -971,10 +972,15 @@ def category_10_boundaries() -> None:
 
     # a) 0 years remaining
     mv = evaluate_player_multiyear(
-        player, Contract(salary=10_000_000, years_remaining=0), epm_df=epm, darko_df=darko
+        player,
+        Contract(salary=10_000_000, years_remaining=0),
+        epm_df=epm,
+        darko_df=darko,
     )
-    print(f"\n-- 0 years remaining: years_remaining={mv.years_remaining}, "
-          f"year_by_year={len(mv.year_by_year)} entries, total={money(mv.total_contract_surplus)}")
+    print(
+        f"\n-- 0 years remaining: years_remaining={mv.years_remaining}, "
+        f"year_by_year={len(mv.year_by_year)} entries, total={money(mv.total_contract_surplus)}"
+    )
     expect(
         "cat10.a 0-year contract returns empty projection",
         mv.years_remaining == 0
@@ -985,7 +991,10 @@ def category_10_boundaries() -> None:
 
     # b) 6 years remaining — capped at MAX_PROJECTION_YEARS
     mv = evaluate_player_multiyear(
-        player, Contract(salary=10_000_000, years_remaining=6), epm_df=epm, darko_df=darko
+        player,
+        Contract(salary=10_000_000, years_remaining=6),
+        epm_df=epm,
+        darko_df=darko,
     )
     print(f"\n-- 6 years remaining (cap test): projected {len(mv.year_by_year)} years")
     expect(
@@ -997,7 +1006,10 @@ def category_10_boundaries() -> None:
     # c) age 19 (pre-draft) — aging curve still works
     teen = _make_player(name, age=19, gp=75, mpg=34.0)
     mv = evaluate_player_multiyear(
-        teen, Contract(salary=5_000_000, years_remaining=3), epm_df=_epm_row(name, 2.0), darko_df=darko
+        teen,
+        Contract(salary=5_000_000, years_remaining=3),
+        epm_df=_epm_row(name, 2.0),
+        darko_df=darko,
     )
     print("\n-- age 19 player, 3yr/$5M:")
     print_yby(mv)
@@ -1010,7 +1022,10 @@ def category_10_boundaries() -> None:
     # d) age 42 — very low factors but still finite
     old = _make_player(name, age=42, gp=50, mpg=25.0)
     mv = evaluate_player_multiyear(
-        old, Contract(salary=10_000_000, years_remaining=3), epm_df=_epm_row(name, 1.5), darko_df=darko
+        old,
+        Contract(salary=10_000_000, years_remaining=3),
+        epm_df=_epm_row(name, 1.5),
+        darko_df=darko,
     )
     print("\n-- age 42 player, 3yr/$10M:")
     print_yby(mv)
@@ -1024,7 +1039,10 @@ def category_10_boundaries() -> None:
     # e) EPM exactly 0.0
     zero = _make_player(name, age=27, gp=75, mpg=34.0)
     mv = evaluate_player_multiyear(
-        zero, Contract(salary=10_000_000, years_remaining=3), epm_df=_epm_row(name, 0.0), darko_df=darko
+        zero,
+        Contract(salary=10_000_000, years_remaining=3),
+        epm_df=_epm_row(name, 0.0),
+        darko_df=darko,
     )
     print("\n-- EPM=0.0, age 27, 3yr/$10M:")
     print_yby(mv)
@@ -1098,8 +1116,10 @@ def print_summary(
         cells = "  ".join(money(v) for v in row)
         print(f"  {age:>3}    {cells}")
     print()
-    print(f"DOLLARS_PER_WIN={DOLLARS_PER_WIN}, EPM_TO_WINS_FACTOR={EPM_TO_WINS_FACTOR}, "
-          f"discount={PROJECTION_DISCOUNT_RATE}, MAX_PROJECTION_YEARS={MAX_PROJECTION_YEARS}")
+    print(
+        f"DOLLARS_PER_WIN={DOLLARS_PER_WIN}, EPM_TO_WINS_FACTOR={EPM_TO_WINS_FACTOR}, "
+        f"discount={PROJECTION_DISCOUNT_RATE}, MAX_PROJECTION_YEARS={MAX_PROJECTION_YEARS}"
+    )
 
 
 # ---------------------------------------------------------------------------
