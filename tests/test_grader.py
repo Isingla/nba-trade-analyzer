@@ -12,6 +12,8 @@ import pytest
 
 from nba_trade_analyzer.engine.grader import (
     DUAL_NEGATIVE_DAMPING_THRESHOLD,
+    _Acquired,
+    _contract_sentence,
     _contract_tier,
     _dual_negative_damping,
     _epm_tier,
@@ -521,6 +523,66 @@ def test_similar_value_different_contract_lengths_stay_balanced():
     grade = _grade(trade, extra=extra)
     assert 40 <= grade.team_a_grade.score <= 60
     assert 40 <= grade.team_b_grade.score <= 60
+
+
+def _acquired(
+    *,
+    name: str,
+    salary: int,
+    total_contract_surplus: float,
+    years_remaining: int,
+    base_player_value: float,
+) -> _Acquired:
+    return _Acquired(
+        name=name,
+        age=33,
+        minutes=2000.0,
+        epm=3.5,
+        position="G",
+        fg3a=0.0,
+        fg3_pct=0.37,
+        fg3_data_present=False,
+        base_player_value=base_player_value,
+        salary=salary,
+        total_contract_surplus=total_contract_surplus,
+        years_remaining=years_remaining,
+        timeline_modifier=0.0,
+        positional_modifier=0.0,
+        spacing_modifier=0.0,
+    )
+
+
+def test_contract_sentence_overpay_quotes_implied_production_not_salary():
+    # BUG 1: Kyrie-style — strong single-season value (~$37M) but a multi-year
+    # overpay once out-year decline is priced in. The "producing like" figure
+    # must be the per-year production implied by the surplus (~$24M), never the
+    # salary, or the sentence contradicts its own "overpay" verdict.
+    p = _acquired(
+        name="Kyrie Irving",
+        salary=36_600_000,
+        total_contract_surplus=-38_100_000,  # ~-$12.7M/yr over 3 years
+        years_remaining=3,
+        base_player_value=37_300_000,  # single-season value ≈ salary
+    )
+    sentence = _contract_sentence(p, "Pistons")
+    assert "a notable overpay" in sentence
+    assert "producing like a $37M player" not in sentence  # the old contradiction
+    assert "producing like a $24M player" in sentence  # 36.6 + (-38.1/3) ≈ 23.9
+
+
+def test_contract_sentence_positive_value_is_internally_consistent():
+    # The surplus stated must equal production minus salary.
+    p = _acquired(
+        name="Bargain Star",
+        salary=20_000_000,
+        total_contract_surplus=30_000_000,  # +$15M/yr over 2 years
+        years_remaining=2,
+        base_player_value=40_000_000,
+    )
+    sentence = _contract_sentence(p, "Knicks")
+    # production $35M on a $20M deal — about $15M extra; not the $40M single-season.
+    assert "playing like a $35M player on a $20M deal" in sentence
+    assert "$15M in extra value" in sentence
 
 
 def test_similar_negative_value_players_stay_balanced():

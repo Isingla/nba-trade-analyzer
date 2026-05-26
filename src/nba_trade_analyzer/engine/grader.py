@@ -530,17 +530,21 @@ def _impact_metric(players: list[_Acquired], label: str) -> MetricBreakdown:
 def _contract_sentence(p: _Acquired, label: str) -> str:
     """Plain-English contract verdict for one player.
 
-    Deliberately omits the raw per-year deficit figure — a "-$47M/yr" number
-    reads as broken to a casual fan even when the math is right. The signed
-    deficit still lives in the metric's ``raw_label`` for analytics readers.
-    The salary itself is fair game; it is a real, intuitive number.
+    The "producing like" figure is the per-year production *implied by the
+    multi-year surplus* (salary + per_year_surplus) — the same basis as the
+    contract tier and ``raw_label`` — not the single-season player value. Mixing
+    the two let the verdict contradict itself: a player whose out-year decline
+    makes him a multi-year overpay still has a strong current-season value, so
+    "paid $37M, producing like a $37M player — a notable overpay" could print.
+    The raw per-year deficit stays out of the prose (it reads as broken to a
+    casual fan); it lives in ``raw_label`` for analytics readers.
     """
-    pv = p.base_player_value / _MILLION
     sal = p.salary / _MILLION
     py = p.per_year_surplus / _MILLION
+    prod = sal + py  # per-year production consistent with the surplus verdict
     if p.per_year_surplus >= 0:
         return (
-            f"{p.name} is playing like a ${pv:.0f}M player on a ${sal:.0f}M deal "
+            f"{p.name} is playing like a ${prod:.0f}M player on a ${sal:.0f}M deal "
             f"— about ${py:.0f}M in extra value per season."
         )
     if p.per_year_surplus <= -15 * _MILLION:
@@ -549,9 +553,9 @@ def _contract_sentence(p: _Acquired, label: str) -> str:
             f"production doesn't come close to justifying the cost."
         )
     if p.per_year_surplus <= -5 * _MILLION:
-        if pv >= 0:
+        if prod >= 0:
             return (
-                f"{p.name} is paid ${sal:.0f}M but producing like a ${pv:.0f}M "
+                f"{p.name} is paid ${sal:.0f}M but producing like a ${prod:.0f}M "
                 f"player — a notable overpay."
             )
         return (
