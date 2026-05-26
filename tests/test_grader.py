@@ -23,6 +23,7 @@ from nba_trade_analyzer.engine.grader import (
     grade_trade,
 )
 from nba_trade_analyzer.models.draft_pick import DraftPick
+from nba_trade_analyzer.engine.valuation import evaluate_player_multiyear
 from nba_trade_analyzer.models.player import Contract, Player
 from nba_trade_analyzer.models.team import CapStatus, RosterEntry, Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
@@ -667,6 +668,37 @@ def test_salary_dump_prose_does_not_quote_inflated_delta():
     assert "shedding roughly $" not in nyk.prose
     # The shed value is framed (cap relief), not quoted as a raw deficit.
     assert "negative value" in nyk.prose or "cap" in nyk.prose
+
+
+def test_shedding_prose_quotes_delta_not_raw_total():
+    # BUG 1: the shed figure must be the improvement (negative surplus sent out
+    # minus negative surplus taken back), not the outgoing contract's raw total.
+    dumped = _spec("Dumped Max", "NYK", -1.5, position="F", age=32)
+    weak = _spec("Weak Return", "MIN", -0.5, position="F", age=27, gp=60, mpg=20.0)
+    e_sent = _entry(dumped, 30_000_000, years=3)
+    e_recv = _entry(weak, 12_000_000, years=2)
+    trade = Trade(
+        team_a=_team("NYK", "New York Knicks"),
+        team_b=_team("MIN", "Minnesota Timberwolves", payroll=120_000_000),
+        team_a_sends=TradeAssets(players=[e_sent]),
+        team_b_sends=TradeAssets(players=[e_recv]),
+    )
+    grade = _grade(trade, extra=[dumped, weak])
+    nyk = grade.team_a_grade
+    assert nyk.score >= 55
+
+    epm_df, _ = _world([dumped, weak])
+    sent = evaluate_player_multiyear(
+        e_sent.player, e_sent.contract, epm_df=epm_df, darko_df=_empty_darko()
+    ).total_contract_surplus
+    recv = evaluate_player_multiyear(
+        e_recv.player, e_recv.contract, epm_df=epm_df, darko_df=_empty_darko()
+    ).total_contract_surplus
+    delta_m = round((abs(sent) - abs(recv)) / 1_000_000)
+    raw_m = round(abs(sent) / 1_000_000)
+    assert delta_m != raw_m  # the two would coincide only if nothing came back
+    assert f"${delta_m}M" in nyk.prose  # the improvement
+    assert f"${raw_m}M" not in nyk.prose  # not the raw outgoing total
 
 
 # ---------------------------------------------------------------------------

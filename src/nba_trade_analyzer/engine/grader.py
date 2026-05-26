@@ -917,7 +917,13 @@ def _build_prose(
     if score >= 55 and incoming_weak and sent:
         # Salary-dump win: the exit is the story, not the incoming player.
         worst = min(sent, key=lambda s: s.total_contract_surplus)
-        shed = abs(worst.total_contract_surplus) / _MILLION
+        # The shed value is the *improvement* from the swap — the negative
+        # surplus sent out minus the negative surplus taken back — not the
+        # outgoing contract's raw total. Quoting the raw total double-counts
+        # the bad value the team also absorbs in the incoming player.
+        sent_surplus = sum(s.total_contract_surplus for s in sent)
+        received_surplus = sum(a.total_contract_surplus for a in acquired)
+        shed = max(0.0, abs(sent_surplus) - abs(received_surplus)) / _MILLION
         if inc is not None:
             sentences.append(
                 f"The {label} move off {worst.name}'s "
