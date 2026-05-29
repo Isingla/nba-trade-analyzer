@@ -33,9 +33,10 @@ from nba_trade_analyzer.engine.constants import (
     LEAGUE_AVG_3PT_PCT,
     LEAGUE_AVG_3PT_RATE,
     MAX_WINS_ADDED,
+    POSITIONAL_FAIR_SHARE,
+    POSITIONAL_LOGJAM_MULT,
     POSITIONAL_MAX_ADJUSTMENT,
-    POSITIONAL_MINUTES_THRESHOLD_HIGH,
-    POSITIONAL_MINUTES_THRESHOLD_LOW,
+    POSITIONAL_NEED_MULT,
     SPACING_MAX_ADJUSTMENT,
     TIMELINE_CORE_SIZE,
     TIMELINE_LAMBDA,
@@ -258,32 +259,50 @@ def calculate_positional_modifier(
 ) -> float:
     """Bonus when filling a thin position, penalty when joining a logjam.
 
+    Scored on *minutes-share vs fair-share*, not raw minute sums: a bucket's
+    share of the team's total minutes is compared against its fair share
+    (G=0.40, F=0.40, C=0.20). The ratio (``relative``) is self-normalizing, so
+    the result is independent of roster size or how many minutes the feed lists.
+
     Roster entries should be dicts with ``MPG`` and ``position`` keys.
-    Without a position label on the incoming player we return 0 (no signal).
+
+    Returns 0.0 when the incoming player has no resolvable position label
+    (absent player, no current stats/EPM row). That is a deliberate "no
+    positional signal" result — NOT an accidental skip; we never fabricate a
+    bucket for a player whose position we can't determine.
     """
     if not player_position or not team_roster:
+        # No incoming position label or empty roster → no positional signal.
         return 0.0
     minutes_by_pos = _minutes_by_position(team_roster)
+    total_minutes = sum(minutes_by_pos.values())
+    if total_minutes <= 0:
+        # Roster carries no minutes at all → no signal to read.
+        return 0.0
     buckets = _coarse_position(player_position)
     if not buckets:
         return 0.0
 
     # If the player splits across two positions, weight by the split.
     modifier = 0.0
-    high = POSITIONAL_MINUTES_THRESHOLD_HIGH
-    low = POSITIONAL_MINUTES_THRESHOLD_LOW
-    span = max(high - low, 1e-6)
+    logjam = POSITIONAL_LOGJAM_MULT
+    need = POSITIONAL_NEED_MULT
+    span = max(logjam - need, 1e-6)
     for bucket, weight in buckets:
-        minutes_filled = minutes_by_pos.get(bucket, 0.0)
-        if minutes_filled >= high:
-            # Full logjam — saturate at -MAX.
+        fair_share = POSITIONAL_FAIR_SHARE.get(bucket)
+        if not fair_share:
+            continue
+        share = minutes_by_pos.get(bucket, 0.0) / total_minutes
+        relative = share / fair_share  # 1.0 == exactly the bucket's fair share
+        if relative >= logjam:
+            # Bucket is over-served relative to its fair share — logjam, -MAX.
             bucket_modifier = -POSITIONAL_MAX_ADJUSTMENT
-        elif minutes_filled <= low:
-            # Real positional need — saturate at +MAX.
+        elif relative <= need:
+            # Bucket is under-served — a real positional need, +MAX.
             bucket_modifier = POSITIONAL_MAX_ADJUSTMENT
         else:
-            # Linear interpolation across the band.
-            t = (minutes_filled - low) / span
+            # Linear: relative=need → +MAX, relative=logjam → -MAX.
+            t = (relative - need) / span
             bucket_modifier = POSITIONAL_MAX_ADJUSTMENT * (1.0 - 2.0 * t)
         modifier += bucket_modifier * weight
     return modifier

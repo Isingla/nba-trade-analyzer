@@ -82,11 +82,18 @@ TIMELINE_MAX_ADJUSTMENT = 0.15  # ±15% of context_value
 TIMELINE_CORE_SIZE = 5  # top-N players by minutes that define team core
 
 # Positional fit: bonus when an incoming player addresses a thin position,
-# penalty when they pile onto a logjam. Linear scaling between the two
-# minute-load thresholds.
+# penalty when they pile onto a logjam. Measured as a bucket's *share* of the
+# team's total minutes versus its fair share, so the metric is independent of
+# roster size/shape (raw minute sums ran 2-5x the old fixed thresholds, which
+# saturated every incoming player at the penalty floor).
 POSITIONAL_MAX_ADJUSTMENT = 0.10  # ±10% of context_value
-POSITIONAL_MINUTES_THRESHOLD_HIGH = 40.0  # above this = logjam penalty
-POSITIONAL_MINUTES_THRESHOLD_LOW = 25.0  # below this = positional need bonus
+# Fair share of total minutes per coarse bucket: 2 guard / 2 forward / 1 center
+# floor slots out of 5 starters → G=0.40, F=0.40, C=0.20.
+POSITIONAL_FAIR_SHARE = {"G": 0.40, "F": 0.40, "C": 0.20}
+# Relative share (actual ÷ fair) at/above this is a full logjam penalty; at/below
+# the need threshold is a full positional-need bonus; linear between the two.
+POSITIONAL_LOGJAM_MULT = 1.3  # relative share at/above this -> full penalty
+POSITIONAL_NEED_MULT = 0.7  # relative share at/below this -> full bonus
 
 # Spacing fit: small additive modifier when a shooter joins a spacing-poor
 # team (or a non-shooter joins one that needs spacing). Effect shrinks when
