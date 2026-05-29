@@ -11,8 +11,11 @@ fetches live data (EPM, DARKO, nba_api stats, Basketball Reference
 salaries), checks CBA legality across all four cap tiers, values players
 over their full contracts with aging curves, applies team context, and
 grades trades 0-100 with plain-English breakdowns — all exposed through a
-typer CLI (`grade` + `lookup`). 291 tests pass plus a 5-trade validation
-smoke test. **Phase 6 (ML trade history model) is next.**
+typer CLI (`grade` + `lookup`). Roster membership comes from nba_api
+`CommonTeamRoster`, joined to BBRef salaries through a committed, offline-built
+NBA-id ↔ BBRef-slug crosswalk (issue #27); moved players fail loud if they
+don't resolve to both a salary and a roster entry. 334 tests pass plus a
+5-trade validation smoke test. **Phase 6 (ML trade history model) is next.**
 
 ## Project Goals
 
@@ -40,10 +43,11 @@ smoke test. **Phase 6 (ML trade history model) is next.**
 ```
 src/nba_trade_analyzer/
 ├── data/               # data fetching and caching
-│   ├── players.py      # nba_api wrapper for player stats
-│   ├── epm.py          # EPM scraper (dunksandthrees.com)
+│   ├── players.py      # nba_api: player stats + CommonTeamRoster membership
+│   ├── epm.py          # EPM scraper (dunksandthrees.com) + name normalizer
 │   ├── darko.py        # DARKO projections (Google Sheet)
-│   ├── salaries.py     # Basketball Reference contract scraper
+│   ├── salaries.py     # Basketball Reference contract scraper (+ BBRef slug)
+│   ├── crosswalk.py    # NBA-id ↔ BBRef-slug join (the single chokepoint)
 │   └── cache.py        # local JSON cache layer (24h TTL)
 ├── models/             # pydantic domain models
 │   ├── player.py       # Player, Contract
@@ -60,6 +64,7 @@ src/nba_trade_analyzer/
 │   ├── draft_picks.py  # team-aware pick value curves
 │   ├── team_context.py # win curve, fit, timeline, spacing
 │   ├── aging_curve.py  # EPM aging projections
+│   ├── resolution.py   # fail-loud moved-player resolution (salary + roster)
 │   └── grader.py       # 0-100 scores, breakdowns, prose
 ├── cli.py              # typer CLI entry point (grade + lookup)
 ├── report.py           # terminal report renderer
@@ -70,10 +75,17 @@ src/nba_trade_analyzer/
 ## Data Sources
 
 - **Player stats**: `nba_api` package (NBA.com endpoints)
+- **Roster membership**: `nba_api` `CommonTeamRoster` (who is on a team *now*),
+  joined to salaries via the committed crosswalk — replaces the stale
+  salary-team column (issue #27)
 - **Impact metrics**: EPM (dunksandthrees.com, primary), DARKO
   projections (public Google Sheet, secondary), NET_RATING (fallback)
 - **Salaries**: Basketball Reference contracts page (scrape), with a
-  committed CSV snapshot as an offline fallback
+  committed CSV snapshot as an offline fallback; each contract carries the
+  player's permanent BBRef slug
+- **Crosswalk**: `data/player_crosswalk.json` (committed) maps NBA id ↔ BBRef
+  slug. Built offline by `scripts/build_crosswalk.py` (all name-matching lives
+  there); validated on load (no dup ids/slugs). Runtime joins are id-only.
 - **Draft pick values**: team-aware exponential decay curves
   (originating team's record sets the pick slot)
 
@@ -86,6 +98,8 @@ uv add --dev <package>           # add a dev dependency
 uv run nba-trade-analyzer --help # CLI help (grade + lookup commands)
 uv run pytest                    # run tests
 uv run python scripts/validate_trades.py  # 5-trade smoke test
+uv run python scripts/build_crosswalk.py  # build/refresh NBA-id↔slug crosswalk
+uv run python scripts/crosswalk_coverage.py  # roster-side crosswalk coverage
 uv run ruff check                # lint
 uv run ruff format               # format
 ```
