@@ -235,6 +235,22 @@ def evaluate_player(
     )
 
 
+def _salary_for_year(contract: Contract, year_offset: int) -> float:
+    """Real salary for a projected year, or the flat salary when unknown.
+
+    ``year_offset`` is 0-based from the current season. Uses
+    ``contract.yearly_salaries[year_offset]`` when that index exists; otherwise
+    (no per-year data, or the index runs past it) falls back to the flat
+    ``contract.salary``. Never indexes out of range and never returns zero.
+    Option-year figures are used as listed — projection uncertainty is already
+    handled by ``PROJECTION_DISCOUNT_RATE``.
+    """
+    yearly = contract.yearly_salaries
+    if 0 <= year_offset < len(yearly):
+        return float(yearly[year_offset])
+    return float(contract.salary)
+
+
 def evaluate_player_multiyear(
     player: Player,
     contract: Contract,
@@ -253,8 +269,10 @@ def evaluate_player_multiyear(
     ``PROJECTION_DISCOUNT_RATE`` to reflect projection uncertainty, and
     the horizon is capped at ``MAX_PROJECTION_YEARS``.
 
-    Salary is held flat across years until a salary data source exists
-    that exposes per-year salary escalation.
+    Each year is charged its real salary from ``contract.yearly_salaries``
+    (current season first) when available, so an escalating contract correctly
+    shows less surplus in its out-years; when per-year data is absent the salary
+    is held flat across years (see ``_salary_for_year``).
     """
     if epm_df is None:
         epm_df = fetch_epm_data()
@@ -341,7 +359,7 @@ def evaluate_player_multiyear(
         )
         player_value = calculate_player_value(wins_added)
 
-        year_salary = float(contract.salary)
+        year_salary = _salary_for_year(contract, year_offset)
         discount_factor = 1.0 / (1.0 + PROJECTION_DISCOUNT_RATE) ** year_offset
         year_surplus = (player_value - year_salary) * discount_factor
 

@@ -417,3 +417,50 @@ def test_print_lebron_breakdown(capsys: pytest.CaptureFixture[str]) -> None:
     print(f"  TOTAL: ${mv.total_contract_surplus / 1e6:+.2f}M")
     captured = capsys.readouterr()
     assert "LeBron James" in captured.out
+
+
+# ----- per-year salaries (real escalation vs flat fallback) ----------------
+
+
+def test_escalating_salary_lowers_out_year_surplus_vs_flat() -> None:
+    # Same player and impact, two contracts: one escalating, one flat at the
+    # year-1 figure. The escalating deal must charge more (and so show less
+    # surplus) in a later year where its salary exceeds year 1.
+    player = _make_player("Escalator", age=27)
+    yearly = (10_000_000, 12_000_000, 30_000_000, 40_000_000)
+    escalating = Contract(salary=10_000_000, years_remaining=4, yearly_salaries=yearly)
+    flat = Contract(salary=10_000_000, years_remaining=4)  # no per-year data
+
+    esc_mv = evaluate_player_multiyear(
+        player, escalating, epm_df=_epm_with("Escalator", 2.0), darko_df=_empty_darko()
+    )
+    flat_mv = evaluate_player_multiyear(
+        player, flat, epm_df=_epm_with("Escalator", 2.0), darko_df=_empty_darko()
+    )
+
+    # Each projected year is charged its real salary, current season first.
+    assert [yr.salary for yr in esc_mv.year_by_year] == [float(s) for s in yearly]
+    # Year 3 (index 2) salary outstrips year 1 → its surplus drops vs flat.
+    assert esc_mv.year_by_year[2].salary > esc_mv.year_by_year[0].salary
+    assert esc_mv.year_by_year[2].discounted_surplus < (
+        flat_mv.year_by_year[2].discounted_surplus
+    )
+    # Year 1 is unchanged (both charge the same current-season salary).
+    assert esc_mv.year_by_year[0].salary == flat_mv.year_by_year[0].salary
+    # And the heavier out-years pull total surplus below the flat baseline.
+    assert esc_mv.total_contract_surplus < flat_mv.total_contract_surplus
+
+
+def test_flat_fallback_reproduces_old_behavior_exactly() -> None:
+    # Regression guard: an empty yearly_salaries (the default) charges the flat
+    # salary every year, exactly as before the per-year feature existed.
+    player = _make_player("Flat Guy", age=27)
+    contract = Contract(salary=20_000_000, years_remaining=4)
+    assert contract.yearly_salaries == ()
+
+    mv = evaluate_player_multiyear(
+        player, contract, epm_df=_epm_with("Flat Guy", 2.0), darko_df=_empty_darko()
+    )
+    assert [yr.salary for yr in mv.year_by_year] == [20_000_000.0] * len(
+        mv.year_by_year
+    )

@@ -221,12 +221,53 @@ def test_fetch_all_salaries_captures_bbref_slug(tmp_path):
     assert get_player_salary(df, "Cooper Flagg")["bbref_slug"] == "flagco01"
 
 
+def test_fetch_all_salaries_captures_per_year_salaries(tmp_path):
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.salaries.httpx.get", return_value=_mocked_response()
+    ):
+        df = fetch_all_salaries(cache=cache)
+
+    # Escalating multi-year deal: every guaranteed current-onward year captured,
+    # current season first (persisted as a pipe-joined string).
+    embiid = get_player_salary(df, "Joel Embiid")
+    assert embiid["yearly_salaries"] == "55224526|58100000|62748000|67396000"
+    # The option year (y4, salary-pl) is included at its listed figure — no
+    # discount applied here.
+    assert build_contract(embiid).yearly_salaries == (
+        55224526,
+        58100000,
+        62748000,
+        67396000,
+    )
+    # A one-year deal yields a single-element series equal to the flat salary.
+    jokic = get_player_salary(df, "Nikola Jokić")
+    assert jokic["yearly_salaries"] == "55224526"
+    assert build_contract(jokic).yearly_salaries == (55224526,)
+
+
+def test_build_contract_defaults_yearly_salaries_to_empty():
+    # Missing column / pre-feature row → empty tuple → flat-salary fallback.
+    contract = build_contract({"salary": 5_000_000, "years_remaining": 2})
+    assert contract.yearly_salaries == ()
+
+
 def test_csv_fallback_tolerates_missing_slug_column(tmp_path):
     # Pre-slug snapshots have no bbref_slug column; the loader adds an empty one
     # so the schema is intact and the crosswalk build can flag the gap.
     df = _load_csv_fallback(_write_fixture_csv(tmp_path))
     assert "bbref_slug" in df.columns
     assert (df["bbref_slug"] == "").all()
+
+
+def test_csv_fallback_tolerates_missing_yearly_salaries_column(tmp_path):
+    # Snapshots predating per-year salaries have no yearly_salaries column; the
+    # loader adds an empty one so valuation falls back to the flat salary.
+    df = _load_csv_fallback(_write_fixture_csv(tmp_path))
+    assert "yearly_salaries" in df.columns
+    assert (df["yearly_salaries"] == "").all()
+    # build_contract then yields an empty tuple (flat behavior).
+    assert build_contract(get_player_salary(df, "Stephen Curry")).yearly_salaries == ()
 
 
 def test_fetch_all_salaries_detects_player_option(tmp_path):
