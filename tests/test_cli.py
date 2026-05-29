@@ -15,11 +15,21 @@ import pytest
 from typer.testing import CliRunner
 
 from nba_trade_analyzer.cli import app, parse_pick
+from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkEntry
 from nba_trade_analyzer.data.epm import normalize_name
 from nba_trade_analyzer.data.salaries import EXPECTED_COLUMNS
 from nba_trade_analyzer.teams import resolve_team
 
 runner = CliRunner()
+
+
+def _fake_nba_id(name: str) -> int:
+    """Deterministic synthetic nba_player_id for a test player name."""
+    return 900_000 + sum(ord(c) for c in name)
+
+
+def _fake_slug(name: str) -> str:
+    return f"slug{_fake_nba_id(name)}"
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +60,7 @@ def _stats_df(specs: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
+                "nba_player_id": _fake_nba_id(s["name"]),
                 "player_name": s["name"],
                 "team": s["team"],
                 "age": s["age"],
@@ -72,6 +83,7 @@ def _salary_df(specs: list[dict]) -> pd.DataFrame:
     rows = [
         {
             "player_name": s["name"],
+            "bbref_slug": _fake_slug(s["name"]),
             "team": s["salary_team"],
             "salary": s["salary"],
             "years_remaining": s["years"],
@@ -139,12 +151,29 @@ def _patch_data(specs: list[dict]):
             "age",
         ]
     )
+    # Crosswalk joining each synthetic player's slug <-> nba id, and a roster
+    # fetch returning the ids on a given team — so the grade command's fail-loud
+    # resolution and roster filtering work without HTTP or the committed file.
+    crosswalk = Crosswalk(
+        [
+            CrosswalkEntry(
+                _fake_nba_id(s["name"]), s["name"], _fake_slug(s["name"]), s["name"]
+            )
+            for s in specs
+        ]
+    )
+
+    def _roster_ids(team_abbr: str, *a, **k) -> set[int]:
+        return {_fake_nba_id(s["name"]) for s in specs if s["team"] == team_abbr}
+
     return patch.multiple(
         "nba_trade_analyzer.cli",
         fetch_epm_data=lambda *a, **k: epm,
         fetch_player_stats=lambda *a, **k: stats,
         fetch_all_salaries=lambda *a, **k: salary,
         fetch_darko_data=lambda *a, **k: darko,
+        load_crosswalk=lambda *a, **k: crosswalk,
+        fetch_roster_player_ids=_roster_ids,
     )
 
 

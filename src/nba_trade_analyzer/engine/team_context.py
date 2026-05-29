@@ -144,41 +144,28 @@ def _trim_outgoing(roster: list[dict], outgoing_names: list[str] | None) -> list
 
 def filter_to_current_roster(
     roster: list[dict],
-    salary_team_abbr: str,
-    salary_df: pd.DataFrame | None,
+    current_roster_ids: set[int] | None,
 ) -> list[dict]:
-    """Drop players who aren't on this team in the salary (current-roster) feed.
+    """Drop players who aren't on this team's *current* nba_api roster.
 
     nba_api season stats include everyone who logged minutes for a team —
     including players traded away mid-season — which inflates positional minute
-    totals to impossible numbers (e.g. 336 guard minutes vs. a 240 ceiling). The
-    salary feed reflects the *current* roster, so a player whose salary-data team
-    differs from this one (or who is absent from it entirely) has moved on and is
-    excluded.
+    totals to impossible numbers (e.g. 336 guard minutes vs. a 240 ceiling).
+    ``CommonTeamRoster`` is the authoritative current roster; both it and the
+    season-stats frame are nba_api, so this is a pure player-id intersection —
+    no name matching (see :func:`data.players.fetch_roster_player_ids`).
 
-    ``salary_team_abbr`` must be the Basketball-Reference form the salary frame
-    uses (BRK/CHO/PHO for the three teams whose abbreviations diverge from
-    nba_api); the caller is responsible for the mapping. Falls back to the full
-    roster when salary data is unavailable or doesn't cover this team, so callers
-    without salary data keep the previous behavior.
+    ``current_roster_ids`` is the set of nba_api player ids on the team right
+    now. When it is ``None`` or empty (roster fetch unavailable), the full
+    roster is kept rather than wiped — the rest-of-roster context degrades
+    gracefully rather than nuking the valuation. Each roster dict must carry an
+    ``nba_player_id`` (the season-stats frame supplies it); entries without one
+    are dropped when an id set is present, since they can't be confirmed.
     """
-    if salary_df is None or len(salary_df) == 0:
-        return roster
-    if "team" not in salary_df.columns or "player_name" not in salary_df.columns:
-        return roster
-    on_team = {
-        normalize_name(str(name))
-        for name, team in zip(salary_df["player_name"], salary_df["team"], strict=False)
-        if str(team) == salary_team_abbr
-    }
-    if not on_team:
-        # Salary data doesn't cover this team — can't filter reliably, so keep
-        # the full roster rather than wiping it.
+    if not current_roster_ids:
         return roster
     return [
-        entry
-        for entry in roster
-        if normalize_name(str(entry.get("player_name", ""))) in on_team
+        entry for entry in roster if entry.get("nba_player_id") in current_roster_ids
     ]
 
 

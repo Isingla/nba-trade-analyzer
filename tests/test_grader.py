@@ -73,9 +73,15 @@ def _epm_df(specs: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _gid(name: str) -> int:
+    """Deterministic synthetic nba_player_id for a test player name."""
+    return 800_000 + sum(ord(c) for c in name)
+
+
 def _stats_df(specs: list[dict]) -> pd.DataFrame:
     rows = [
         {
+            "nba_player_id": _gid(s["name"]),
             "player_name": s["name"],
             "team": s["team"],
             "age": s["age"],
@@ -848,17 +854,14 @@ def test_two_bad_contracts_different_lengths_not_a_robbery():
     assert grade.team_b_grade.verdict != "Highway Robbery"
 
 
-def _salary_df_for(specs: list[dict], extra_rows: list[dict] | None = None):
-    """Salary frame listing the base rosters (plus any extra rows) for filtering."""
-    rows = [{"player_name": s["name"], "team": s["team"]} for s in specs]
-    if extra_rows:
-        rows += extra_rows
-    return pd.DataFrame(rows)
+def _roster_ids_for(specs: list[dict]) -> set[int]:
+    """The nba_player_id set for a list of specs (a team's current roster)."""
+    return {_gid(s["name"]) for s in specs}
 
 
 def test_grader_drops_traded_player_from_positional_fit():
-    # A player in NYK's season stats but listed on BOS in the salary feed has
-    # been traded away; with salary_df threaded through, he must not inflate
+    # A player in NYK's season stats but absent from NYK's current nba_api roster
+    # has been traded away; with roster ids threaded through, he must not inflate
     # NYK's forward minutes nor be named in the crunch. (His 36 MPG would
     # otherwise top the list.)
     traded = _spec("Traded Forward", "NYK", 1.0, position="F", age=29, mpg=36.0)
@@ -870,19 +873,17 @@ def test_grader_drops_traded_player_from_positional_fit():
         team_b_sends=TradeAssets(players=[_entry(arriving, 20_000_000)]),
     )
     epm_df, stats_df = _world([traded, arriving])
-    salary_df = _salary_df_for(
-        _NYK_ROSTER + _MIN_ROSTER,
-        extra_rows=[
-            {"player_name": "Traded Forward", "team": "BOS"},  # moved on
-            {"player_name": "Arriving Forward", "team": "MIN"},
-        ],
-    )
+    # NYK's current roster excludes the traded forward; MIN's includes the arriver.
+    roster_ids_by_team = {
+        "NYK": _roster_ids_for(_NYK_ROSTER),
+        "MIN": _roster_ids_for(_MIN_ROSTER + [arriving]),
+    }
     grade = grade_trade(
         trade,
         player_stats_df=stats_df,
         epm_df=epm_df,
         darko_df=_empty_darko(),
-        salary_df=salary_df,
+        roster_ids_by_team=roster_ids_by_team,
     )
     assert "Traded Forward" not in grade.team_a_grade.positional_fit.explanation
 

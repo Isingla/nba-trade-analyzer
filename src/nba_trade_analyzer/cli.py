@@ -31,9 +31,10 @@ import pandas as pd
 import typer
 from pydantic import ValidationError
 
+from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkError, load_crosswalk
 from nba_trade_analyzer.data.darko import fetch_darko_data
 from nba_trade_analyzer.data.epm import fetch_epm_data, get_player_epm, normalize_name
-from nba_trade_analyzer.data.players import fetch_player_stats
+from nba_trade_analyzer.data.players import fetch_player_stats, fetch_roster_player_ids
 from nba_trade_analyzer.data.salaries import (
     build_contract,
     fetch_all_salaries,
@@ -41,6 +42,10 @@ from nba_trade_analyzer.data.salaries import (
 )
 from nba_trade_analyzer.engine.constants import FIRST_APRON, SALARY_CAP, SECOND_APRON
 from nba_trade_analyzer.engine.grader import _epm_tier, grade_trade
+from nba_trade_analyzer.engine.resolution import (
+    TradePlayerResolutionError,
+    resolve_trade_player,
+)
 from nba_trade_analyzer.engine.valuation import evaluate_player
 from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Player
@@ -245,6 +250,7 @@ def _resolve_player_entry(
 ) -> RosterEntry:
     """Resolve a player name to a :class:`RosterEntry` (contract + Player).
 
+    Salary-only path used by ``lookup`` (no team context, so no roster check).
     Salary data is the source of truth for the contract; a miss is fatal (with
     a spelling hint and fuzzy suggestions) since there's no contract to value.
     """
@@ -258,13 +264,68 @@ def _resolve_player_entry(
     return RosterEntry(player=player, contract=contract)
 
 
+def _resolution_failed(
+    exc: TradePlayerResolutionError, salary_df: pd.DataFrame
+) -> NoReturn:
+    """Print a specific, fail-loud error for a moved player and exit."""
+    typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+    if exc.side == "salary":
+        suggestions = _fuzzy_suggestions(exc.player, salary_df)
+        if suggestions:
+            typer.secho(
+                f"Did you mean: {', '.join(suggestions)}?",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+    raise typer.Exit(code=1)
+
+
+def _resolve_trade_entry(
+    name: str,
+    epm_df: pd.DataFrame,
+    stats_lookup: dict[str, pd.Series],
+    salary_df: pd.DataFrame,
+    sending_team: str,
+    crosswalk: Crosswalk,
+    roster_ids: set[int],
+) -> RosterEntry:
+    """Resolve a *moved* (trade-input) player, failing loud on any gap.
+
+    A trade-input player must resolve to BOTH a salary entry and a current
+    roster entry on ``sending_team`` (joined through the crosswalk); any failure
+    raises through :func:`_resolution_failed` naming the player and side. Never
+    drops, skips, or defaults a moved player.
+    """
+    try:
+        resolved = resolve_trade_player(
+            name,
+            sending_team,
+            salary_df=salary_df,
+            crosswalk=crosswalk,
+            roster_ids=roster_ids,
+        )
+    except TradePlayerResolutionError as exc:
+        _resolution_failed(exc, salary_df)
+    contract = build_contract(resolved.salary_data)
+    epm_row = get_player_epm(epm_df, name)
+    stats_row = stats_lookup.get(normalize_name(name))
+    player = _build_player(name, epm_row, stats_row)
+    return RosterEntry(player=player, contract=contract)
+
+
 def _parse_assets(
     sends: list[str],
     epm_df: pd.DataFrame,
     stats_lookup: dict[str, pd.Series],
     salary_df: pd.DataFrame,
+    sending_team: str,
+    crosswalk: Crosswalk,
+    roster_ids: set[int],
 ) -> tuple[list[RosterEntry], list[DraftPick]]:
-    """Split a side's ``--sends`` strings into player entries and draft picks."""
+    """Split a side's ``--sends`` strings into player entries and draft picks.
+
+    Players are resolved fail-loud against the sending team's current roster.
+    """
     players: list[RosterEntry] = []
     picks: list[DraftPick] = []
     for raw in sends:
@@ -272,7 +333,17 @@ def _parse_assets(
         if pick is not None:
             picks.append(pick)
         else:
-            players.append(_resolve_player_entry(raw, epm_df, stats_lookup, salary_df))
+            players.append(
+                _resolve_trade_entry(
+                    raw,
+                    epm_df,
+                    stats_lookup,
+                    salary_df,
+                    sending_team,
+                    crosswalk,
+                    roster_ids,
+                )
+            )
     return players, picks
 
 
@@ -288,6 +359,38 @@ def _resolve_team_or_exit(raw: str) -> TeamInfo:
         typer.secho(format_valid_teams(), err=True)
         raise typer.Exit(code=1)
     return info
+
+
+def _load_crosswalk_or_exit() -> Crosswalk:
+    """Load the committed NBA-id <-> BBRef-slug crosswalk, or exit loud."""
+    try:
+        return load_crosswalk()
+    except CrosswalkError as exc:
+        typer.secho(
+            f"Error: could not load the player crosswalk ({exc}). "
+            "Rebuild it with: python scripts/build_crosswalk.py",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+
+def _fetch_roster_ids_or_exit(team_abbr: str) -> set[int]:
+    """Fetch a team's current-roster player ids, or exit loud.
+
+    Moved-player validation depends on this set, so a failed fetch is fatal
+    rather than silently skipped (which would let an unresolved player through).
+    """
+    try:
+        return fetch_roster_player_ids(team_abbr)
+    except Exception as exc:  # noqa: BLE001 - surface any fetch failure to the user
+        typer.secho(
+            f"Error: could not fetch {team_abbr}'s current roster from nba_api "
+            f"({exc}). Roster membership is required to validate the trade.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
 
 
 def _cap_status_for(payroll: int) -> CapStatus:
@@ -363,12 +466,35 @@ def grade(
         darko_df = _timed("DARKO projections", fetch_darko_data)
     stats_lookup = _stats_lookup(stats_df)
 
+    # Roster membership (and the id <-> slug crosswalk that joins it to salaries)
+    # is required to validate that every moved player resolves; load both before
+    # parsing assets so failures surface immediately.
+    crosswalk = _load_crosswalk_or_exit()
+    roster_ids_a = _fetch_roster_ids_or_exit(info_a.abbreviation)
+    roster_ids_b = _fetch_roster_ids_or_exit(info_b.abbreviation)
+
     typer.echo()
     typer.echo("Evaluating trade...")
     typer.echo()
 
-    players_a, picks_a = _parse_assets(sends_a, epm_df, stats_lookup, salary_df)
-    players_b, picks_b = _parse_assets(sends_b, epm_df, stats_lookup, salary_df)
+    players_a, picks_a = _parse_assets(
+        sends_a,
+        epm_df,
+        stats_lookup,
+        salary_df,
+        info_a.abbreviation,
+        crosswalk,
+        roster_ids_a,
+    )
+    players_b, picks_b = _parse_assets(
+        sends_b,
+        epm_df,
+        stats_lookup,
+        salary_df,
+        info_b.abbreviation,
+        crosswalk,
+        roster_ids_b,
+    )
 
     trade = Trade(
         team_a=_build_team(info_a, salary_df),
@@ -381,7 +507,10 @@ def grade(
         player_stats_df=stats_df,
         epm_df=epm_df,
         darko_df=darko_df,
-        salary_df=salary_df,
+        roster_ids_by_team={
+            info_a.abbreviation: roster_ids_a,
+            info_b.abbreviation: roster_ids_b,
+        },
     )
     print_report(trade, result)
 
