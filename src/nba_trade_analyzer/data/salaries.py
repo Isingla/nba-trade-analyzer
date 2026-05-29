@@ -57,7 +57,14 @@ EXPECTED_COLUMNS: tuple[str, ...] = (
     "is_rookie_scale",
     "has_player_option",
     "has_team_option",
+    "yearly_salaries",
 )
+
+# Per-year salaries are persisted (CSV + JSON cache) as a pipe-joined string of
+# integers, current-season first — e.g. ``"59606817|62587158"`` — so the column
+# survives a flat CSV/JSON round-trip without nested structures. ``build_contract``
+# parses it back into a tuple.
+_YEARLY_SEP = "|"
 
 # Basketball Reference player-page links look like ``/players/d/doncilu01.html``;
 # the trailing token (``doncilu01``) is the player's permanent BBRef id. It never
@@ -267,6 +274,16 @@ def _parse_salary_html(html: str, season: str = _DEFAULT_SEASON) -> pd.DataFrame
         years_remaining = sum(
             1 for stat in contract_stats if _cell_salary(year_cells[stat]) is not None
         )
+        # Real per-year dollars, current season onward. Walk contiguously and
+        # stop at the first empty year so the list is a clean run of guaranteed
+        # current-onward salaries (almost always the full contract span). Option
+        # years carry their listed figure as-is — no discount here.
+        yearly: list[int] = []
+        for stat in contract_stats:
+            year_salary = _cell_salary(year_cells[stat])
+            if year_salary is None:
+                break
+            yearly.append(int(year_salary))
         has_player_option = any(
             _cell_has_class(year_cells[stat], _PLAYER_OPTION_CLASS)
             for stat in contract_stats
@@ -288,6 +305,7 @@ def _parse_salary_html(html: str, season: str = _DEFAULT_SEASON) -> pd.DataFrame
                 ),
                 "has_player_option": has_player_option,
                 "has_team_option": has_team_option,
+                "yearly_salaries": _YEARLY_SEP.join(str(s) for s in yearly),
             }
         )
 
@@ -316,6 +334,11 @@ def _load_csv_fallback(path: Path) -> pd.DataFrame:
     if "bbref_slug" not in df.columns:
         df["bbref_slug"] = ""
     df["bbref_slug"] = df["bbref_slug"].fillna("").astype(str)
+    # Likewise tolerate snapshots predating per-year salaries: an empty string
+    # parses to no per-year data, so valuation falls back to the flat salary.
+    if "yearly_salaries" not in df.columns:
+        df["yearly_salaries"] = ""
+    df["yearly_salaries"] = df["yearly_salaries"].fillna("").astype(str)
     return df[list(EXPECTED_COLUMNS)]
 
 
@@ -372,12 +395,31 @@ def get_player_salary(df: pd.DataFrame, player_name: str) -> dict | None:
     return match.iloc[0].to_dict()
 
 
+def _parse_yearly_salaries(value: object) -> tuple[int, ...]:
+    """Parse a ``yearly_salaries`` cell into a tuple of ints, current year first.
+
+    Accepts the persisted pipe-joined string (``"a|b|c"``), an already-parsed
+    list/tuple of numbers, or an empty/missing value (``None``, ``NaN``, ``""``)
+    which yields ``()`` so valuation falls back to the flat salary.
+    """
+    if value is None or isinstance(value, float):  # float covers pandas NaN
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(int(v) for v in value)
+    text = str(value).strip()
+    if not text:
+        return ()
+    return tuple(int(part) for part in text.split(_YEARLY_SEP) if part)
+
+
 def build_contract(salary_data: dict) -> Contract:
     """Adapt a ``get_player_salary`` result into the frozen ``Contract`` model.
 
     A straight field mapping — the scraper has already derived every field the
     model needs. ``years_remaining`` is clamped to a 1 floor since any row we
     keep has a positive current-season salary (i.e. at least one year left).
+    ``yearly_salaries`` carries the real per-year dollars (empty when a snapshot
+    predates the column, in which case valuation holds the salary flat).
     """
     return Contract(
         salary=int(salary_data["salary"]),
@@ -385,4 +427,5 @@ def build_contract(salary_data: dict) -> Contract:
         is_rookie_scale=bool(salary_data.get("is_rookie_scale", False)),
         has_player_option=bool(salary_data.get("has_player_option", False)),
         has_team_option=bool(salary_data.get("has_team_option", False)),
+        yearly_salaries=_parse_yearly_salaries(salary_data.get("yearly_salaries")),
     )

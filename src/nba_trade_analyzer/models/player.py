@@ -13,6 +13,13 @@ class Contract(BaseModel):
     is_rookie_scale: bool = False
     has_player_option: bool = False
     has_team_option: bool = False
+    yearly_salaries: tuple[int, ...] = Field(
+        default=(),
+        description=(
+            "Real per-year salaries, current season first. Empty when unknown, "
+            "in which case multi-year valuation holds the flat salary across years."
+        ),
+    )
 
 
 class Player(BaseModel):
