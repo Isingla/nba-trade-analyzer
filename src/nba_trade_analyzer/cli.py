@@ -1,10 +1,12 @@
 """Typer CLI for the NBA Trade Analyzer (Phase 9).
 
-Two commands:
+Three commands:
 
 - ``grade`` — evaluate a proposed trade between two teams and print the full
   fan-readable report (legality, per-team score + verdict, metric breakdowns).
 - ``lookup`` — print a compact single-player valuation summary.
+- ``roster`` — show a team's current roster, per-player contracts, and the
+  team's standing against all four salary lines.
 
 The CLI is a thin shell over the existing engine: it parses arguments, loads
 the data sources (with progress feedback), builds the :class:`Trade` model, and
@@ -17,6 +19,7 @@ Run via the installed entry point::
         --sends-a "Jarred Vanderbilt" --sends-a "2026 LAL 1st unprotected" \
         --sends-b "Daniel Gafford"
     uv run nba-trade-analyzer lookup "Daniel Gafford"
+    uv run nba-trade-analyzer roster --team LAL
 """
 
 from __future__ import annotations
@@ -34,13 +37,22 @@ from pydantic import ValidationError
 from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkError, load_crosswalk
 from nba_trade_analyzer.data.darko import fetch_darko_data
 from nba_trade_analyzer.data.epm import fetch_epm_data, get_player_epm, normalize_name
-from nba_trade_analyzer.data.players import fetch_player_stats, fetch_roster_player_ids
+from nba_trade_analyzer.data.players import (
+    fetch_player_stats,
+    fetch_roster_player_ids,
+    fetch_team_roster,
+)
 from nba_trade_analyzer.data.salaries import (
     build_contract,
     fetch_all_salaries,
     get_player_salary,
 )
-from nba_trade_analyzer.engine.constants import FIRST_APRON, SALARY_CAP, SECOND_APRON
+from nba_trade_analyzer.engine.constants import (
+    FIRST_APRON,
+    LUXURY_TAX,
+    SALARY_CAP,
+    SECOND_APRON,
+)
 from nba_trade_analyzer.engine.grader import _epm_tier, grade_trade
 from nba_trade_analyzer.engine.resolution import (
     TradePlayerResolutionError,
@@ -393,6 +405,20 @@ def _fetch_roster_ids_or_exit(team_abbr: str) -> set[int]:
         raise typer.Exit(code=1) from exc
 
 
+def _fetch_team_roster_or_exit(team_abbr: str) -> list[dict]:
+    """Fetch a team's current roster records (id + name), or exit loud."""
+    try:
+        return fetch_team_roster(team_abbr)
+    except Exception as exc:  # noqa: BLE001 - surface any fetch failure to the user
+        typer.secho(
+            f"Error: could not fetch {team_abbr}'s current roster from nba_api "
+            f"({exc}).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+
 def _cap_status_for(payroll: int) -> CapStatus:
     if payroll < SALARY_CAP:
         return CapStatus.UNDER_CAP
@@ -557,6 +583,132 @@ def lookup(
     typer.echo(f"  EPM: {impact:+.1f} ({_epm_tier_display(impact)})")
     typer.echo(f"  Salary: ${c.salary:,} / {c.years_remaining}yr remaining")
     typer.echo(f"  Surplus: {_surplus_str(valuation.surplus_value)}")
+
+
+# ---------------------------------------------------------------------------
+# roster command helpers
+# ---------------------------------------------------------------------------
+
+
+def _salary_row_for_slug(
+    salary_df: pd.DataFrame, slug: str, salary_abbr: str
+) -> dict | None:
+    """Find a contract row by BBRef slug (pure id join, no name matching).
+
+    A player can appear on more than one row (dead money split across teams),
+    so prefer the row whose team matches ``salary_abbr``; otherwise take the
+    first. Returns ``None`` when no row carries the slug.
+    """
+    if salary_df is None or salary_df.empty or "bbref_slug" not in salary_df.columns:
+        return None
+    matches = salary_df[salary_df["bbref_slug"] == slug]
+    if matches.empty:
+        return None
+    on_team = matches[matches["team"] == salary_abbr]
+    chosen = on_team if not on_team.empty else matches
+    return chosen.iloc[0].to_dict()
+
+
+def _position_label(epm_df: pd.DataFrame, name: str) -> str:
+    """Position from EPM if available, else ``-``."""
+    epm_row = get_player_epm(epm_df, name)
+    if epm_row is not None and epm_row.get("position"):
+        return str(epm_row["position"])
+    return "-"
+
+
+def _contract_flags(contract) -> str:
+    """Human-readable option/scale flags for a contract, or empty string."""
+    flags = []
+    if contract.has_player_option:
+        flags.append("player option")
+    if contract.has_team_option:
+        flags.append("team option")
+    if contract.is_rookie_scale:
+        flags.append("rookie scale")
+    return ", ".join(flags)
+
+
+def _standing_line(label: str, line_value: int, payroll: int) -> str:
+    """One salary-line row: the line value and payroll's signed distance to it."""
+    distance = payroll - line_value
+    direction = "above" if distance >= 0 else "below"
+    magnitude = abs(distance) / _MILLION
+    return f"  {label:<14} ${line_value:>13,}   ${magnitude:>6.1f}M {direction}"
+
+
+@app.command()
+def roster(
+    team: str = typer.Option(
+        ..., "--team", "-t", help="Team's 3-letter abbreviation (e.g. LAL)."
+    ),
+) -> None:
+    """Show a team's roster, per-player contracts, and salary-line standing."""
+    force_utf8_stdout()
+
+    info = _resolve_team_or_exit(team)
+    epm_df, _stats_df, salary_df = _load_core_data()
+    crosswalk = _load_crosswalk_or_exit()
+    roster_records = _fetch_team_roster_or_exit(info.abbreviation)
+
+    # Join each current-roster player (nba id) to its contract via the crosswalk
+    # (id -> slug -> salary row). Two-way / 10-day players have no contract row;
+    # they are listed and marked, never dropped, and excluded from payroll.
+    contracted: list[dict] = []
+    no_contract: list[str] = []
+    for rec in roster_records:
+        name = rec["player_name"]
+        slug = crosswalk.slug_for_nba_id(rec["nba_player_id"])
+        salary_data = (
+            _salary_row_for_slug(salary_df, slug, info.salary_abbreviation)
+            if slug
+            else None
+        )
+        if salary_data is None:
+            no_contract.append(name)
+            continue
+        contract = build_contract(salary_data)
+        contracted.append(
+            {
+                "name": name,
+                "position": _position_label(epm_df, name),
+                "salary": contract.salary,
+                "years_remaining": contract.years_remaining,
+                "flags": _contract_flags(contract),
+            }
+        )
+
+    contracted.sort(key=lambda r: r["salary"], reverse=True)
+    payroll = sum(r["salary"] for r in contracted)
+
+    typer.echo()
+    typer.echo(f"{info.name} ({info.abbreviation}) — current roster")
+    typer.echo()
+    for r in contracted:
+        flags = f"  [{r['flags']}]" if r["flags"] else ""
+        typer.echo(
+            f"  {r['name']:<26} {r['position']:<5} ${r['salary']:>12,}  "
+            f"{r['years_remaining']}yr{flags}"
+        )
+    for name in no_contract:
+        typer.echo(f"  {name:<26} {'-':<5} {'— no contract data':>13}")
+
+    typer.echo()
+    typer.echo(f"Players with contract data: {len(contracted)}")
+    if no_contract:
+        typer.echo(
+            f"Excluded from payroll (no contract data): {len(no_contract)} "
+            f"({', '.join(no_contract)})"
+        )
+    typer.echo()
+    typer.echo(f"Payroll: ${payroll:,}")
+    typer.echo(f"Cap tier: {_cap_status_for(payroll).value.replace('_', ' ').title()}")
+    typer.echo()
+    typer.echo("Standing against salary lines:")
+    typer.echo(_standing_line("Salary cap", SALARY_CAP, payroll))
+    typer.echo(_standing_line("Luxury tax", LUXURY_TAX, payroll))
+    typer.echo(_standing_line("First apron", FIRST_APRON, payroll))
+    typer.echo(_standing_line("Second apron", SECOND_APRON, payroll))
 
 
 if __name__ == "__main__":
