@@ -7,7 +7,8 @@ and returns the columns the rest of the engine needs.
 from __future__ import annotations
 
 import pandas as pd
-from nba_api.stats.endpoints import LeagueDashPlayerStats
+from nba_api.stats.endpoints import CommonTeamRoster, LeagueDashPlayerStats
+from nba_api.stats.static import teams as _static_teams
 
 from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.engine.constants import (
@@ -17,8 +18,10 @@ from nba_trade_analyzer.engine.constants import (
 
 _CACHE_TTL_HOURS = 24.0
 _DEFAULT_SEASON = "2025-26"
+_HTTP_TIMEOUT = 30.0
 
 EXPECTED_COLUMNS: tuple[str, ...] = (
+    "nba_player_id",
     "player_name",
     "team",
     "age",
@@ -65,6 +68,10 @@ def _shape(base: pd.DataFrame, advanced: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame(
         {
+            # nba_api PLAYER_ID — the join key that lets roster filtering
+            # intersect this frame with CommonTeamRoster (same ID system) by ID
+            # rather than by name. See ``fetch_roster_player_ids``.
+            "nba_player_id": merged["PLAYER_ID"].astype("int64"),
             "player_name": merged["PLAYER_NAME"],
             "team": merged["TEAM_ABBREVIATION"],
             "age": merged["AGE"],
@@ -103,6 +110,78 @@ def fetch_player_stats(
     # NaN survives a JSON round-trip as null; pd.DataFrame restores it.
     cache.set(cache_key, df.to_dict(orient="records"), ttl_hours=_CACHE_TTL_HOURS)
     return df
+
+
+# ---------------------------------------------------------------------------
+# Current-roster membership (CommonTeamRoster)
+# ---------------------------------------------------------------------------
+#
+# ``LeagueDashPlayerStats`` lists everyone who logged minutes for a team this
+# season — including players since traded away — which inflates positional
+# minute totals. ``CommonTeamRoster`` is the authoritative *current* roster.
+# Both endpoints are nba_api, so they share the PLAYER_ID system: roster
+# filtering is a pure ID intersection, no name matching (see team_context).
+
+# nba_api static team registry is offline-bundled; map its abbreviation (the
+# canonical BKN/CHA/PHX form ``Team.abbreviation`` uses) to the numeric team id
+# CommonTeamRoster requires.
+_TEAM_ID_BY_ABBR: dict[str, int] = {
+    t["abbreviation"]: int(t["id"]) for t in _static_teams.get_teams()
+}
+
+
+def _fetch_roster(team_id: int, season: str) -> pd.DataFrame:
+    resp = CommonTeamRoster(team_id=team_id, season=season, timeout=_HTTP_TIMEOUT)
+    return resp.get_data_frames()[0]
+
+
+def fetch_team_roster(
+    team_abbr: str,
+    season: str = _DEFAULT_SEASON,
+    cache: JsonCache | None = None,
+) -> list[dict]:
+    """Fetch a team's current roster from nba_api ``CommonTeamRoster``.
+
+    Returns a list of ``{"nba_player_id", "player_name", "team"}`` records for
+    the players on ``team_abbr`` *right now*. ``team_abbr`` must be the nba_api
+    abbreviation (BKN/CHA/PHX), i.e. ``Team.abbreviation``. Cached per team for
+    24h via the shared :class:`JsonCache`; 30 teams = 30 cached calls.
+
+    Raises ``KeyError`` for an unknown abbreviation — a programming error the
+    caller should not paper over.
+    """
+    team_id = _TEAM_ID_BY_ABBR[team_abbr]
+    cache = cache or JsonCache()
+    cache_key = f"roster_{team_abbr}_{season}"
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    df = _fetch_roster(team_id, season)
+    records = [
+        {
+            "nba_player_id": int(row["PLAYER_ID"]),
+            "player_name": str(row["PLAYER"]),
+            "team": team_abbr,
+        }
+        for _, row in df.iterrows()
+    ]
+    cache.set(cache_key, records, ttl_hours=_CACHE_TTL_HOURS)
+    return records
+
+
+def fetch_roster_player_ids(
+    team_abbr: str,
+    season: str = _DEFAULT_SEASON,
+    cache: JsonCache | None = None,
+) -> set[int]:
+    """Return the set of nba_api player ids on ``team_abbr``'s current roster.
+
+    Thin wrapper over :func:`fetch_team_roster` for the common case where only
+    membership (not names) is needed — e.g. roster filtering.
+    """
+    return {rec["nba_player_id"] for rec in fetch_team_roster(team_abbr, season, cache)}
 
 
 def get_team_net_rating(df: pd.DataFrame, team_abbr: str) -> float:

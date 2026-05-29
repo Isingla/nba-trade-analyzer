@@ -70,7 +70,6 @@ from nba_trade_analyzer.models.grade import (
 from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.team import Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
-from nba_trade_analyzer.teams import resolve_team
 
 # Calibrated against the documented surplus targets: a star-on-a-bargain-deal
 # haul (ratio ≈ 1) lands ~80, a fleecing tips past it, and a fair swap (ratio
@@ -1073,19 +1072,18 @@ def _grade_team_side(
     epm_df: pd.DataFrame | None,
     darko_df: pd.DataFrame | None,
     score: int,
-    salary_df: pd.DataFrame | None = None,
+    current_roster_ids: set[int] | None = None,
 ) -> TeamGrade:
     label = _short_label(team.name)
     team_wins = _team_wins(stats_df, team.abbreviation)
     roster = _roster_dicts(stats_df, team.abbreviation)
     # Season stats list every player who suited up for the team, including ones
-    # traded away; the salary feed reflects the current roster, so use it to drop
-    # departed players before any roster-based context (positional minutes,
-    # core ages, spacing). The salary feed uses Basketball-Reference team forms
-    # (BRK/CHO/PHO), so map the nba_api abbreviation across first.
-    info = resolve_team(team.abbreviation)
-    salary_team_abbr = info.salary_abbreviation if info else team.abbreviation
-    roster = filter_to_current_roster(roster, salary_team_abbr, salary_df)
+    # traded away; nba_api CommonTeamRoster reflects the current roster, so use
+    # its player-id set to drop departed players before any roster-based context
+    # (positional minutes, core ages, spacing). Pure id intersection — both
+    # frames are nba_api. None/empty ids → keep the full roster (graceful
+    # degradation for rest-of-roster context).
+    roster = filter_to_current_roster(roster, current_roster_ids)
     context = TeamContext(
         projected_wins=team_wins, roster=roster, player_stats_df=stats_df
     )
@@ -1162,7 +1160,7 @@ def grade_trade(
     player_stats_df: pd.DataFrame,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
-    salary_df: pd.DataFrame | None = None,
+    roster_ids_by_team: dict[str, set[int]] | None = None,
 ) -> TradeGrade:
     """Grade a proposed trade for both teams.
 
@@ -1171,10 +1169,13 @@ def grade_trade(
 
     ``epm_df`` / ``darko_df`` are fetched on demand (24h cached) when omitted.
     Contracts are read directly from the trade's ``RosterEntry`` objects, so the
-    grader works fine with manually-specified contracts. ``salary_df``, when
-    supplied, is used only to drop traded-away players from each team's roster
-    before positional/context calculations (it reflects the current roster);
-    without it the grader keeps every player the season stats list.
+    grader works fine with manually-specified contracts.
+
+    ``roster_ids_by_team`` maps a team abbreviation to the set of nba_api player
+    ids on its *current* roster (from ``CommonTeamRoster``). When supplied, each
+    side's season-stats roster is filtered to those ids before positional /
+    context calculations, dropping mid-season departures. When omitted, the
+    grader keeps every player the season stats list (graceful degradation).
     """
     legality = check_trade_legality(trade)
     if not legality.legal:
@@ -1203,6 +1204,17 @@ def grade_trade(
     score_a = _score(delta_a, total_value)
     score_b = _score(-delta_a, total_value)
 
+    ids_a = (
+        roster_ids_by_team.get(trade.team_a.abbreviation)
+        if roster_ids_by_team
+        else None
+    )
+    ids_b = (
+        roster_ids_by_team.get(trade.team_b.abbreviation)
+        if roster_ids_by_team
+        else None
+    )
+
     team_a_grade = _grade_team_side(
         trade.team_a,
         trade.team_b_sends,
@@ -1211,7 +1223,7 @@ def grade_trade(
         epm_df,
         darko_df,
         score_a,
-        salary_df=salary_df,
+        current_roster_ids=ids_a,
     )
     team_b_grade = _grade_team_side(
         trade.team_b,
@@ -1221,7 +1233,7 @@ def grade_trade(
         epm_df,
         darko_df,
         score_b,
-        salary_df=salary_df,
+        current_roster_ids=ids_b,
     )
 
     return TradeGrade(

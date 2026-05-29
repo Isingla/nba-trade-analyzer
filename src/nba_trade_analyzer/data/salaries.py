@@ -50,6 +50,7 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 EXPECTED_COLUMNS: tuple[str, ...] = (
     "player_name",
+    "bbref_slug",
     "team",
     "salary",
     "years_remaining",
@@ -57,6 +58,12 @@ EXPECTED_COLUMNS: tuple[str, ...] = (
     "has_player_option",
     "has_team_option",
 )
+
+# Basketball Reference player-page links look like ``/players/d/doncilu01.html``;
+# the trailing token (``doncilu01``) is the player's permanent BBRef id. It never
+# goes stale (unlike the team column), so it is the stable join key the offline
+# crosswalk uses to tie a contract to its nba_api identity.
+_SLUG_RE = re.compile(r"/players/[a-z]/([^./]+)\.html")
 
 # CSS classes Basketball Reference puts on option-year salary cells. Stated on
 # the page itself: "Color Key: Player Option, Team Option".
@@ -184,6 +191,18 @@ def _cell_salary(cell: Tag | None) -> int | None:
     return _parse_money(cell.get_text(strip=True))
 
 
+def _extract_slug(name_cell: Tag) -> str:
+    """Pull the permanent BBRef slug from a player cell's ``<a>`` href.
+
+    Returns ``""`` when the cell has no recognizable player link (e.g. a plain
+    text name); the crosswalk build flags any contract with an empty slug.
+    """
+    link = name_cell.find("a")
+    href = link.get("href", "") if link is not None else ""
+    m = _SLUG_RE.search(href or "")
+    return m.group(1) if m else ""
+
+
 def _cell_has_class(cell: Tag | None, cls: str) -> bool:
     return cell is not None and cls in (cell.get("class") or [])
 
@@ -233,6 +252,7 @@ def _parse_salary_html(html: str, season: str = _DEFAULT_SEASON) -> pd.DataFrame
         player_name = name_cell.get_text(strip=True)
         if not player_name:
             continue
+        bbref_slug = _extract_slug(name_cell)
 
         year_cells = {
             stat: tr.find("td", {"data-stat": stat}) for stat in contract_stats
@@ -259,6 +279,7 @@ def _parse_salary_html(html: str, season: str = _DEFAULT_SEASON) -> pd.DataFrame
         rows.append(
             {
                 "player_name": player_name,
+                "bbref_slug": bbref_slug,
                 "team": team_cell.get_text(strip=True) if team_cell else "",
                 "salary": int(salary),
                 "years_remaining": int(years_remaining),
@@ -290,6 +311,11 @@ def _load_csv_fallback(path: Path) -> pd.DataFrame:
     df["years_remaining"] = df["years_remaining"].astype(int)
     for col in ("is_rookie_scale", "has_player_option", "has_team_option"):
         df[col] = df[col].astype(bool)
+    # Pre-slug CSV snapshots lack the bbref_slug column; tolerate it so the
+    # offline path keeps working, with empty slugs the crosswalk build flags.
+    if "bbref_slug" not in df.columns:
+        df["bbref_slug"] = ""
+    df["bbref_slug"] = df["bbref_slug"].fillna("").astype(str)
     return df[list(EXPECTED_COLUMNS)]
 
 

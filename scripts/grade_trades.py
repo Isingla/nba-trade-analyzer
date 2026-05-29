@@ -180,7 +180,6 @@ def main() -> None:
             player_stats_df=stats_df,
             epm_df=epm_df,
             darko_df=darko_df,
-            salary_df=salary_df,
         )
         print_report(trade, grade)
 
@@ -204,7 +203,6 @@ def main() -> None:
             player_stats_df=stats_df,
             epm_df=epm_df,
             darko_df=darko_df,
-            salary_df=salary_df,
         )
         print_report(trade, grade, title=manual.title)
 

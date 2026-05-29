@@ -33,8 +33,10 @@ from nba_trade_analyzer.cli import (
     _parse_assets,
     _stats_lookup,
 )
+from nba_trade_analyzer.data.crosswalk import Crosswalk, load_crosswalk
 from nba_trade_analyzer.data.darko import fetch_darko_data
 from nba_trade_analyzer.data.epm import normalize_name
+from nba_trade_analyzer.data.players import fetch_roster_player_ids
 from nba_trade_analyzer.engine.grader import (
     _pick_team_wins,
     _projected_pick_number,
@@ -113,10 +115,14 @@ TRADES: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "Randle/Gobert (NYK↔MIN)",
+        # Single-for-single with a wide salary gap into a second-apron team:
+        # NYK (over the second apron) can't take back $35M for $12.9M out, so
+        # the deal is illegal. Both players are on their current rosters, so the
+        # new roster-membership check passes and the engine reaches legality.
+        "name": "Clarkson/Gobert (NYK↔MIN)",
         "team_a": "NYK",
         "team_b": "MIN",
-        "sends_a": ["Julius Randle"],
+        "sends_a": ["Jordan Clarkson"],
         "sends_b": ["Rudy Gobert"],
         "expected_legal": False,
         "score_range_a": None,
@@ -127,16 +133,13 @@ TRADES: list[dict[str, Any]] = [
         ],
     },
     {
-        # Salary dump: a rebuilder ships an overpaid vet to an OVER_CAP
-        # contender for a cheaper rotation piece plus the contender's own
-        # near-future 1st. Like Trade 2 (and the original of this slot), it
-        # values the contracts as a *scenario* — it doesn't assert current
-        # roster membership. The original WAS↔LAL framing is illegal under
-        # live data: LAL sits over the second apron, where it can't take back
-        # more salary than it sends, so Kuzma's $22.4M can't match Hachimura's
-        # $18.3M. Routing the same shape through DET (OVER_CAP) keeps it legal.
-        "name": "Kuzma dump (WAS↔DET)",
-        "team_a": "WAS",
+        # Salary dump: a team ships an overpaid vet to an OVER_CAP contender for
+        # a cheaper rotation piece plus the contender's own near-future 1st.
+        # Kuzma (now on MIL) is the overpay; DET (OVER_CAP) absorbs the salary
+        # and sends out its late first. All players are on their current
+        # rosters, so the roster-membership check passes.
+        "name": "Kuzma dump (MIL↔DET)",
+        "team_a": "MIL",
         "team_b": "DET",
         "sends_a": ["Kyle Kuzma"],
         "sends_b": ["Duncan Robinson", "2026 DET 1st unprotected"],
@@ -145,7 +148,7 @@ TRADES: list[dict[str, Any]] = [
         "score_range_b": [10, 30],
         "checks": [
             "legal — an OVER_CAP contender absorbs the salary via the Expanded TPE",
-            "WAS clearly wins (sheds an overpay for a cheaper piece + a 1st)",
+            "MIL clearly wins (sheds an overpay for a cheaper piece + a 1st)",
             "DET is a ~60-win team, so its 2026 1st must project late (> 20)",
             "scores sum to 100",
         ],
@@ -198,17 +201,15 @@ def _range_str(spec: dict[str, Any]) -> str:
 
 
 def _position_minutes(
-    team: Team, stats_df: pd.DataFrame, salary_df: pd.DataFrame
+    team: Team, stats_df: pd.DataFrame, roster_ids: set[int]
 ) -> dict[str, float]:
     """Minutes-by-position for a team's *current* roster.
 
     Mirrors what the grader builds: season-stats rows filtered to the current
-    salary-feed roster (which drops mid-season departures), bucketed G/F/C.
+    nba_api roster id set (which drops mid-season departures), bucketed G/F/C.
     """
-    info = resolve_team(team.abbreviation)
-    salary_abbr = info.salary_abbreviation if info else team.abbreviation
     roster = _roster_dicts(stats_df, team.abbreviation)
-    roster = filter_to_current_roster(roster, salary_abbr, salary_df)
+    roster = filter_to_current_roster(roster, roster_ids)
     return _minutes_by_position(roster)
 
 
@@ -288,6 +289,7 @@ def evaluate_trade(
     salary_df: pd.DataFrame,
     darko_df: pd.DataFrame,
     stats_lookup: dict[str, pd.Series],
+    crosswalk: Crosswalk,
 ) -> TradeResult:
     """Run one trade through the full pipeline and the universal sanity suite."""
     name = spec["name"]
@@ -304,13 +306,27 @@ def evaluate_trade(
 
     team_a = _build_team(info_a, salary_df)
     team_b = _build_team(info_b, salary_df)
+    roster_ids_a = fetch_roster_player_ids(info_a.abbreviation)
+    roster_ids_b = fetch_roster_player_ids(info_b.abbreviation)
 
     try:
         players_a, picks_a = _parse_assets(
-            spec["sends_a"], epm_df, stats_lookup, salary_df
+            spec["sends_a"],
+            epm_df,
+            stats_lookup,
+            salary_df,
+            info_a.abbreviation,
+            crosswalk,
+            roster_ids_a,
         )
         players_b, picks_b = _parse_assets(
-            spec["sends_b"], epm_df, stats_lookup, salary_df
+            spec["sends_b"],
+            epm_df,
+            stats_lookup,
+            salary_df,
+            info_b.abbreviation,
+            crosswalk,
+            roster_ids_b,
         )
     except (typer.Exit, SystemExit):
         return TradeResult(
@@ -333,7 +349,10 @@ def evaluate_trade(
         player_stats_df=stats_df,
         epm_df=epm_df,
         darko_df=darko_df,
-        salary_df=salary_df,
+        roster_ids_by_team={
+            info_a.abbreviation: roster_ids_a,
+            info_b.abbreviation: roster_ids_b,
+        },
     )
 
     expected_legal = spec["expected_legal"]
@@ -393,8 +412,8 @@ def evaluate_trade(
             failures.append(f"{lbl} prose verdict too short ({len(prose)} chars)")
 
     # --- Position minutes sanity ----------------------------------------
-    for team in (team_a, team_b):
-        minutes = _position_minutes(team, stats_df, salary_df)
+    for team, ids in ((team_a, roster_ids_a), (team_b, roster_ids_b)):
+        minutes = _position_minutes(team, stats_df, ids)
         over = {b: round(m) for b, m in minutes.items() if m > MINUTES_CEILING}
         if over:
             failures.append(
@@ -455,6 +474,7 @@ def main() -> None:
     epm_df, stats_df, salary_df = _load_core_data()
     darko_df = fetch_darko_data()
     stats_lookup = _stats_lookup(stats_df)
+    crosswalk = load_crosswalk()
 
     results = [
         evaluate_trade(
@@ -464,6 +484,7 @@ def main() -> None:
             salary_df=salary_df,
             darko_df=darko_df,
             stats_lookup=stats_lookup,
+            crosswalk=crosswalk,
         )
         for spec in TRADES
     ]
