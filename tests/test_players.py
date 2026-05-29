@@ -9,6 +9,8 @@ from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.data.players import (
     EXPECTED_COLUMNS,
     fetch_player_stats,
+    fetch_roster_player_ids,
+    fetch_team_roster,
     get_all_team_net_ratings,
     get_team_net_rating,
 )
@@ -52,6 +54,62 @@ def test_fetch_player_stats_returns_expected_columns(tmp_path):
     assert set(EXPECTED_COLUMNS).issubset(df.columns)
     assert df.loc[0, "player_name"] == "LeBron James"
     assert df.loc[0, "team"] == "LAL"
+    # The nba_api player id rides along so roster filtering can join by id.
+    assert df.loc[0, "nba_player_id"] == 1
+    assert df["nba_player_id"].tolist() == [1, 2, 3]
+
+
+# ----- current-roster fetch (CommonTeamRoster) ----------------------------
+
+
+def _fake_roster_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "PLAYER_ID": [201939, 1626172],
+            "PLAYER": ["Stephen Curry", "Kevon Looney"],
+            "POSITION": ["G", "C"],
+        }
+    )
+
+
+def test_fetch_team_roster_returns_id_records(tmp_path):
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.players._fetch_roster",
+        return_value=_fake_roster_df(),
+    ):
+        roster = fetch_team_roster("GSW", cache=cache)
+
+    assert roster == [
+        {"nba_player_id": 201939, "player_name": "Stephen Curry", "team": "GSW"},
+        {"nba_player_id": 1626172, "player_name": "Kevon Looney", "team": "GSW"},
+    ]
+
+
+def test_fetch_team_roster_uses_cache_on_second_call(tmp_path):
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.players._fetch_roster",
+        return_value=_fake_roster_df(),
+    ) as mocked:
+        fetch_team_roster("GSW", cache=cache)
+        fetch_team_roster("GSW", cache=cache)
+    assert mocked.call_count == 1
+
+
+def test_fetch_roster_player_ids_returns_id_set(tmp_path):
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.players._fetch_roster",
+        return_value=_fake_roster_df(),
+    ):
+        ids = fetch_roster_player_ids("GSW", cache=cache)
+    assert ids == {201939, 1626172}
+
+
+def test_fetch_team_roster_unknown_abbr_raises():
+    with pytest.raises(KeyError):
+        fetch_team_roster("XXX")
 
 
 def test_fetch_player_stats_uses_cache_on_second_call(tmp_path):

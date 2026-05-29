@@ -208,6 +208,27 @@ def test_fetch_all_salaries_parses_plain_multiyear_deal(tmp_path):
     assert curry["is_rookie_scale"] is False
 
 
+def test_fetch_all_salaries_captures_bbref_slug(tmp_path):
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.salaries.httpx.get", return_value=_mocked_response()
+    ):
+        df = fetch_all_salaries(cache=cache)
+
+    # The permanent slug is parsed from each player's page link href.
+    assert get_player_salary(df, "Stephen Curry")["bbref_slug"] == "curryst01"
+    assert get_player_salary(df, "Nikola Jokić")["bbref_slug"] == "jokicni01"
+    assert get_player_salary(df, "Cooper Flagg")["bbref_slug"] == "flagco01"
+
+
+def test_csv_fallback_tolerates_missing_slug_column(tmp_path):
+    # Pre-slug snapshots have no bbref_slug column; the loader adds an empty one
+    # so the schema is intact and the crosswalk build can flag the gap.
+    df = _load_csv_fallback(_write_fixture_csv(tmp_path))
+    assert "bbref_slug" in df.columns
+    assert (df["bbref_slug"] == "").all()
+
+
 def test_fetch_all_salaries_detects_player_option(tmp_path):
     cache = JsonCache(tmp_path)
     with patch(
