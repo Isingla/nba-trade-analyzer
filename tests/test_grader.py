@@ -892,16 +892,20 @@ def test_outgoing_player_trimmed_from_positional_fit():
     # BUG 2: a player being sent out vacates his minutes, so he must not count
     # toward the team's positional load nor be named in the incoming player's
     # crunch. Without trimming, the highest-minute departing forward would be
-    # named first.
+    # named first. Two bench forwards make F a genuine logjam under the
+    # minutes-share metric (so a crunch is actually named); their lower MPG
+    # keeps Wing/Vet as the two named in the prose.
     leaving_f = _spec("Leaving Forward", "NYK", 1.0, position="F", age=29, mpg=36.0)
     arriving_f = _spec("Arriving Forward", "MIN", 2.0, position="F", age=26)
+    bench_f1 = _spec("NYK Bench F1", "NYK", 0.0, position="F", age=27, mpg=30.0)
+    bench_f2 = _spec("NYK Bench F2", "NYK", 0.0, position="F", age=27, mpg=30.0)
     trade = Trade(
         team_a=_team("NYK", "New York Knicks"),
         team_b=_team("MIN", "Minnesota Timberwolves"),
         team_a_sends=TradeAssets(players=[_entry(leaving_f, 22_000_000)]),
         team_b_sends=TradeAssets(players=[_entry(arriving_f, 22_000_000)]),
     )
-    grade = _grade(trade, extra=[leaving_f, arriving_f])
+    grade = _grade(trade, extra=[leaving_f, arriving_f, bench_f1, bench_f2])
     pos = grade.team_a_grade.positional_fit
     # The departing forward is trimmed out of the crunch...
     assert "Leaving Forward" not in pos.explanation
@@ -914,13 +918,17 @@ def test_luka_not_named_in_forward_crunch():
     # acquiring a forward must not see him in the forward minutes crunch.
     luka = _spec("Luka Dončić", "NYK", 6.0, position="F-G", age=26, mpg=36.0)
     new_f = _spec("New Forward", "MIN", 2.0, position="F", age=27)
+    # Two bench forwards make F a real logjam under the share metric; Luka is
+    # overridden to guard, so he must not be counted toward (or named in) it.
+    bench_f1 = _spec("NYK Bench F1", "NYK", 0.0, position="F", age=27, mpg=30.0)
+    bench_f2 = _spec("NYK Bench F2", "NYK", 0.0, position="F", age=27, mpg=30.0)
     trade = Trade(
         team_a=_team("NYK", "New York Knicks"),
         team_b=_team("MIN", "Minnesota Timberwolves"),
         team_a_sends=TradeAssets(players=[_entry(_NYK_ROSTER[3], 20_000_000)]),
         team_b_sends=TradeAssets(players=[_entry(new_f, 20_000_000)]),
     )
-    grade = _grade(trade, extra=[luka, new_f])
+    grade = _grade(trade, extra=[luka, new_f, bench_f1, bench_f2])
     explanation = grade.team_a_grade.positional_fit.explanation
     # It is a genuine forward logjam (the real forwards fill it)...
     assert grade.team_a_grade.positional_fit.raw_value < 0

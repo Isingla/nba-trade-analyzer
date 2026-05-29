@@ -131,37 +131,65 @@ def _roster_with_position_minutes(
     ]
 
 
+# Positional fit is scored on minutes-SHARE vs fair-share (G=0.40, F=0.40,
+# C=0.20), not raw minute sums — so the result is independent of roster size and
+# no longer saturates every incoming player. relative = bucket_share / fair.
+
+
 def test_positional_player_fills_empty_position_is_bonus():
-    # Center slot is completely empty.
-    roster = _roster_with_position_minutes(g_mpg=72, f_mpg=72, c_mpg=10)
+    # Center bucket is starved: share 5/85 ≈ 0.059, relative ≈ 0.29 (≤ NEED 0.7).
+    roster = _roster_with_position_minutes(g_mpg=40, f_mpg=40, c_mpg=5)
     mod = calculate_positional_modifier("C", roster)
     assert mod == pytest.approx(POSITIONAL_MAX_ADJUSTMENT, abs=1e-6)
 
 
 def test_positional_player_in_logjam_is_penalty():
-    # Forward slot is overloaded.
-    roster = _roster_with_position_minutes(g_mpg=48, f_mpg=80, c_mpg=48)
+    # Forward bucket hogs minutes: share 80/120 ≈ 0.667, relative ≈ 1.67 (≥ 1.3).
+    roster = _roster_with_position_minutes(g_mpg=20, f_mpg=80, c_mpg=20)
     mod = calculate_positional_modifier("F", roster)
     assert mod == pytest.approx(-POSITIONAL_MAX_ADJUSTMENT, abs=1e-6)
 
 
-def test_positional_balanced_roster_near_zero():
-    # All buckets at the mid-band (~32 MPG): modifier within ±MAX.
-    roster = _roster_with_position_minutes(g_mpg=32, f_mpg=32, c_mpg=32)
+def test_positional_fair_share_roster_is_neutral():
+    # A roster matching the fair shares exactly (G=0.40, F=0.40, C=0.20) leaves
+    # an incoming guard at relative 1.0 → modifier ~0 (in-band, not saturated).
+    roster = _roster_with_position_minutes(g_mpg=40, f_mpg=40, c_mpg=20)
+    mod = calculate_positional_modifier("G", roster)
+    assert mod == pytest.approx(0.0, abs=1e-6)
+
+
+def test_positional_in_band_roster_carries_unsaturated_signal():
+    # A mildly guard-heavy roster: G share 0.40/ (... ) lands strictly between
+    # the need and logjam thresholds, so the signal is real but NOT saturated.
+    roster = _roster_with_position_minutes(g_mpg=44, f_mpg=36, c_mpg=20)
     mod = calculate_positional_modifier("G", roster)
     assert -POSITIONAL_MAX_ADJUSTMENT < mod < POSITIONAL_MAX_ADJUSTMENT
+    assert mod != pytest.approx(0.0, abs=1e-6)  # genuinely off-neutral
 
 
 def test_positional_no_position_label_returns_zero():
-    roster = _roster_with_position_minutes(g_mpg=32, f_mpg=32, c_mpg=32)
+    roster = _roster_with_position_minutes(g_mpg=40, f_mpg=40, c_mpg=20)
+    # No resolvable position → deliberate 0.0 ("no positional signal").
     assert calculate_positional_modifier(None, roster) == 0.0
     assert calculate_positional_modifier("", roster) == 0.0
+
+
+def test_positional_modifier_not_constant_across_roster_shapes():
+    # The original bug returned -MAX for every shape. The same incoming center
+    # must swing from a bonus (empty C) to a penalty (logjammed C).
+    thin_c = _roster_with_position_minutes(g_mpg=40, f_mpg=40, c_mpg=5)
+    heavy_c = _roster_with_position_minutes(g_mpg=20, f_mpg=20, c_mpg=60)
+    bonus = calculate_positional_modifier("C", thin_c)
+    penalty = calculate_positional_modifier("C", heavy_c)
+    assert bonus > 0.0
+    assert penalty < 0.0
+    assert bonus != penalty
 
 
 def test_dual_position_uses_primary_position():
     # A "G-F" resolves to its primary (guard) position. On a roster thin at
     # guard but logjammed at forward, that reads as a positional need (a bonus),
-    # not a blended wash.
+    # not a blended wash. G share 10/130 ≈ 0.077, relative ≈ 0.19 (≤ NEED).
     roster = _roster_with_position_minutes(g_mpg=10, f_mpg=80, c_mpg=40)
     mod = calculate_positional_modifier("G-F", roster)
     assert mod == pytest.approx(POSITIONAL_MAX_ADJUSTMENT, abs=1e-6)
