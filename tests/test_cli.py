@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from nba_trade_analyzer.cli import app, parse_pick
+from nba_trade_analyzer.cli import _standing_line, app, parse_pick
 from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkEntry
 from nba_trade_analyzer.data.epm import normalize_name
 from nba_trade_analyzer.data.salaries import EXPECTED_COLUMNS
@@ -131,11 +131,15 @@ def _spec(
     }
 
 
-def _patch_data(specs: list[dict]):
-    """Patch the CLI's four data fetchers to return synthetic frames.
+def _patch_data(specs: list[dict], roster_extra: dict[str, list[str]] | None = None):
+    """Patch the CLI's data fetchers to return synthetic frames.
 
     Returns a ``patch.multiple`` context manager, so callers use it with
     ``with _patch_data(...):`` — no real HTTP or cache access occurs.
+
+    ``roster_extra`` maps a team abbreviation to extra current-roster player
+    names that have NO salary/crosswalk entry (e.g. two-way players), so the
+    roster command's no-contract path can be exercised.
     """
     epm = _epm_df(specs)
     stats = _stats_df(specs)
@@ -166,6 +170,26 @@ def _patch_data(specs: list[dict]):
     def _roster_ids(team_abbr: str, *a, **k) -> set[int]:
         return {_fake_nba_id(s["name"]) for s in specs if s["team"] == team_abbr}
 
+    def _roster_records(team_abbr: str, *a, **k) -> list[dict]:
+        recs = [
+            {
+                "nba_player_id": _fake_nba_id(s["name"]),
+                "player_name": s["name"],
+                "team": team_abbr,
+            }
+            for s in specs
+            if s["team"] == team_abbr
+        ]
+        for extra_name in (roster_extra or {}).get(team_abbr, []):
+            recs.append(
+                {
+                    "nba_player_id": _fake_nba_id(extra_name),
+                    "player_name": extra_name,
+                    "team": team_abbr,
+                }
+            )
+        return recs
+
     return patch.multiple(
         "nba_trade_analyzer.cli",
         fetch_epm_data=lambda *a, **k: epm,
@@ -174,6 +198,7 @@ def _patch_data(specs: list[dict]):
         fetch_darko_data=lambda *a, **k: darko,
         load_crosswalk=lambda *a, **k: crosswalk,
         fetch_roster_player_ids=_roster_ids,
+        fetch_team_roster=_roster_records,
     )
 
 
@@ -351,3 +376,71 @@ def test_grade_quick_skips_darko(flag: str):
         )
     assert result.exit_code == 0
     assert "Skipping DARKO" in result.output
+
+
+# ---------------------------------------------------------------------------
+# roster command
+# ---------------------------------------------------------------------------
+
+
+def test_roster_runs_for_valid_team_exits_zero():
+    specs = [
+        _spec("Star Guard", team="LAL", salary_team="LAL", salary=40_000_000),
+        _spec("Role Forward", team="LAL", salary_team="LAL", salary=12_000_000),
+    ]
+    with _patch_data(specs):
+        result = runner.invoke(app, ["roster", "-t", "LAL"])
+    assert result.exit_code == 0
+    assert "Star Guard" in result.output
+    assert "Role Forward" in result.output
+    assert "Payroll:" in result.output
+    # Sorted by current-year salary descending.
+    assert result.output.index("Star Guard") < result.output.index("Role Forward")
+
+
+def test_roster_invalid_team_exits_one():
+    with _patch_data([_spec("Star Guard", team="LAL", salary_team="LAL")]):
+        result = runner.invoke(app, ["roster", "-t", "XYZ"])
+    assert result.exit_code == 1
+    assert "not a valid NBA team abbreviation" in result.output
+
+
+def test_roster_payroll_excludes_no_contract_players():
+    specs = [
+        _spec("Star Guard", team="LAL", salary_team="LAL", salary=20_000_000),
+        _spec("Role Forward", team="LAL", salary_team="LAL", salary=10_000_000),
+    ]
+    # A two-way player on the roster with no salary/crosswalk entry.
+    with _patch_data(specs, roster_extra={"LAL": ["Two Way Guy"]}):
+        result = runner.invoke(app, ["roster", "-t", "LAL"])
+    assert result.exit_code == 0
+    # Payroll is the sum of the two contracted players only, not the two-way.
+    assert "Payroll: $30,000,000" in result.output
+    # The no-contract player is listed and marked, never omitted.
+    assert "Two Way Guy" in result.output
+    assert "no contract data" in result.output
+    # And the exclusion is noted so payroll isn't silently incomplete.
+    assert "Excluded from payroll (no contract data): 1" in result.output
+
+
+def test_roster_shows_all_four_line_distances_with_sign():
+    # A single $160M contract: above the cap, below tax + both aprons.
+    specs = [_spec("Big Deal", team="LAL", salary_team="LAL", salary=160_000_000)]
+    with _patch_data(specs):
+        result = runner.invoke(app, ["roster", "-t", "LAL"])
+    assert result.exit_code == 0
+    for label in ("Salary cap", "Luxury tax", "First apron", "Second apron"):
+        assert label in result.output
+    assert "5.4M above" in result.output  # 160.0M - 154.647M cap
+    assert "27.9M below" in result.output  # 187.895M tax - 160.0M
+    assert "35.9M below" in result.output  # 195.945M first apron - 160.0M
+    assert "47.8M below" in result.output  # 207.824M second apron - 160.0M
+
+
+def test_standing_line_sign_and_magnitude():
+    # Above a line: payroll exceeds it.
+    above = _standing_line("Salary cap", 154_647_000, 160_000_000)
+    assert "above" in above and "5.4M" in above
+    # Below a line: payroll under it.
+    below = _standing_line("Second apron", 207_824_000, 160_000_000)
+    assert "below" in below and "47.8M" in below
