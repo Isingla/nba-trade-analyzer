@@ -1,12 +1,12 @@
 """Positional-overlap diagnostic (issue: positional penalty saturation).
 
-NOT a fix. Prints, for every incoming player across the validate_trades trade
-set, the acquiring team's clean (post roster-fix) minutes-by-bucket totals, the
-incoming player's resolved bucket, where that bucket sits relative to the
-POSITIONAL_MINUTES_THRESHOLD_LOW / _HIGH band, and the resulting positional
-modifier. The goal is to read, on sight, whether the penalty saturates because
-the thresholds are simply mis-set for bucket-sum units (units-mismatch
-hypothesis) or for some subtler reason.
+A verification harness, not a fix. Prints, for every incoming player across the
+validate_trades trade set, the acquiring team's clean (post roster-fix)
+minutes-by-bucket totals, the incoming player's resolved bucket, that bucket's
+*relative share* (minutes-share ÷ fair-share) versus the need/logjam thresholds,
+and the resulting positional modifier. The goal is to read, on sight, whether
+the modifier distribution spreads (a healthy share metric) or collapses onto one
+rail (the old bucket-sum units bug, which saturated every player at -MAX).
 
 Run from repo root::
 
@@ -20,7 +20,6 @@ numbers reflect the genuinely-clean pipeline, not a fixture.
 from __future__ import annotations
 
 from statistics import mean
-from typing import Any
 
 import pandas as pd
 
@@ -29,9 +28,10 @@ from nba_trade_analyzer.data.darko import fetch_darko_data
 from nba_trade_analyzer.data.epm import normalize_name
 from nba_trade_analyzer.data.players import fetch_roster_player_ids
 from nba_trade_analyzer.engine.constants import (
+    POSITIONAL_FAIR_SHARE,
+    POSITIONAL_LOGJAM_MULT,
     POSITIONAL_MAX_ADJUSTMENT,
-    POSITIONAL_MINUTES_THRESHOLD_HIGH,
-    POSITIONAL_MINUTES_THRESHOLD_LOW,
+    POSITIONAL_NEED_MULT,
 )
 from nba_trade_analyzer.engine.grader import _roster_dicts
 from nba_trade_analyzer.engine.team_context import (
@@ -48,9 +48,22 @@ from nba_trade_analyzer.teams import resolve_team
 # Reuse the exact same trade set the smoke test exercises.
 from validate_trades import TRADES  # noqa: E402
 
-HIGH = POSITIONAL_MINUTES_THRESHOLD_HIGH
-LOW = POSITIONAL_MINUTES_THRESHOLD_LOW
+LOGJAM = POSITIONAL_LOGJAM_MULT
+NEED = POSITIONAL_NEED_MULT
 MAXADJ = POSITIONAL_MAX_ADJUSTMENT
+
+
+def _epm_position(name: str, epm_df: pd.DataFrame) -> str | None:
+    """Position label from the EPM feed (keyed by normalized name), or None."""
+    if epm_df is None or epm_df.empty or "player_name_normalized" not in epm_df:
+        return None
+    match = epm_df[epm_df["player_name_normalized"] == normalize_name(name)]
+    if match.empty:
+        return None
+    pos = match.iloc[0].get("position")
+    if pos is None or (isinstance(pos, float) and pd.isna(pos)):
+        return None
+    return str(pos)
 
 
 def _incoming_position(
@@ -58,28 +71,37 @@ def _incoming_position(
 ) -> str | None:
     """Resolve a player's coarse position the way the context engine would.
 
-    Prefers EPM's position label, falls back to the stats feed, applies the
-    per-player override (e.g. Luka -> G), then coarsens to G/F/C.
+    Mirrors ``_player_position``: prefers EPM's label, falls back to the stats
+    feed, applies the per-player override (e.g. Luka -> G), coarsens to G/F/C.
     """
-    key = normalize_name(name)
-    row = stats_lookup.get(key)
-    raw = None
-    if row is not None:
-        raw = row.get("position")
-        if raw is not None and isinstance(raw, float) and pd.isna(raw):
-            raw = None
-    resolved = resolve_position(name, raw if raw is not None else None)
+    raw = _epm_position(name, epm_df)
+    if raw is None:
+        row = stats_lookup.get(normalize_name(name))
+        if row is not None:
+            cand = row.get("position")
+            if cand is not None and not (isinstance(cand, float) and pd.isna(cand)):
+                raw = cand
+    resolved = resolve_position(name, raw)
     buckets = _coarse_position(resolved)
     return buckets[0][0] if buckets else None
 
 
-def _band_position(minutes: float) -> str:
-    """Human label for where a bucket-minute total lands in the band."""
-    if minutes >= HIGH:
-        return f"SATURATED HIGH (>= {HIGH:.0f})  -> -{MAXADJ:.0%}"
-    if minutes <= LOW:
-        return f"SATURATED LOW  (<= {LOW:.0f})  -> +{MAXADJ:.0%}"
-    return f"in-band ({LOW:.0f}-{HIGH:.0f})"
+def _relative_share(bucket: str, bucket_sums: dict[str, float]) -> float | None:
+    """Bucket's share of total team minutes ÷ its fair share, or None if N/A."""
+    total = sum(bucket_sums.values())
+    fair = POSITIONAL_FAIR_SHARE.get(bucket)
+    if total <= 0 or not fair:
+        return None
+    return (bucket_sums.get(bucket, 0.0) / total) / fair
+
+
+def _band_position(relative: float) -> str:
+    """Human label for where a bucket's relative share lands in the band."""
+    if relative >= LOGJAM:
+        return f"LOGJAM    (rel {relative:.2f} >= {LOGJAM:.2f})  -> -{MAXADJ:.0%}"
+    if relative <= NEED:
+        return f"NEED      (rel {relative:.2f} <= {NEED:.2f})  -> +{MAXADJ:.0%}"
+    return f"in-band   (rel {relative:.2f}, {NEED:.2f}-{LOGJAM:.2f})"
 
 
 def main() -> None:
@@ -92,16 +114,17 @@ def main() -> None:
     print()
     print("=" * 78)
     print(
-        f"POSITIONAL DIAGNOSTIC   thresholds: LOW={LOW:.0f}  HIGH={HIGH:.0f}  "
-        f"max=+/-{MAXADJ:.0%}"
+        f"POSITIONAL DIAGNOSTIC   fair-share={POSITIONAL_FAIR_SHARE}  "
+        f"need<={NEED:.2f}  logjam>={LOGJAM:.2f}  max=+/-{MAXADJ:.0%}"
     )
     print("=" * 78)
 
     all_modifiers: list[float] = []
-    all_bucket_sums: list[float] = []
+    all_relatives: list[float] = []
     saturated_high = 0
     saturated_low = 0
     in_band = 0
+    sat_eps = 1e-9
 
     for spec in TRADES:
         if not spec.get("expected_legal", False):
@@ -120,7 +143,7 @@ def main() -> None:
         print(f"\n--- {spec['name']} ---")
 
         # team A receives team B's outgoing players, and vice versa.
-        for (recv_team, recv_info, recv_ids, send_team, incoming_names) in (
+        for recv_team, recv_info, recv_ids, send_team, incoming_names in (
             (team_a, info_a, ids_a, team_b, spec["sends_b"]),
             (team_b, info_b, ids_b, team_a, spec["sends_a"]),
         ):
@@ -143,22 +166,28 @@ def main() -> None:
                     continue
                 bucket = _incoming_position(name, epm_df, stats_lookup)
                 if bucket is None:
-                    print(f"    {name:<22} bucket=?    (no position label)")
+                    # No resolvable position → the engine returns 0.0 (no
+                    # positional signal); count it as in-band, not saturated.
+                    print(f"    {name:<22} bucket=?    (no position label) mod=+0.0%")
                     continue
-                bucket_min = bucket_sums.get(bucket, 0.0)
+                relative = _relative_share(bucket, bucket_sums)
                 mod = calculate_positional_modifier(bucket, roster_trimmed)
                 all_modifiers.append(mod)
-                all_bucket_sums.append(bucket_min)
-                if bucket_min >= HIGH:
+                if relative is not None:
+                    all_relatives.append(relative)
+                # Classify on the modifier itself: saturated only at the ±MAX rails.
+                if mod <= -MAXADJ + sat_eps:
                     saturated_high += 1
-                elif bucket_min <= LOW:
+                elif mod >= MAXADJ - sat_eps:
                     saturated_low += 1
                 else:
                     in_band += 1
+                rel_str = f"{relative:.2f}" if relative is not None else "n/a"
                 print(
                     f"    {name:<22} bucket={bucket}  "
-                    f"{recv_info.abbreviation} {bucket}-minutes={bucket_min:6.1f}  "
-                    f"mod={mod:+.1%}   {_band_position(bucket_min)}"
+                    f"{recv_info.abbreviation} {bucket}-share rel={rel_str}  "
+                    f"mod={mod:+.1%}   "
+                    f"{_band_position(relative) if relative is not None else 'n/a'}"
                 )
 
     # ---- distribution summary ----
@@ -181,18 +210,22 @@ def main() -> None:
     )
     print(f"  in-band (carries signal):       {in_band:3d}  ({in_band / n:5.1%})")
     print()
-    print(f"  bucket-minute totals  min/mean/max: "
-          f"{min(all_bucket_sums):.1f} / {mean(all_bucket_sums):.1f} / "
-          f"{max(all_bucket_sums):.1f}")
-    print(f"  modifier              min/mean/max: "
-          f"{min(all_modifiers):+.1%} / {mean(all_modifiers):+.1%} / "
-          f"{max(all_modifiers):+.1%}")
+    if all_relatives:
+        print(
+            f"  relative share        min/mean/max: "
+            f"{min(all_relatives):.2f} / {mean(all_relatives):.2f} / "
+            f"{max(all_relatives):.2f}"
+        )
+    print(
+        f"  modifier              min/mean/max: "
+        f"{min(all_modifiers):+.1%} / {mean(all_modifiers):+.1%} / "
+        f"{max(all_modifiers):+.1%}"
+    )
     print()
-    print("  READ: if nearly all incoming players saturate HIGH and bucket-minute")
-    print("  totals cluster well above the HIGH threshold, the thresholds are in")
-    print("  the wrong units for three-bucket sums (units-mismatch). If totals")
-    print("  straddle the band but signal is still flat, the metric itself is too")
-    print("  coarse and wants minutes-share or five-bucket resolution.")
+    print("  READ: a healthy distribution spreads — most incoming players land")
+    print("  in-band (relative share between need and logjam) and carry a real,")
+    print("  unsaturated signal; only genuine logjams or needs hit the ±MAX rails.")
+    print("  A return to ~100% at one rail means the share metric has regressed.")
 
 
 if __name__ == "__main__":
