@@ -25,9 +25,11 @@ Run via the installed entry point::
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import NoReturn, TypeVar
 
 import pandas as pd
@@ -59,6 +61,7 @@ from nba_trade_analyzer.engine.resolution import (
     resolve_trade_player,
 )
 from nba_trade_analyzer.engine.valuation import evaluate_player
+from nba_trade_analyzer.export import build_export
 from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Player
 from nba_trade_analyzer.models.team import CapStatus, RosterEntry, Team
@@ -709,6 +712,39 @@ def roster(
     typer.echo(_standing_line("Luxury tax", LUXURY_TAX, payroll))
     typer.echo(_standing_line("First apron", FIRST_APRON, payroll))
     typer.echo(_standing_line("Second apron", SECOND_APRON, payroll))
+
+
+@app.command()
+def export(
+    out: str = typer.Option(
+        "-",
+        "--out",
+        help='Output path for the databallr JSON payload, or "-" for stdout.',
+    ),
+) -> None:
+    """Export the databallr cap-data snapshot (salaries + projections) as JSON.
+
+    Fetches salaries, EPM, DARKO, nba_api stats, and the crosswalk (each cached
+    24h; salaries fall back to the committed CSV offline), builds the Control
+    Runway / Trade Analyzer payload, and writes it as JSON. Progress goes to
+    stderr so stdout stays a clean JSON document for the databallr sync script.
+    """
+    typer.echo("Building databallr cap-data export...", err=True)
+    payload = build_export()
+    text = json.dumps(payload.model_dump(by_alias=True), indent=2)
+
+    if out == "-":
+        typer.echo(text)
+    else:
+        Path(out).write_text(text, encoding="utf-8")
+        typer.echo(f"Wrote {out}", err=True)
+
+    meta = payload.metadata
+    typer.echo(
+        f"  salaries={meta.salary_rows} projections={len(payload.projections)} "
+        f"epm={meta.epm_rows} darko={meta.darko_rows} stats={meta.stats_rows}",
+        err=True,
+    )
 
 
 if __name__ == "__main__":

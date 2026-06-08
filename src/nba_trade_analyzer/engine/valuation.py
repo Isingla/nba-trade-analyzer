@@ -257,6 +257,7 @@ def evaluate_player_multiyear(
     team_net_rating: float = 0.0,
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
+    horizon_years: int | None = None,
 ) -> MultiYearValuation:
     """Project surplus across every remaining contract year.
 
@@ -273,6 +274,12 @@ def evaluate_player_multiyear(
     (current season first) when available, so an escalating contract correctly
     shows less surplus in its out-years; when per-year data is absent the salary
     is held flat across years (see ``_salary_for_year``).
+
+    ``horizon_years`` overrides the contract-derived horizon when set, so a
+    caller can project a fixed window (e.g. a 5-season league snapshot) for a
+    player whose contract is shorter. It is still capped at
+    ``MAX_PROJECTION_YEARS``; ``None`` preserves the default
+    contract-length behavior.
     """
     if epm_df is None:
         epm_df = fetch_epm_data()
@@ -283,7 +290,10 @@ def evaluate_player_multiyear(
         player, contract, team_net_rating, epm_df=epm_df, darko_df=darko_df
     )
 
-    horizon = min(contract.years_remaining, MAX_PROJECTION_YEARS)
+    requested_years = (
+        horizon_years if horizon_years is not None else contract.years_remaining
+    )
+    horizon = min(requested_years, MAX_PROJECTION_YEARS)
     if horizon == 0:
         return MultiYearValuation(
             player_name=player.name,
