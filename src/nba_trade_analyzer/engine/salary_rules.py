@@ -70,7 +70,9 @@ def _evaluate_team(
         )
 
     if pre_trade_payroll < FIRST_APRON:
-        return _check_expanded_tpe(team_name, outgoing_salary, incoming_salary)
+        return _check_expanded_tpe(
+            team_name, outgoing_salary, incoming_salary, post_trade
+        )
 
     if pre_trade_payroll < SECOND_APRON:
         return _check_first_apron(team_name, outgoing_salary, incoming_salary)
@@ -99,7 +101,25 @@ def _check_room_tpe(
     return None
 
 
-def _check_expanded_tpe(team_name: str, outgoing: int, incoming: int) -> str | None:
+def _check_expanded_tpe(
+    team_name: str, outgoing: int, incoming: int, post_trade: int
+) -> str | None:
+    # Gate B — apron eligibility is judged on where the team lands AFTER the
+    # trade, mirroring _check_second_apron's post-trade test. cbaguide
+    # (/thresholds/apron/): a team is prohibited only if its Apron Team Salary
+    # "exceeds the applicable Apron Threshold after executing the transaction".
+    # "Exceeds" is strict, so post_trade <= FIRST_APRON is legal and only
+    # strictly over is not. The Expanded TPE (a >100% takeback) is therefore
+    # unavailable when taking back more than 100% would land the team over the
+    # first apron. (Tier selection itself — Gate A — stays keyed on pre-trade
+    # payroll in _evaluate_team: which exception a team may reach for.)
+    if incoming > outgoing and post_trade > FIRST_APRON:
+        return (
+            f"{team_name}: Expanded TPE unavailable — taking back more than 100% "
+            f"(incoming ${incoming:,} > outgoing ${outgoing:,}) lands the team at "
+            f"${post_trade:,}, over the first apron (${FIRST_APRON:,})."
+        )
+
     if outgoing < EXPANDED_TPE_LOW:
         limit = 2 * outgoing + TRADE_MATCH_CUSHION
         tier_desc = f"outgoing < ${EXPANDED_TPE_LOW:,} → 200% × outgoing + $250K"
