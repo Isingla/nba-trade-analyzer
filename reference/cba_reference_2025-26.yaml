@@ -1,0 +1,211 @@
+# =============================================================================
+# NBA CBA SALARY REFERENCE — 2025-26 league year
+# =============================================================================
+# Purpose: the single source of truth the cba-auditor checks the engine against.
+# This file is only as trustworthy as its `verified` flags. Read this before use:
+#
+#   verified: true   -> value comes from a PRIMARY source (NBA league announcement)
+#                       or is trivially derivable from one. Safe to audit against.
+#   verified: false  -> value is secondary-sourced, conflicts across sources, or is
+#                       bracket/threshold logic that is easy to get subtly wrong.
+#                       The auditor must treat engine values measured against these
+#                       as UNVERIFIED, never "correct", until you confirm them.
+#
+# `action: VERIFY ...` tells you exactly what to confirm and where. The stated
+# authority for this project is cbaguide.com (what the engine was built against),
+# so where a value is flagged, confirm it THERE, then flip verified -> true.
+#
+# Numbers are in whole US dollars. Do NOT let the auditor invent or "estimate"
+# any value in here — a missing number stays null + VERIFY, it does not get guessed.
+# =============================================================================
+
+meta:
+  season: "2025-26"
+  cba_term: "2023 CBA (in effect 2023-2030)"
+  last_updated: "2026-06-08"
+  primary_source: "https://pr.nba.com/nba-salary-cap-2025-26-season"
+  note_2026_27: >
+    The NBA projected a ~7% cap rise for 2026-27 but, as of this file's date, the
+    official 2026-27 figures are not yet announced (they typically land in late
+    June / early July). Do NOT populate a 2026-27 block with projections and treat
+    them as verified. Add it only once the league announces.
+
+# -----------------------------------------------------------------------------
+# CAP LEVELS — all primary-sourced from the NBA league announcement.
+# -----------------------------------------------------------------------------
+cap_levels:
+  salary_cap:        { value: 154647000, verified: true,  source: "NBA PR 2025-26" }
+  luxury_tax_line:   { value: 187895000, verified: true,  source: "NBA PR 2025-26" }
+  minimum_team_salary:
+                     { value: 139182000, verified: true,  source: "NBA PR 2025-26 (salary floor)" }
+  first_apron:       { value: 195945000, verified: true,  source: "NBA PR 2025-26" }
+  second_apron:      { value: 207824000, verified: true,  source: "NBA PR 2025-26" }
+
+# -----------------------------------------------------------------------------
+# EXCEPTIONS — dollar amounts primary-sourced; % derivations shown for cross-check.
+# -----------------------------------------------------------------------------
+exceptions:
+  non_taxpayer_mle:
+    value: 14104000
+    verified: true
+    pct_of_cap: 0.0912
+    source: "NBA PR 2025-26"
+    hard_cap_effect: "first_apron"   # using it hard-caps the team at the first apron
+  taxpayer_mle:
+    value: 5685000
+    verified: true
+    source: "NBA PR 2025-26"
+    hard_cap_effect: "second_apron"
+  room_mle:
+    value: 8781000
+    verified: true
+    pct_of_cap: 0.05678
+    source: "NBA PR 2025-26"
+    hard_cap_effect: null
+  bi_annual_exception:
+    value: 5135000
+    verified: false
+    pct_of_cap: 0.0332
+    source: "SalarySwish / Hoops Rumors (secondary; not in NBA PR)"
+    action: "VERIFY against cbaguide.com BAE figure for 2025-26"
+    hard_cap_effect: "first_apron"
+
+# -----------------------------------------------------------------------------
+# MAXIMUM SALARIES — tier structure is stable CBA logic; dollar values here are
+# COMPUTED from the cap (X% of cap) and must be checked against the official table,
+# since the real max is "greater of X% of cap OR 105% of prior salary" and the
+# designated-veteran (supermax) rules layer on top.
+# -----------------------------------------------------------------------------
+maximum_salaries:
+  tier_0_6_years:
+    pct_of_cap: 0.25
+    computed_value: 38661750
+    verified: false
+    action: "VERIFY computed 25% figure against official 2025-26 max table"
+  tier_7_9_years:
+    pct_of_cap: 0.30
+    computed_value: 46394100
+    verified: false
+    action: "VERIFY computed 30% figure against official 2025-26 max table"
+  tier_10_plus_years:
+    pct_of_cap: 0.35
+    computed_value: 54126450
+    verified: false
+    action: "VERIFY computed 35% figure against official 2025-26 max table"
+  notes:
+    - "Real max = greater of (tier % of cap) or (105% of player's prior-year salary)."
+    - "Designated Veteran / supermax (up to 35% with <10 yrs under criteria) is a separate rule path — confirm whether the engine models it."
+
+# -----------------------------------------------------------------------------
+# MINIMUM SALARIES — by years of service. Only the endpoints + a couple of mid
+# points are primary/secondary-confirmed; the rest are intentionally null. The
+# auditor must NOT fill these by interpolation — pull the full table from a source.
+# -----------------------------------------------------------------------------
+minimum_salaries:
+  source: "Hoops Rumors / SalarySwish 2025-26 minimum scale"
+  verified: false
+  action: "VERIFY full year-by-year scale against cbaguide.com / official minimum table"
+  by_years_of_service:
+    "0":   { value: 1272870, confirmed: true }
+    "1":   { value: null,    confirmed: false }
+    "2":   { value: 2296274, confirmed: true }   # also the reimbursement cap-hit basis
+    "3":   { value: null,    confirmed: false }
+    "4":   { value: null,    confirmed: false }
+    "5":   { value: null,    confirmed: false }
+    "6":   { value: null,    confirmed: false }
+    "7":   { value: 3080921, confirmed: true }
+    "8":   { value: null,    confirmed: false }
+    "9":   { value: null,    confirmed: false }
+    "10+": { value: 3634153, confirmed: true }
+  reimbursement_rule:
+    description: >
+      For 1-year minimum deals signed by players with 3+ years of service, the team's
+      CAP HIT is the 2-year-of-service minimum ($2,296,274), and the NBA reimburses the
+      difference between actual salary and cap hit. Multi-year deals do NOT get this.
+    cap_hit_basis: 2296274
+    verified: false
+    action: "Confirm the engine uses cap_hit (2-YOS min) NOT actual salary for these contracts"
+
+# -----------------------------------------------------------------------------
+# APRON / HARD-CAP RULES — the conditional logic. Structure below reflects the
+# 2023 CBA. These are the highest-value things to audit and the easiest to encode
+# wrong (wrong trigger -> wrong hard cap -> every downstream number off).
+# -----------------------------------------------------------------------------
+apron_rules:
+  hard_cap_triggers:
+    first_apron:
+      verified: false
+      action: "VERIFY trigger list against cbaguide.com"
+      triggers:
+        - "Acquire a player via sign-and-trade"
+        - "Use the Non-Taxpayer MLE to sign a player"
+        - "Use the Bi-Annual Exception"
+        - "Use any part of the MLE to acquire via trade or waiver claim"
+        - "Use an Expanded Traded Player Exception (take back >100% via salary-matching)"
+        - "Use a trade exception generated before the start of the current offseason"
+        - "Sign a player waived in-season whose pre-waiver salary exceeded the NTMLE ($14,104,000)"
+    second_apron:
+      verified: false
+      action: "VERIFY trigger list against cbaguide.com"
+      triggers:
+        - "Use any portion of the (taxpayer) MLE"
+        - "Aggregate two or more player salaries in a trade"
+        - "Send out cash in a trade"
+        - "Use a signed-and-traded player to take back salary"
+  first_apron_restrictions:
+    verified: false
+    action: "VERIFY against cbaguide.com"
+    rules:
+      - "Cannot take back more than 100% of outgoing salary in a trade (no expanded matching)"
+      - "Cannot use the Bi-Annual Exception"
+      - "Cannot sign in-season-waived players whose salary exceeded the NTMLE"
+  second_apron_restrictions:
+    verified: false
+    action: "VERIFY against cbaguide.com"
+    rules:
+      - "All first-apron restrictions, PLUS:"
+      - "Cannot aggregate salaries in a trade"
+      - "Cannot send cash in a trade"
+      - "Cannot use the Taxpayer MLE"
+      - "First-round pick 7 years out is frozen if team finishes above the second apron"
+  apron_status_timing:
+    note: "A team's apron restrictions are determined by its salary position at the CONCLUSION of a transaction, not at the start of the league year."
+    verified: false
+    action: "Confirm the engine evaluates apron status post-transaction, not pre-"
+
+# -----------------------------------------------------------------------------
+# TRADE SALARY MATCHING — THE bug-prone area. Sources actively disagree on the
+# exact bracket boundaries, so EVERYTHING here is unverified by design. Do not let
+# the auditor treat any of these brackets as confirmed. This is the first thing to
+# pin down against cbaguide.com.
+# -----------------------------------------------------------------------------
+trade_matching:
+  verified: false
+  action: "VERIFY ALL brackets and boundaries against cbaguide.com before auditing the engine's matching logic. Sources conflict; do not certify."
+  non_apron_team:
+    description: >
+      Expanded matching applies. Reported structure: incoming salary may exceed
+      outgoing, bounded by (A) < 200% of outgoing + $250,000 and (B) the expanded
+      TPE band. The Expanded TPE figure for 2025-26 is reported as $8,527,000.
+      Worked example from source: a $10,000,000 outgoing salary can take back up to
+      $18,527,000 incoming.
+    expanded_tpe_2025_26: 8527000
+    bracket_boundaries: null
+    action: "Pin the exact bracket cutoffs (where 200%+250K transitions to the flat expanded figure transitions to 125%+250K) — this is the off-by-one risk."
+  first_apron_team:
+    description: "Reported as capped at 100% of outgoing salary (no expanded matching)."
+    action: "VERIFY the exact percentage and any +$ allowance."
+  second_apron_team:
+    description: "Reported as 100% matching, no aggregation, no cash. (One older source cites 110% — resolve this conflict.)"
+    action: "VERIFY — sources conflict between 100% and 110%. cbaguide.com is the tiebreaker."
+
+# -----------------------------------------------------------------------------
+# CITATIONS — where each block came from, for your spot-checks.
+# -----------------------------------------------------------------------------
+citations:
+  nba_official_pr: "https://pr.nba.com/nba-salary-cap-2025-26-season"
+  exceptions_pct: "https://www.hoopsrumors.com/2025/06/values-of-2025-26-mid-level-bi-annual-exceptions.html"
+  minimum_scale: "https://www.hoopsrumors.com/2025/06/nba-minimum-salaries-for-2025-26.html"
+  apron_triggers: "https://www.hoopsrumors.com/2025/06/salary-cap-tax-line-set-for-2025-26-nba-season.html"
+  expanded_tpe: "https://www.hoopsrumors.com (traded player exception glossary)"
+  project_authority: "cbaguide.com  # the source the engine was originally built against"
