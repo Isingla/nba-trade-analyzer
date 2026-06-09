@@ -159,8 +159,10 @@ def _check_second_apron(
     aggregating: bool,
     num_outgoing: int,
 ) -> str | None:
-    # Exception: trade drops team below the second apron → Aggregated TPE applies.
-    if post_trade < SECOND_APRON:
+    # Exception: trade drops team to at-or-below the second apron → Aggregated
+    # TPE applies. cbaguide: a team is barred only if it stays "over the Second
+    # Apron after the Trade" (strict), so landing exactly on the apron is legal.
+    if post_trade <= SECOND_APRON:
         if incoming > outgoing:
             return (
                 f"{team_name}: trade drops below second apron but matching fails — "
