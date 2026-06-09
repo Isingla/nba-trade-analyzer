@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from nba_trade_analyzer.engine.constants import (
     EXPANDED_TPE_CUSHION,
     FIRST_APRON,
@@ -386,6 +387,97 @@ def test_evaluates_both_teams_when_team_a_passes_team_b_fails():
     result = check_trade_legality(trade)
     assert not result.legal
     assert (result.error_reason or "").startswith("BBB:")
+
+
+# ----- Expanded-TPE eligibility judged on post-trade landing (Gate B) -------
+# Ratified rule (cbaguide /thresholds/apron/): a team is prohibited only if its
+# Apron Team Salary "exceeds the applicable Apron Threshold after executing the
+# transaction". "Exceeds" is strict, so a >100% (expanded) takeback is legal
+# when POST-trade salary stays AT OR BELOW the first apron ($195,945,000) and
+# illegal only when it lands strictly over. The engine historically keyed the
+# tier on PRE-trade payroll alone (_evaluate_team) and never re-checked the
+# landing, so a team under the apron pre-trade could take back >100% and balloon
+# over the apron and the engine wrongly allowed it. The remaining xfail below
+# pins the one genuine bug case (lands strictly over) until the Gate B fix lands.
+
+
+def test_expanded_tpe_over_100pct_landing_over_first_apron_is_illegal():
+    # ILLEGAL — an expanded >100% takeback is legal only if post-trade stays at
+    # or below the first apron; here A lands at $202,527,000, strictly over it.
+    # Now enforced by the Gate B check in _check_expanded_tpe.
+    incoming = (
+        10_000_000 + EXPANDED_TPE_CUSHION
+    )  # 18,527,000 (max the buggy engine allows)
+    trade = _trade(
+        team_a_payroll=194_000_000,  # under the $195.945M first apron pre-trade
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", incoming)],
+    )
+    # Post-trade A: 194M - 10M + 18.527M = 202.527M > FIRST_APRON.
+    result = check_trade_legality(trade)
+    assert not result.legal
+    assert result.error_reason is not None
+
+
+def test_match_within_100pct_over_first_apron_stays_legal():
+    # Expected LEGAL — matching <=100% is fine even over the first apron; proves
+    # the rule targets the >100% portion, not merely crossing the apron. Starts
+    # over the apron because a <=100% match from $194M can never land above it.
+    payroll = FIRST_APRON + 5_000_000  # 200.945M, over the first apron pre-trade
+    trade = _trade(
+        team_a_payroll=payroll,
+        team_a_status=CapStatus.FIRST_APRON,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 10_000_000)],  # exact 100% match
+    )
+    # Post-trade A: 200.945M - 10M + 10M = 200.945M, still over apron, <=100%.
+    result = check_trade_legality(trade)
+    assert result.legal, result.error_reason
+
+
+def test_expanded_tpe_over_100pct_landing_just_under_first_apron_is_legal():
+    # Expected LEGAL — >100% matching is fine as long as post-trade stays below
+    # $195,945,000; this lands at $195,944,999 (one dollar under). Passes now.
+    incoming = 11_944_999  # post-trade A: 194M - 10M + 11,944,999 = 195,944,999
+    trade = _trade(
+        team_a_payroll=194_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", incoming)],
+    )
+    assert FIRST_APRON == 195_945_000  # boundary this case sits one dollar below
+    result = check_trade_legality(trade)
+    assert result.legal, result.error_reason
+
+
+def test_expanded_tpe_over_100pct_landing_at_first_apron_is_legal():
+    # Expected LEGAL — post-trade lands exactly on $195,945,000. cbaguide
+    # (/thresholds/apron/): a team is prohibited only if its Apron Team Salary
+    # "exceeds the applicable Apron Threshold after executing the transaction" —
+    # "exceeds" is strict, so landing AT the apron (<= FIRST_APRON) is legal;
+    # only going over is not. A >100% takeback that lands exactly on the line
+    # is allowed.
+    incoming = 11_945_000  # post-trade A: 194M - 10M + 11,945,000 = 195,945,000
+    trade = _trade(
+        team_a_payroll=194_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", incoming)],
+    )
+    assert (
+        194_000_000 - 10_000_000 + incoming == FIRST_APRON
+    )  # lands exactly at the apron
+    result = check_trade_legality(trade)
+    assert result.legal, result.error_reason
 
 
 # ----- Sanity check on the constants used in tests ------------------------
