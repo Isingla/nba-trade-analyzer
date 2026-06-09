@@ -326,6 +326,33 @@ def test_second_apron_aggregation_allowed_when_trade_drops_team_below_apron():
     assert result.legal, result.error_reason
 
 
+def test_second_apron_aggregation_allowed_when_trade_lands_exactly_at_apron():
+    # LEGAL — A aggregates two outgoing salaries, sheds $10M, and lands
+    # POST-trade at exactly $207,824,000 (== SECOND_APRON). cbaguide
+    # (/transactions/trades/tpe/): "even if a Second Apron Team wants to aggregate
+    # players ... they can't do so if they still are over the Second Apron after
+    # the Trade" and "it only matters where the Team lands after the trade."
+    # "Over" is strict, so landing exactly ON the apron is not over → aggregation
+    # is re-enabled → legal. The current `<` at salary_rules.py:163 treats
+    # at-exactly as still over and blocks it, so this XFAILs against current code.
+    payroll = SECOND_APRON + 10_000_000  # 217.824M, over the second apron pre-trade
+    trade = _trade(
+        team_a_payroll=payroll,
+        team_a_status=CapStatus.SECOND_APRON,
+        team_a_out=[
+            _entry("Out 1", "AAA", 15_000_000),
+            _entry("Out 2", "AAA", 12_000_000),  # aggregating: 2 outgoing = 27M
+        ],
+        team_b_payroll=140_000_000,
+        team_b_status=CapStatus.UNDER_CAP,
+        team_b_out=[_entry("In A", "BBB", 17_000_000)],  # sheds 10M, <=100% match
+    )
+    # Post-trade A lands exactly on the line:
+    assert 217_824_000 - 27_000_000 + 17_000_000 == SECOND_APRON
+    result = check_trade_legality(trade)
+    assert result.legal, result.error_reason
+
+
 def test_second_apron_drops_below_but_still_fails_100pct_match():
     # The exception re-enables aggregation but still requires 100% matching.
     payroll = SECOND_APRON + 1_000_000
