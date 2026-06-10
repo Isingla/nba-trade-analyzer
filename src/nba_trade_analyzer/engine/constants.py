@@ -165,7 +165,14 @@ PICK_YEAR_DISCOUNT_RATE = 0.05  # 5% per year into the future (time + uncertaint
 # projects to ~49 wins). Captures that today's extremes drift toward average.
 PICK_REGRESSION_RATE = 0.75
 LEAGUE_MEAN_WINS = 41.0  # 82-game schedule split evenly across the league
-CURRENT_SEASON_START = 2025  # year_offset = pick.year - this; update each season
+# year_offset = pick.year - this. Rolls over on July 1 (start of the new CBA
+# league year), the same date the cap/apron numbers roll — bump it then each
+# year so a pick conveying in the current league year gets year_offset 0.
+# Known quirk: between the draft (late June) and July 1, current-draft picks
+# carry year_offset 1 (~5% extra discount). Accepted — the proper fix is a
+# continuous time-to-convey discount, not a draft-day rollover (which would
+# split the season convention).
+CURRENT_SEASON_START = 2026
 # A pick swap conveys only the *difference* between two teams' picks, not a whole
 # pick. 40% of the outright value is a rough placeholder until a probabilistic
 # swap model (Travis Chen's approach) replaces it.

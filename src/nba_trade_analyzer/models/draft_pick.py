@@ -11,6 +11,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+# Accepted range of draft years for validation. EARLIEST is a static *historical
+# data* floor — deliberately NOT tied to CURRENT_SEASON_START (which rolls every
+# July). It stays at 2025 so already-conveyed/past picks (e.g. re-analyzing a
+# prior trade) still construct; valuation floors year_offset at max(0, ...), so a
+# past year just gets no future discount rather than a negative one.
 EARLIEST_PICK_YEAR = 2025
 LATEST_PICK_YEAR = 2035
 
