@@ -352,6 +352,58 @@ def test_grade_legal_trade_renders_report():
     assert "Score:" in result.output
 
 
+# ---------------------------------------------------------------------------
+# Pick-ownership verification (on by default; --no-ownership-check disables)
+# ---------------------------------------------------------------------------
+
+
+def _ownership_specs() -> list[dict]:
+    return [
+        _spec("Player One", team="DAL", salary_team="DAL", salary=20_000_000),
+        _spec("Player Two", team="MEM", salary_team="MEM", salary=20_000_000),
+    ]
+
+
+def test_grade_rejects_pick_team_does_not_own_by_default():
+    # DAL tries to send LAC's 2026 first — which OKC controls. On by default.
+    with _patch_data(_ownership_specs()):
+        result = runner.invoke(
+            app,
+            ["grade", "-a", "DAL", "-b", "MEM",
+             "-sa", "Player One", "-sa", "2026 LAC 1st", "-sb", "Player Two"],
+        )
+    assert result.exit_code == 1
+    assert "controlled by OKC" in result.output
+    assert "Score:" not in result.output  # rejected before grading
+
+
+def test_grade_no_ownership_check_flag_skips_verification():
+    with _patch_data(_ownership_specs()):
+        result = runner.invoke(
+            app,
+            ["grade", "-a", "DAL", "-b", "MEM",
+             "-sa", "Player One", "-sa", "2026 LAC 1st", "-sb", "Player Two",
+             "--no-ownership-check"],
+        )
+    assert result.exit_code == 0
+    assert "controlled by OKC" not in result.output
+    assert "Score:" in result.output  # graded despite the unowned pick
+
+
+def test_grade_norecord_pick_warns_instead_of_rejecting():
+    # A 2025 first has no registry record -> CLI downgrades to a loud warning.
+    with _patch_data(_ownership_specs()):
+        result = runner.invoke(
+            app,
+            ["grade", "-a", "DAL", "-b", "MEM",
+             "-sa", "Player One", "-sa", "2025 DAL 1st", "-sb", "Player Two"],
+        )
+    assert result.exit_code == 0  # not rejected
+    assert "no record of this pick" in result.output
+    assert "mirror synced 2026-06-10" in result.output  # staleness self-diagnoses
+    assert "Score:" in result.output  # still graded
+
+
 @pytest.mark.parametrize("flag", ["--quick", "-q"])
 def test_grade_quick_skips_darko(flag: str):
     specs = [

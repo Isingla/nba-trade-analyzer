@@ -64,6 +64,14 @@ from nba_trade_analyzer.engine.valuation import evaluate_player
 from nba_trade_analyzer.export import build_export
 from nba_trade_analyzer.models.draft_pick import DraftPick
 from nba_trade_analyzer.models.player import Player
+from nba_trade_analyzer.pick_ownership import (
+    Indeterminate,
+    NoRecord,
+    PickRegistryError,
+    Verified,
+    get_default_registry,
+    iter_trade_pick_verdicts,
+)
 from nba_trade_analyzer.models.team import CapStatus, RosterEntry, Team
 from nba_trade_analyzer.models.trade import Trade, TradeAssets
 from nba_trade_analyzer.report import force_utf8_stdout, print_report
@@ -480,6 +488,12 @@ def grade(
     quick: bool = typer.Option(
         False, "--quick", "-q", help="Skip the DARKO fetch for a faster evaluation."
     ),
+    no_ownership_check: bool = typer.Option(
+        False,
+        "--no-ownership-check",
+        "--skip-ownership",
+        help="Skip draft-pick ownership verification (escape hatch for a stale mirror).",
+    ),
 ) -> None:
     """Grade a proposed trade between two teams."""
     force_utf8_stdout()
@@ -531,6 +545,14 @@ def grade(
         team_a_sends=TradeAssets(players=players_a, picks=picks_a),
         team_b_sends=TradeAssets(players=players_b, picks=picks_b),
     )
+
+    # Pick-ownership verification (on by default; --no-ownership-check disables).
+    # The CLI applies presentation-layer leniency: NotOwner is a hard rejection,
+    # but NoRecord is downgraded to a loud warning (the mirror may simply be
+    # stale). The library API keeps NoRecord-as-rejection for programmatic use.
+    if not no_ownership_check and _ownership_reject(trade):
+        raise typer.Exit(code=1)
+
     result = grade_trade(
         trade,
         player_stats_df=stats_df,
@@ -542,6 +564,51 @@ def grade(
         },
     )
     print_report(trade, result)
+
+
+def _ownership_reject(trade: Trade) -> bool:
+    """Run CLI-layer pick-ownership verification. Prints warnings (NoRecord +
+    Indeterminate, each stamped with the mirror sync date) and any NotOwner
+    rejections. Returns ``True`` if the trade should be rejected (a hard
+    NotOwner), so the caller stops before grading.
+    """
+    try:
+        registry = get_default_registry()
+    except PickRegistryError as exc:
+        typer.secho(
+            f"Pick-ownership registry unavailable ({exc}). "
+            "Re-sync the mirror or pass --no-ownership-check.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from exc
+
+    stamp = f"mirror synced {registry.sync_date}" if registry.sync_date else "mirror sync date unknown"
+    rejections: list[str] = []
+    for sender_abbr, sender_canon, pick, verdict in iter_trade_pick_verdicts(trade, registry):
+        if isinstance(verdict, NoRecord):
+            typer.secho(
+                f"⚠ {sender_abbr} {pick.label}: no record of this pick in the ownership "
+                f"registry — {stamp}; verify manually or re-sync.",
+                fg=typer.colors.YELLOW,
+            )
+        elif isinstance(verdict, Indeterminate):
+            typer.secho(
+                f'⚠ {sender_abbr} {pick.label}: ownership indeterminate (gapped pick) — '
+                f'"{verdict.clause}" [{stamp}].',
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            owner = verdict.owner if isinstance(verdict, Verified) else verdict.actual_owner
+            if owner != sender_canon:
+                rejections.append(f"{sender_abbr} cannot trade {pick.label}: controlled by {owner}.")
+
+    if rejections:
+        typer.echo()
+        typer.secho("Trade rejected — invalid pick ownership:", fg=typer.colors.RED, bold=True)
+        for r in rejections:
+            typer.secho(f"  ✗ {r}", fg=typer.colors.RED)
+        return True
+    return False
 
 
 def _epm_tier_display(epm: float) -> str:

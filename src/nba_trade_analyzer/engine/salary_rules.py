@@ -19,14 +19,42 @@ from nba_trade_analyzer.engine.constants import (
     SECOND_APRON,
 )
 from nba_trade_analyzer.models.trade import Trade, TradeAssets, TradeResult
+from nba_trade_analyzer.pick_ownership import (
+    PickRegistry,
+    verify_trade_pick_ownership,
+)
 
 TRADE_MATCH_CUSHION = 250_000
 EXPANDED_TPE_LOW = 7_250_000
 EXPANDED_TPE_HIGH = 29_000_000
 
 
-def check_trade_legality(trade: Trade) -> TradeResult:
-    """Evaluate trade legality for both teams; short-circuit on first failure."""
+def check_trade_legality(
+    trade: Trade, *, registry: PickRegistry | None = None
+) -> TradeResult:
+    """Evaluate trade legality for both teams; short-circuit on first failure.
+
+    When ``registry`` is supplied, every pick asset is ownership-verified FIRST:
+    a team trading a pick it does not control (or a pick absent from the registry)
+    is rejected before any CBA salary math runs. A gapped (indeterminate) pick is
+    not fatal — it attaches to ``pick_ownership_warnings``. Omit ``registry`` to
+    skip ownership verification (the CBA-only behavior).
+    """
+    ownership_warnings: list[str] = []
+    if registry is not None:
+        report = verify_trade_pick_ownership(trade, registry)
+        if report.rejections:
+            return TradeResult(
+                legal=False,
+                error_reason="; ".join(report.rejections),
+                grade_a="N/A",
+                grade_b="N/A",
+                surplus_delta_a=0.0,
+                surplus_delta_b=0.0,
+                pick_ownership_warnings=report.warnings,
+            )
+        ownership_warnings = report.warnings
+
     error = _evaluate_team(
         team_name=trade.team_a.abbreviation,
         pre_trade_payroll=trade.team_a.total_payroll,
@@ -48,6 +76,7 @@ def check_trade_legality(trade: Trade) -> TradeResult:
         grade_b="N/A",
         surplus_delta_a=0.0,
         surplus_delta_b=0.0,
+        pick_ownership_warnings=ownership_warnings,
     )
 
 

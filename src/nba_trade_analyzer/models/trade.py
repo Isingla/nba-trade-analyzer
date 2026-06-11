@@ -44,3 +44,9 @@ class TradeResult(BaseModel):
     grade_b: str
     surplus_delta_a: float
     surplus_delta_b: float
+    pick_ownership_warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal pick-ownership notes — e.g. a gapped pick whose "
+        "ownership is indeterminate. Populated when a registry is supplied to "
+        "check_trade_legality; the trade stays legal.",
+    )

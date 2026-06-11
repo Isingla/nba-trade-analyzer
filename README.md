@@ -120,9 +120,10 @@ Score: 50 / 100 — Fair Trade
 - **Multi-year contract valuation** — values every remaining year with age-bracket aging curves, discounted for uncertainty
 - **Team context** — win curve, timeline alignment, positional fit, and spacing, each adjusting value to the acquiring team's situation
 - **Draft pick valuation** — team-aware (the originating team's record sets where the pick lands), with future-year regression and protection discounts
+- **Pick-ownership verification** — before grading, the analyzer confirms each team actually controls the picks it's sending, backed by a verified 30-team registry (342 picks) with documented gaps for conditional/multi-team picks; an unowned pick is rejected with the real owner, a gapped pick warns but still grades
 - **Trade grader** — 0-100 score per team with seven metric breakdowns and a plain-English verdict
 - **CLI** — `grade` a trade and `lookup` a player from the terminal
-- **291 tests** plus a 5-trade validation smoke test
+- **405 tests** plus a 5-trade validation smoke test
 
 ## Architecture
 
@@ -131,6 +132,7 @@ src/nba_trade_analyzer/
 ├── cli.py                # typer entry point (grade + lookup)
 ├── report.py             # terminal report renderer
 ├── teams.py              # team abbreviation resolution
+├── pick_ownership.py     # draft-pick ownership registry, verify(), trade integration
 ├── data/
 │   ├── cache.py          # JSON file cache, 24h TTL
 │   ├── players.py        # nba_api stats pipeline
@@ -187,6 +189,73 @@ uv run pytest
 # run the validation smoke test
 uv run python scripts/validate_trades.py
 ```
+
+## Pick Ownership
+
+Before grading, the analyzer verifies that each team actually controls the picks it's sending. Ownership resolves against a verified 30-team registry (342 picks); conditional and multi-team picks that can't be pinned to a single owner are documented as gaps with their verbatim RealGM clauses. Three outcomes:
+
+- **Not the owner** — the trade is rejected, naming the real controller (exit 1).
+- **Gapped (indeterminate)** — a warning with the verbatim clause; the trade still grades.
+- **No record** — the pick isn't in the registry at all (typo'd year, already-conveyed pick, invalid round) — a warning with the mirror's sync date; the trade still grades.
+
+```powershell
+# rejected — DAL doesn't control LAC's 2026 first; OKC does
+uv run nba-trade-analyzer grade --team-a DAL --team-b OKC `
+    --sends-a "2026 LAC 1st" --sends-b "2031 OKC 1st"
+```
+```
+Trade rejected — invalid pick ownership:
+  ✗ DAL cannot trade 2026 LAC 1st (unprotected): controlled by OKC.
+```
+(exit code 1)
+
+```powershell
+# gapped pick — warns with the conditional clause, still grades
+uv run nba-trade-analyzer grade --team-a SAS --team-b OKC `
+    --sends-a "2027 SAS 1st" --sends-b "2031 OKC 1st"
+```
+```
+⚠ SAS 2027 SAS 1st (unprotected): ownership indeterminate (gapped pick) —
+  "1-16 to SAC; 17-30 to OKC (via SAC)" [mirror synced 2026-06-10].
+
+LEGALITY: ✅ Legal
+... (full grade report follows)
+```
+
+```powershell
+# --no-ownership-check skips verification — the escape hatch when the mirror
+# lags reality (e.g. a real trade happened the registry hasn't absorbed yet)
+uv run nba-trade-analyzer grade --team-a DAL --team-b OKC `
+    --sends-a "2026 LAC 1st" --sends-b "2031 OKC 1st" --no-ownership-check
+#   → grades normally; the ownership rejection is skipped
+```
+
+```powershell
+# a pick with no registry record — warns and stamps the mirror's sync date, still grades
+uv run nba-trade-analyzer grade --team-a DAL --team-b OKC `
+    --sends-a "2025 DAL 1st" --sends-b "2031 OKC 1st"
+```
+```
+⚠ DAL 2025 DAL 1st (unprotected): no record of this pick in the ownership registry —
+  mirror synced 2026-06-10; verify manually or re-sync.
+```
+
+### From Python
+
+```python
+from nba_trade_analyzer.pick_ownership import get_default_registry
+
+registry = get_default_registry()
+registry.verify("LAC", 2026, 1)   # NotOwner(actual_owner="OKC")
+registry.verify("WAS", 2026, 1)   # Verified(owner="WAS")
+registry.verify("SAS", 2027, 1)   # Indeterminate(clause="1-16 to SAC; 17-30 to OKC (via SAC)")
+```
+
+`verify(..., swap=True)` resolves a pick-**swap** right to its holder. Pass the registry into `grade_trade(trade, ..., registry=registry)` to enforce ownership at the library level — there, unlike the CLI, a `NoRecord` pick is a hard rejection (the CLI deliberately softens it to a warning).
+
+### Data provenance
+
+The registry mirrors a hand-verified seed maintained in a companion project: every pick was read from both teams' RealGM pages, then run through load-time validators (no contradictory owners, no orphaned swaps) and a 30-team coverage census. ~166 conditional/multi-team picks are deliberately excluded and documented with verbatim clauses in `data/draft_picks/KNOWN_GAPS.md`. The mirror's sync date lives in the file headers and is stamped into every staleness warning, so a lagging mirror is self-diagnosing — re-copy from the source and re-run.
 
 ## Data Sources
 

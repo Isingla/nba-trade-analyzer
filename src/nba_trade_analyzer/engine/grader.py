@@ -46,6 +46,7 @@ from nba_trade_analyzer.engine.draft_picks import (
     evaluate_draft_pick,
 )
 from nba_trade_analyzer.engine.salary_rules import check_trade_legality
+from nba_trade_analyzer.pick_ownership import PickRegistry
 from nba_trade_analyzer.engine.team_context import (
     _coarse_position,
     _minutes_by_position,
@@ -1161,6 +1162,7 @@ def grade_trade(
     epm_df: pd.DataFrame | None = None,
     darko_df: pd.DataFrame | None = None,
     roster_ids_by_team: dict[str, set[int]] | None = None,
+    registry: PickRegistry | None = None,
 ) -> TradeGrade:
     """Grade a proposed trade for both teams.
 
@@ -1177,9 +1179,13 @@ def grade_trade(
     context calculations, dropping mid-season departures. When omitted, the
     grader keeps every player the season stats list (graceful degradation).
     """
-    legality = check_trade_legality(trade)
+    legality = check_trade_legality(trade, registry=registry)
     if not legality.legal:
-        return TradeGrade(is_legal=False, illegal_reason=legality.error_reason)
+        return TradeGrade(
+            is_legal=False,
+            illegal_reason=legality.error_reason,
+            pick_ownership_warnings=legality.pick_ownership_warnings,
+        )
 
     if epm_df is None:
         epm_df = fetch_epm_data()
@@ -1241,4 +1247,5 @@ def grade_trade(
         illegal_reason=None,
         team_a_grade=team_a_grade,
         team_b_grade=team_b_grade,
+        pick_ownership_warnings=legality.pick_ownership_warnings,
     )

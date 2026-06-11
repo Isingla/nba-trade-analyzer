@@ -1,0 +1,395 @@
+# ============================================================================
+# MIRROR — DO NOT EDIT HERE. Canonical source:
+#   databallr_v3/lib/draft-picks/seed/draft-picks.csv
+# Synced: 2026-06-10  (342 pick rows, all 30 teams).
+# databallr is canonical; refresh by re-copying. pick_ownership.py re-validates
+# on load, so a stale/corrupt mirror fails loudly instead of silently.
+# ============================================================================
+# Draft picks seed — the source of truth for the Contract Outlook draft-capital annotation.
+# Manually maintained: add ONLY verified pick ownership. Do not invent picks.
+# `bun run seed:draft-picks` validates every row and replaces the draft_picks table.
+#
+# Team codes may be entered in RealGM notation and are canonicalized at seed time.
+# RealGM diverges from standard NBA codes for five teams:
+#   BRK→BKN, GOS→GSW, PHL→PHI, SAN→SAS, UTH→UTA  (all other 25 codes match).
+# Basketball-Reference codes CHO→CHA and PHO→PHX are also accepted (plausible paste source).
+#
+# Columns:
+#   team        ORIGINATING team (3-letter UPPER) — its record sets the pick value.
+#   owner_team  CONTROLLING team (3-letter UPPER) — whose Contract Outlook card it shows on.
+#   year        draft year (2025-2035; 2025 already conveyed and is ignored on render).
+#   round       1 or 2.
+#   protections free-text; must match a canonical key (unprotected | top-1 protected |
+#               top-3 protected | top-4 protected | top-5 protected | top-10 protected |
+#               lottery protected) or it is stored verbatim and priced at the 0.70 default.
+#               Blank = unprotected (stored as NULL).
+#               PROTECTION CONVENTION (semantic, not uniform-format): a first-round
+#               keep-if-top-N construct ("1-N Own; rest conveys") -> "top-N protected"
+#               (e.g. "1-2 Own" -> top-2 protected, like PHL's top-8). top-2/top-8 aren't in
+#               the canonical table yet, so they price at 0.70 + a parser warning until added.
+#               A second-round RANGE construct ("31-55 Own") stays VERBATIM — it isn't top-N
+#               semantics and must not pretend to be.
+#   swap        true/false.
+#   via_team    routing team (3-letter UPPER) or blank.
+#
+# Lines starting with '#' and blank lines are ignored.
+# Swap convention: for swap rows (swap=true), owner_team is the team HOLDING
+# the swap right; team is whose pick may be taken. via_team stays blank.
+team,owner_team,year,round,protections,swap,via_team
+WAS,WAS,2026,1,,false,
+LAL,MEM,2027,1,top-4 protected,false,UTH
+BRK,HOU,2027,1,,true,
+DEN,BRK,2032,1,,false,
+# ─── Batch 1: Central division (DET CLE IND MIL CHI) — raw: raw/batch-1-central.md ───
+DET,MIN,2026,1,,false,
+MIN,DET,2026,1,,false,
+DET,DET,2027,1,,false,
+DET,DET,2027,2,,false,
+DET,DET,2028,1,,false,
+DET,DET,2029,1,,false,
+DET,DET,2030,1,,false,
+DET,DET,2030,2,,false,
+MIN,DET,2030,2,,false,
+DET,DET,2031,1,,false,
+DET,DET,2031,2,,false,
+DAL,DET,2031,2,,false,PHL
+DET,DET,2032,1,,false,
+DET,DET,2032,2,,false,
+SAN,CLE,2026,1,,false,
+CLE,LAC,2026,2,,false,
+CLE,UTH,2028,2,,false,
+CLE,ATL,2029,2,,false,
+CLE,CLE,2030,1,,false,
+CLE,SAN,2030,2,,false,
+CLE,CLE,2031,1,,false,
+CLE,CLE,2032,1,,false,
+CLE,UTH,2032,2,,false,
+IND,LAC,2026,1,,false,
+IND,MEM,2026,2,,false,MIL
+UTH,IND,2027,2,,false,CLE
+IND,IND,2027,1,,false,
+IND,IND,2028,1,,false,
+IND,LAC,2029,1,,false,
+IND,IND,2030,1,,false,
+IND,IND,2030,2,,false,
+IND,IND,2031,1,,false,
+IND,IND,2032,1,,false,
+IND,IND,2032,2,,false,
+MIL,MIL,2026,1,,false,
+MIL,BOS,2026,2,,false,ORL
+MIL,DET,2027,2,,false,PHL
+MIL,PHL,2028,2,,false,
+MIL,ORL,2030,2,,false,
+MIL,MIL,2030,1,,false,
+MIL,MIL,2031,1,,false,
+MIL,CHA,2031,2,,false,
+MIL,MIL,2032,1,,false,
+MIL,CHA,2032,2,,false,
+CHI,CHI,2026,1,,false,
+POR,CHI,2026,1,,false,
+CHI,HOU,2026,2,,false,WAS
+NOP,CHI,2026,2,,false,
+DEN,CHI,2026,2,,false,
+CHI,CHI,2027,1,,false,
+CHI,DAL,2027,2,,false,
+CLE,CHI,2027,2,,false,
+CHI,CHI,2028,1,,false,
+CHI,CHI,2028,2,,false,
+CHI,CHI,2029,1,,false,
+CHI,CHI,2030,1,,false,
+CHI,CHI,2030,2,,false,
+CHI,CHI,2031,1,,false,
+DEN,CHI,2031,2,,false,
+NYK,CHI,2031,2,,false,CHA
+CHI,CHI,2032,1,,false,
+CHI,CHI,2032,2,,false,
+# ─── Batch 2: Atlantic division (BOS NYK PHL BRK) — raw: raw/batch-2-atlantic.md ───
+BOS,BOS,2026,1,,false,
+BOS,ATL,2026,2,,false,
+BOS,BOS,2027,1,,false,
+BOS,BOS,2028,1,,false,
+BOS,OKC,2029,2,,false,
+BOS,BRK,2030,2,,false,HOU
+BOS,BOS,2030,1,,false,
+BOS,BOS,2031,1,,false,
+BOS,BOS,2032,1,,false,
+BOS,BOS,2032,2,,false,
+NYK,NYK,2026,1,,false,
+WAS,NYK,2026,2,,false,
+NYK,NYK,2026,2,,false,
+NYK,NYK,2027,2,,false,
+WAS,NYK,2027,2,,false,
+NYK,DET,2028,2,,false,
+NYK,NYK,2030,1,,false,
+NYK,ATL,2030,2,,false,POR
+NYK,NYK,2032,1,,false,
+NYK,NYK,2032,2,,false,
+PHL,OKC,2026,1,,false,
+HOU,PHL,2026,1,,false,OKC
+PHL,PHX,2026,2,,false,
+PHL,PHL,2027,1,,false,
+PHL,PHL,2027,2,,false,
+PHL,PHL,2028,1,top-8 protected,false,
+LAC,PHL,2028,1,,false,
+GOS,PHL,2028,2,,false,
+OKC,PHL,2028,2,,false,
+PHL,PHL,2029,1,,false,
+PHL,PHL,2029,2,,false,
+PHL,PHL,2030,1,,false,
+PHL,DAL,2030,2,,false,
+WAS,PHL,2030,2,,false,
+PHL,PHL,2031,1,,false,
+PHL,PHL,2031,2,,false,
+PHL,PHL,2032,1,,false,
+PHL,PHL,2032,2,,false,
+PHL,MEM,2032,2,,true,
+BRK,BRK,2026,1,,false,
+BRK,BRK,2026,2,,false,
+LAC,BRK,2026,2,,false,HOU
+BRK,BRK,2027,1,,false,
+NYK,BRK,2027,1,,false,
+BRK,BRK,2027,2,,false,
+MEM,BRK,2028,2,,false,PHX
+ATL,BRK,2028,2,,false,
+BRK,BRK,2028,2,,false,
+BRK,BRK,2029,1,,false,
+NYK,BRK,2029,1,,false,
+BRK,BRK,2029,2,,false,
+DAL,BRK,2029,2,,false,
+GOS,BRK,2029,2,,false,
+MEM,BRK,2029,2,,false,PHX
+BRK,BRK,2030,1,,false,
+BRK,BRK,2030,2,,false,
+DAL,BRK,2030,2,,false,
+LAL,BRK,2030,2,,false,
+NYK,BRK,2031,1,,false,
+BRK,BRK,2031,1,,false,
+BRK,BRK,2031,2,,false,
+LAL,BRK,2031,2,,false,
+BRK,BRK,2032,1,,false,
+BRK,BRK,2032,2,,false,
+DEN,BRK,2032,2,,false,
+MIA,BRK,2032,2,,false,
+TOR,BRK,2032,2,,false,
+# ─── Batch 2b: Toronto (TOR) — raw: raw/batch-2b-toronto.md (TOR,BRK,2032,2 deduped) ───
+TOR,TOR,2026,1,,false,
+TOR,TOR,2026,2,,false,
+TOR,TOR,2027,1,,false,
+TOR,TOR,2027,2,,false,
+TOR,TOR,2028,1,,false,
+TOR,TOR,2028,2,,false,
+TOR,TOR,2029,1,,false,
+TOR,TOR,2029,2,,false,
+TOR,TOR,2030,1,,false,
+TOR,TOR,2030,2,,false,
+TOR,TOR,2031,1,,false,
+TOR,NOP,2031,2,,false,
+TOR,TOR,2032,1,,false,
+# ─── Batch 3: Southeast division (MIA ORL ATL WAS) — raw: raw/batch-3-southeast.md ───
+MIA,MIA,2026,1,,false,
+GOS,MIA,2026,2,,false,
+MIA,SAN,2026,2,,false,
+MIA,MIA,2029,1,,false,
+MIA,MIA,2030,1,,false,
+MIA,OKC,2030,2,,false,
+MIA,MIA,2031,1,,false,
+ORL,CHA,2026,1,,false,MEM
+ORL,ORL,2026,2,,false,
+ORL,ORL,2027,1,,false,
+ORL,POR,2028,1,,false,MEM
+ORL,CHA,2028,2,,false,
+ORL,ORL,2029,1,,false,
+ORL,MEM,2030,1,,false,
+ORL,ORL,2030,2,,false,
+NOP,ORL,2030,2,,true,
+ORL,ORL,2031,1,,false,
+ORL,ORL,2032,1,,false,
+ORL,ORL,2032,2,,false,
+ATL,SAN,2026,1,,false,
+NOP,ATL,2026,1,,false,
+CLE,ATL,2026,1,,false,
+ATL,DEN,2026,2,,false,
+ATL,SAN,2027,1,,false,
+ATL,ATL,2027,2,,false,
+ATL,ATL,2029,1,,false,
+ATL,ATL,2030,1,,false,
+ATL,ATL,2030,2,,false,
+ATL,ATL,2031,1,,false,
+ATL,ATL,2031,2,,false,
+ATL,ATL,2032,1,,false,
+ATL,ATL,2032,2,,false,
+LAL,ATL,2032,2,,false,
+MIN,WAS,2026,2,,false,
+OKC,WAS,2026,2,,false,
+WAS,WAS,2027,1,,false,
+WAS,WAS,2029,1,,false,
+LAL,WAS,2029,2,,false,
+WAS,WAS,2031,1,,false,
+WAS,WAS,2031,2,,false,
+WAS,WAS,2032,1,,false,
+WAS,WAS,2032,2,,false,
+UTH,WAS,2032,2,,false,
+# ─── Batch 4: Northwest division (OKC DEN MIN, POR thru 2028 R1) — raw: raw/batch-4-northwest.md ───
+# Note: DAL,OKC,2028,1 is a pending-orphan swap (resolves when DAL's Southwest batch lands).
+OKC,DAL,2026,1,,false,
+LAC,OKC,2026,1,,false,
+DAL,OKC,2026,2,,false,
+OKC,OKC,2028,1,,false,
+DAL,OKC,2028,1,,true,
+UTH,OKC,2028,2,,false,
+OKC,OKC,2029,1,,false,
+OKC,OKC,2029,2,,false,
+DEN,OKC,2030,2,,false,
+HOU,OKC,2030,2,,false,
+OKC,OKC,2030,1,,false,
+OKC,OKC,2030,2,,false,
+OKC,OKC,2031,1,,false,
+OKC,OKC,2031,2,,false,
+OKC,OKC,2032,1,,false,
+OKC,OKC,2032,2,,false,
+DEN,DEN,2026,1,,false,
+DEN,DEN,2027,1,top-5 protected,false,
+DEN,UTH,2027,2,,false,
+DEN,DEN,2028,1,top-5 protected,false,
+DEN,DEN,2029,1,top-5 protected,false,
+DEN,DEN,2030,1,top-5 protected,false,
+DEN,DEN,2031,1,,false,
+SAN,MIN,2026,2,,false,
+MIN,POR,2027,2,,false,
+MIN,MIN,2028,1,,false,
+MIN,SAN,2028,2,,false,
+MIN,MIN,2029,1,top-5 protected,false,
+MIN,MIN,2030,1,top-1 protected,false,
+MIN,SAC,2031,1,,false,SAN
+MIN,MIN,2032,1,,false,
+MIN,MIN,2032,2,,false,
+POR,SAN,2026,2,,false,NOP
+POR,POR,2027,1,,false,
+POR,POR,2028,1,,false,
+# ─── Batch 4b: Northwest completion (POR 2028 R2+ , UTH) — raw: raw/batch-4b-por-uth.md ───
+POR,POR,2028,2,,false,
+SAC,POR,2028,2,,false,
+POR,MEM,2029,2,,false,
+POR,POR,2030,1,,false,
+MIL,POR,2030,1,,true,
+POR,POR,2031,1,,false,
+POR,POR,2031,2,,false,
+POR,POR,2032,1,,false,
+POR,POR,2032,2,,false,
+UTH,UTH,2026,1,,false,
+UTH,SAN,2026,2,,false,MIN
+LAC,UTH,2027,2,,false,
+UTH,UTH,2028,1,,false,
+UTH,UTH,2029,2,,false,
+UTH,UTH,2030,1,,false,
+UTH,UTH,2031,1,,false,
+UTH,UTH,2031,2,,false,
+UTH,UTH,2032,1,,false,
+# ─── Batch 5: Southwest division (SAN DAL HOU; MEM/NOP → 5b) — raw: raw/batch-5-southwest.md ───
+# Note: SAC,SAN,2031,1 is a pending-orphan swap (resolves when SAC's Pacific batch lands).
+SAN,SAN,2028,1,,false,
+SAN,SAN,2028,2,,false,
+NOP,SAN,2028,2,,false,
+SAN,SAN,2029,1,,false,
+SAN,SAN,2029,2,,false,
+LAC,SAN,2029,2,,false,PHL
+NOP,SAN,2029,2,,false,
+SAN,SAN,2030,2,,false,
+SAC,SAN,2030,2,,false,IND
+SAN,SAN,2031,1,,false,
+SAC,SAN,2031,1,,true,
+SAN,SAN,2031,2,,false,
+SAC,SAN,2031,2,,false,
+SAN,SAN,2032,1,,false,
+SAN,SAN,2032,2,,false,
+DAL,DAL,2026,1,,false,
+PHX,DAL,2026,2,,false,WAS
+DAL,DAL,2027,1,top-2 protected,false,
+DAL,DAL,2028,1,,false,
+DAL,LAC,2028,2,,false,
+LAL,DAL,2029,1,,false,
+HOU,DAL,2029,2,,false,
+DAL,DAL,2030,1,,false,
+DAL,DAL,2031,1,,false,
+DAL,DAL,2032,1,,false,
+DAL,DAL,2032,2,,false,
+HOU,HOU,2026,2,,false,
+HOU,HOU,2027,1,,false,
+PHX,HOU,2027,1,,false,BRK
+MEM,HOU,2027,2,,false,LAC
+HOU,HOU,2028,1,,false,
+HOU,HOU,2028,2,,false,
+SAC,HOU,2029,2,,false,WAS
+HOU,HOU,2030,1,,false,
+HOU,HOU,2031,1,,false,
+HOU,HOU,2031,2,31-55 Own,false,
+HOU,HOU,2032,1,,false,
+# ─── Batch 5b: Southwest completion (MEM NOP; + HOU recovered gaps) — raw: raw/batch-5b-mem-nop.md ───
+# Note: ORL,NOP,2030,2 corrected to NOP,ORL,2030,2 (holder reversal); two batch-2/3 range-swaps removed.
+MEM,MEM,2026,1,,false,
+PHX,MEM,2026,1,,false,
+MEM,LAC,2026,2,,false,
+MEM,MEM,2027,1,,false,
+MEM,MEM,2028,1,,false,
+MEM,MEM,2029,1,,false,
+MEM,MEM,2030,2,31-50 Own,false,
+MEM,MEM,2031,1,,false,
+PHX,MEM,2031,1,,false,UTH
+MEM,MEM,2032,1,,false,
+MEM,MEM,2032,2,,false,
+DET,NOP,2026,2,,false,
+NOP,NOP,2028,1,,false,
+NOP,NOP,2029,1,,false,
+NOP,NOP,2030,1,,false,
+NOP,NOP,2030,2,,false,
+NOP,NOP,2031,1,,false,
+NOP,NOP,2032,1,,false,
+NOP,NOP,2032,2,,false,
+# ─── Batch 6: Pacific division (GOS→GSW, LAC, LAL, PHX, SAC) — raw: raw/batch-6-pacific.md ───
+# Note: SAC,SAC,2031,1 retires the last orphan. CHA (Charlotte) still unextracted → batch 7.
+GOS,GOS,2026,1,,false,
+LAL,GOS,2026,2,,false,
+GOS,GOS,2027,1,,false,
+GOS,GOS,2028,1,,false,
+GOS,GOS,2029,1,,false,
+GOS,GOS,2030,1,top-20 protected,false,
+GOS,GOS,2031,1,,false,
+GOS,GOS,2032,1,,false,
+GOS,GOS,2032,2,31-50 Own,false,
+LAC,LAC,2029,1,top-3 protected,false,
+LAC,LAC,2030,1,,false,
+LAC,LAC,2031,1,,false,
+LAC,LAC,2031,2,,false,
+LAC,LAC,2032,1,,false,
+LAC,LAC,2032,2,,false,
+LAL,LAL,2026,1,,false,
+LAL,LAL,2028,1,,false,
+LAL,LAL,2030,1,,false,
+LAL,LAL,2031,1,,false,
+LAL,LAL,2032,1,,false,
+PHX,PHX,2029,2,,false,
+PHX,CHA,2031,2,,false,
+PHX,PHX,2032,1,,false,
+SAC,SAC,2026,1,,false,
+SAC,SAC,2026,2,,false,
+CHA,SAC,2026,2,,false,
+SAC,SAC,2027,1,,false,
+SAC,SAC,2028,1,,false,
+SAC,SAC,2029,1,,false,
+SAC,SAC,2030,1,,false,
+SAC,SAC,2031,1,,false,
+SAC,SAC,2032,1,,false,
+SAC,SAC,2032,2,,false,
+# ─── Batch 7: Charlotte (CHA) — the 30th team — raw: raw/batch-7-charlotte.md ───
+# All 6 incoming CHA picks were pre-staged (batches 1/3/6); CHA emits its own picks only.
+CHA,CHA,2026,1,,false,
+CHA,CHA,2027,1,,false,
+CHA,CHA,2028,1,,false,
+CHA,CHA,2029,1,,false,
+CHA,CHA,2029,2,,false,
+CHA,CHA,2030,1,,false,
+CHA,CHA,2030,2,31-55 Own,false,
+CHA,CHA,2031,1,,false,
+CHA,CHA,2031,2,,false,
+CHA,CHA,2032,1,,false,
+CHA,CHA,2032,2,,false,

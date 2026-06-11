@@ -84,3 +84,8 @@ class TradeGrade(BaseModel):
     team_b_grade: TeamGrade | None = Field(
         default=None, description="None when the trade is illegal."
     )
+    pick_ownership_warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal pick-ownership notes (e.g. a gapped pick whose "
+        "ownership is indeterminate), surfaced from the legality check.",
+    )
