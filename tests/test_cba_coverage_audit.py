@@ -62,19 +62,19 @@ def _engine_has(*names: str) -> bool:
     return any(hasattr(constants, n) or hasattr(salary_rules, n) for n in names)
 
 
-# --- Gap 1: minimum_team_salary is verified:true but uncovered by the engine ---
-# The reference salary floor IS primary-sourced (verified:true) and COULD certify
-# a constant — but the engine has none, and the floor rule (a team must spend to
-# the floor) is not modeled. This records that gap.
+# --- COVERED (was Gap 1): minimum_team_salary now has an engine constant --------
+# The 2026-06-11 ratification pass added constants.MINIMUM_TEAM_SALARY, so the
+# salary floor moved from gap-pinned to COVERED. Value equality is certified in
+# test_cba_constant_audit.py; here we just confirm coverage flipped.
 
 
-def test_minimum_team_salary_is_verified_but_engine_has_no_constant():
+def test_minimum_team_salary_now_covered_by_engine():
     value, verified = _inline_entry("minimum_team_salary")
     assert verified, "reference minimum_team_salary must be verified:true"
-    assert value == 139_182_000  # pin the recorded reference value
-    assert not _engine_has(
-        "MINIMUM_TEAM_SALARY", "MIN_TEAM_SALARY", "SALARY_FLOOR", "TEAM_SALARY_FLOOR"
-    ), "engine now exposes a minimum-team-salary constant — update this audit"
+    assert _engine_has("MINIMUM_TEAM_SALARY"), (
+        "MINIMUM_TEAM_SALARY missing — ratification regressed"
+    )
+    assert constants.MINIMUM_TEAM_SALARY == value
 
 
 # --- Gap 2: LUXURY_TAX constant exists but the rules engine never uses it -------
@@ -90,15 +90,17 @@ def test_luxury_tax_constant_is_not_used_by_salary_rules_engine():
     )
 
 
-# --- Gap 3: BAE / maximums / minimums are absent (all verified:false) ----------
-# None of these may CERTIFY the engine (verified:false), but recording that the
-# engine models none of them is a coverage finding regardless.
+# --- BAE ratified (verified:true) but unmodeled; maximums/minimums still absent -
+# Recording that the engine models none of them is a coverage finding regardless.
 
 
-def test_bi_annual_exception_absent_and_unverified():
+def test_bi_annual_exception_ratified_but_unmodeled():
+    # Ratified 2026-06-11: corrected 5,135,000 -> 5,134,000, verified:true (Q6).
+    # Still NOT modeled (no signing logic) — a documented coverage item, no longer
+    # a "needs ratification" finding.
     value, verified = _block_value_verified("bi_annual_exception")
-    assert value == 5_135_000
-    assert verified is False  # cannot certify; needs ratification
+    assert value == 5_134_000
+    assert verified is True
     assert not _engine_has("BAE", "BI_ANNUAL_EXCEPTION", "BIANNUAL_EXCEPTION")
 
 
@@ -249,3 +251,46 @@ def test_pin_first_apron_dispatch_is_strict_below_second_apron():
     res = check_trade_legality(trade)
     assert not res.legal
     assert "aggregation blocked" in (res.error_reason or "")
+
+
+# --- modeled:false SCOPE pins (ratified 2026-06-11) ----------------------------
+# Real CBA rules confirmed against cbaguide (verified:true) but intentionally NOT
+# implemented by the trade-legality engine. These pin BOTH sides: the reference
+# documents them as verified:true + modeled:false, and the engine has no logic for
+# them. They are scope items, not gaps-to-fix.
+
+
+def _scope_flags(key: str) -> tuple[bool, bool]:
+    """Return (verified, modeled) for an apron_rules.modeled_false_scope entry."""
+    pattern = rf"^(?P<indent>\s*){re.escape(key)}:\s*$\n(?P<block>(?:^\s+.*\n?)+)"
+    m = re.search(pattern, _YAML_TEXT, re.MULTILINE)
+    assert m is not None, f"{key!r} not found in modeled_false_scope"
+    block = m.group("block")
+    verm = re.search(r"^\s*verified:\s*(true|false)", block, re.MULTILINE)
+    modm = re.search(r"^\s*modeled:\s*(true|false)", block, re.MULTILINE)
+    assert verm and modm, f"missing verified/modeled in {key!r}"
+    return verm.group(1) == "true", modm.group(1) == "true"
+
+
+def test_standard_tpe_timing_scope_verified_but_modeled_false():
+    verified, modeled = _scope_flags("standard_tpe_timing")
+    assert verified and not modeled
+    # Engine is point-in-time: no regular-season / TPE-expiry timing concept.
+    src = Path(salary_rules.__file__).read_text().lower()
+    assert "regular season" not in src
+
+
+def test_cash_in_trade_scope_verified_but_modeled_false():
+    verified, modeled = _scope_flags("cash_in_trade")
+    assert verified and not modeled
+    # Engine has no cash-in-trade concept; TradeAssets carry players + picks only.
+    src = Path(salary_rules.__file__).read_text().lower()
+    assert "cash" not in src
+
+
+def test_frozen_pick_scope_verified_but_modeled_false():
+    verified, modeled = _scope_flags("frozen_pick")
+    assert verified and not modeled
+    # Engine models no multi-year apron status or pick freezing.
+    src = Path(salary_rules.__file__).read_text().lower()
+    assert "frozen" not in src and "freeze" not in src
