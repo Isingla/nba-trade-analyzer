@@ -5,6 +5,7 @@ refresh whenever the league publishes the new year's numbers.
 """
 
 SALARY_CAP = 154_647_000
+MINIMUM_TEAM_SALARY = 139_182_000  # 2025-26 salary floor (NBA PR); 90% of the cap
 LUXURY_TAX = 187_895_000
 FIRST_APRON = 195_945_000
 SECOND_APRON = 207_824_000
