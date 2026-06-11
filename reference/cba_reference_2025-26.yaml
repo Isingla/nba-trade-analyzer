@@ -22,7 +22,7 @@
 meta:
   season: "2025-26"
   cba_term: "2023 CBA (in effect 2023-2030)"
-  last_updated: "2026-06-08"
+  last_updated: "2026-06-11"   # cbaguide ratification pass (trade_matching, apron timing/triggers, BAE)
   primary_source: "https://pr.nba.com/nba-salary-cap-2025-26-season"
   note_2026_27: >
     The NBA projected a ~7% cap rise for 2026-27 but, as of this file's date, the
@@ -63,11 +63,10 @@ exceptions:
     source: "NBA PR 2025-26"
     hard_cap_effect: null
   bi_annual_exception:
-    value: 5135000
-    verified: false
+    value: 5134000   # was 5135000 (secondary source); cbaguide is authority of record
+    verified: true
     pct_of_cap: 0.0332
-    source: "SalarySwish / Hoops Rumors (secondary; not in NBA PR)"
-    action: "VERIFY against cbaguide.com BAE figure for 2025-26"
+    source: 'cbaguide.com salary cap page (Q6): "The Bi-Annual Exception (BAE) is available to Teams under the First Apron to sign or acquire a Player or Players over the Salary Cap for up to $5,134,000 (2025-26)."'
     hard_cap_effect: "first_apron"
 
 # -----------------------------------------------------------------------------
@@ -134,70 +133,127 @@ minimum_salaries:
 apron_rules:
   hard_cap_triggers:
     first_apron:
-      verified: false
-      action: "VERIFY trigger list against cbaguide.com"
+      verified: true
+      modeled: false   # engine implements no hard-cap trigger logic (scope item)
+      source: 'cbaguide.com apron page Apron Limitations Table (Q7): row E "Team acquires Player using the Expanded TPE → First Apron".'
+      coverage_note: >
+        Q7 row E confirms the Expanded-TPE -> First-Apron hard cap. The remaining
+        triggers below are standard 2023-CBA first-apron triggers carried as
+        documentation; they were NOT individually captured in this pass's quotes.
+        None are modeled by the engine.
       triggers:
         - "Acquire a player via sign-and-trade"
         - "Use the Non-Taxpayer MLE to sign a player"
         - "Use the Bi-Annual Exception"
         - "Use any part of the MLE to acquire via trade or waiver claim"
-        - "Use an Expanded Traded Player Exception (take back >100% via salary-matching)"
+        - "Use an Expanded Traded Player Exception (take back >100% via salary-matching)"   # Q7 row E
         - "Use a trade exception generated before the start of the current offseason"
         - "Sign a player waived in-season whose pre-waiver salary exceeded the NTMLE ($14,104,000)"
     second_apron:
-      verified: false
-      action: "VERIFY trigger list against cbaguide.com"
+      verified: true
+      modeled: false   # only the aggregation block is enforced (see trade_matching); triggers carried as data
+      source: 'cbaguide.com apron page Apron Limitations Table (Q7): row H "Aggregated TPE → Second Apron", row I "Team pays Cash-in-Trade → Second Apron", row K "TMLE → Second Apron".'
+      coverage_note: >
+        Q7 rows H/I/K confirm the aggregation, cash-in-trade, and Taxpayer-MLE
+        second-apron triggers. The signed-and-traded-takeback row was not in this pass's
+        quotes; carried as documentation. The engine enforces only the aggregation block.
       triggers:
-        - "Use any portion of the (taxpayer) MLE"
-        - "Aggregate two or more player salaries in a trade"
-        - "Send out cash in a trade"
+        - "Use any portion of the (taxpayer) MLE"   # Q7 row K
+        - "Aggregate two or more player salaries in a trade"   # Q7 row H
+        - "Send out cash in a trade"   # Q7 row I
         - "Use a signed-and-traded player to take back salary"
   first_apron_restrictions:
-    verified: false
-    action: "VERIFY against cbaguide.com"
+    verified: true
+    modeled: "matching only"   # engine enforces the 100% trade-matching restriction; signing rules unmodeled
+    source: 'cbaguide.com (Q1): "Any time there is a $250k cushion referenced, that cushion is eliminated if the Team lands over the First Apron." + (Q6): the BAE is available only to Teams under the First Apron.'
+    coverage_note: >
+      No-expanded-matching is confirmed by Q1 (cushion eliminated over the first apron;
+      engine _check_first_apron enforces flat 100%). No-BAE follows from Q6 (the BAE is
+      for teams under the first apron). The in-season-waived-NTMLE signing rule is
+      carried as documentation and is not modeled (scope item).
     rules:
-      - "Cannot take back more than 100% of outgoing salary in a trade (no expanded matching)"
-      - "Cannot use the Bi-Annual Exception"
+      - "Cannot take back more than 100% of outgoing salary in a trade (no expanded matching)"   # Q1 — ENFORCED
+      - "Cannot use the Bi-Annual Exception"   # Q6 (BAE is under-first-apron only)
       - "Cannot sign in-season-waived players whose salary exceeded the NTMLE"
   second_apron_restrictions:
-    verified: false
-    action: "VERIFY against cbaguide.com"
+    verified: true
+    modeled: "aggregation only"   # engine enforces only the no-aggregation block
+    source: 'cbaguide.com apron page (Q7) rows H/I/K + (Q8) frozen pick.'
+    coverage_note: >
+      No-aggregation (Q7 row H), no-cash (Q7 row I), no-Taxpayer-MLE (Q7 row K), and the
+      frozen-pick rule (Q8) are all confirmed. The engine enforces only the aggregation
+      block (see trade_matching / _check_second_apron); cash, TMLE, and frozen-pick are
+      documented modeled:false scope items (see apron_rules.modeled_false_scope).
     rules:
       - "All first-apron restrictions, PLUS:"
-      - "Cannot aggregate salaries in a trade"
-      - "Cannot send cash in a trade"
-      - "Cannot use the Taxpayer MLE"
-      - "First-round pick 7 years out is frozen if team finishes above the second apron"
+      - "Cannot aggregate salaries in a trade"   # Q7 row H — ENFORCED by engine
+      - "Cannot send cash in a trade"   # Q7 row I — modeled:false
+      - "Cannot use the Taxpayer MLE"   # Q7 row K — modeled:false
+      - "First-round pick 7 years out is frozen if team finishes above the second apron"   # Q8 — modeled:false
   apron_status_timing:
     note: "A team's apron restrictions are determined by its salary position at the CONCLUSION of a transaction, not at the start of the league year."
-    verified: false
-    action: "Confirm the engine evaluates apron status post-transaction, not pre-"
+    verified: true
+    source: 'cbaguide.com apron page (Q2): "If the Team''s Apron Team Salary exceeds the applicable Apron Threshold after executing the transaction, then the Team is prohibited from executing the transaction"'
+    engine_ref: "salary_rules.py — Gate B (_check_expanded_tpe: post_trade > FIRST_APRON) and _check_second_apron carve-out (post_trade <= SECOND_APRON). 'exceeds' is strict, so at-exactly-apron is legal."
+    ratified: "2026-06-11 — human read cbaguide.com (authority of record)."
+
+  # Real CBA rules confirmed against cbaguide (verified:true) but intentionally NOT
+  # implemented in the trade-legality engine — documented as scope items so they are
+  # not mistaken for gaps-to-fix. Mirrors how the draft-pick coverage gaps are recorded.
+  modeled_false_scope:
+    standard_tpe_timing:
+      verified: true
+      modeled: false
+      source: 'cbaguide.com apron page Apron Limitations Table (Q7 row F): a regular-season Traded Player Exception is unusable after the regular season if the Team is over the first apron.'
+      scope_note: "Engine models no TPE generation/expiry timing; check_trade_legality is point-in-time and season-agnostic."
+    cash_in_trade:
+      verified: true
+      modeled: false
+      source: 'cbaguide.com apron page Apron Limitations Table (Q7 row I): "Team pays Cash-in-Trade → Second Apron".'
+      scope_note: "Engine has no cash-in-trade concept; TradeAssets carry players + picks only."
+    frozen_pick:
+      verified: true
+      modeled: false
+      source: 'cbaguide.com apron page (Q8): "If a Team is over the Second Apron at the end of the Regular Season, then its 1st Round Pick in the Draft seven years in the future is Frozen"; slides to end of round if over the second apron in 2 of the 4 subsequent years, otherwise unfreezes.'
+      scope_note: "Engine models no multi-year apron status or pick freezing."
 
 # -----------------------------------------------------------------------------
-# TRADE SALARY MATCHING — THE bug-prone area. Sources actively disagree on the
-# exact bracket boundaries, so EVERYTHING here is unverified by design. Do not let
-# the auditor treat any of these brackets as confirmed. This is the first thing to
-# pin down against cbaguide.com.
+# TRADE SALARY MATCHING — RATIFIED 2026-06-11 against cbaguide.com (authority of
+# record). Historically the bug-prone area; the bracket boundaries are now
+# confirmed (Q4 / Q3 / Q1) and pinned by equivalence tests. The engine's matching
+# logic is confirmed correct — see src/nba_trade_analyzer/engine/salary_rules.py.
 # -----------------------------------------------------------------------------
 trade_matching:
-  verified: false
-  action: "VERIFY ALL brackets and boundaries against cbaguide.com before auditing the engine's matching logic. Sources conflict; do not certify."
+  verified: true
+  ratified: "2026-06-11 — human read cbaguide.com (authority of record); engine matching logic confirmed CORRECT."
+  source: 'cbaguide.com TPE page (Q4): "Less than $7.25MM → 200% Outgoing + $250k; $7.25MM – $29MM → 100% Outgoing + $8,527,000; More than $29MM → 125% Outgoing" (no $250k on the 125% band). "The $8,527,000 figure is the amount for the 2025-26 season."'
   non_apron_team:
     description: >
-      Expanded matching applies. Reported structure: incoming salary may exceed
-      outgoing, bounded by (A) < 200% of outgoing + $250,000 and (B) the expanded
-      TPE band. The Expanded TPE figure for 2025-26 is reported as $8,527,000.
-      Worked example from source: a $10,000,000 outgoing salary can take back up to
-      $18,527,000 incoming.
+      Below the first apron, expanded matching applies in three bands keyed on
+      outgoing salary (Q4). Per Q1 the $250k cushion is eliminated once a team lands
+      over the first apron, so the cushion is reachable only below the apron.
     expanded_tpe_2025_26: 8527000
-    bracket_boundaries: null
-    action: "Pin the exact bracket cutoffs (where 200%+250K transitions to the flat expanded figure transitions to 125%+250K) — this is the off-by-one risk."
+    bracket_boundaries:
+      tier1: "outgoing < 7250000  ->  200% * outgoing + 250000"
+      tier2: "7250000 <= outgoing <= 29000000  ->  outgoing + 8527000"
+      tier3: "outgoing > 29000000  ->  125% * outgoing (NO 250000 cushion)"
+    engine_ref: "salary_rules.py:_check_expanded_tpe (EXPANDED_TPE_LOW=7250000, EXPANDED_TPE_HIGH=29000000, EXPANDED_TPE_CUSHION=8527000, TRADE_MATCH_CUSHION=250000)"
   first_apron_team:
-    description: "Reported as capped at 100% of outgoing salary (no expanded matching)."
-    action: "VERIFY the exact percentage and any +$ allowance."
+    verified: true
+    description: "100% of outgoing salary; no expanded matching, no $250k cushion."
+    source: 'cbaguide.com TPE page (Q1): "Any time there is a $250k cushion referenced, that cushion is eliminated if the Team lands over the First Apron."'
+    engine_ref: "salary_rules.py:_check_first_apron (incoming <= outgoing)."
+    equivalence_note: >
+      post = pre - outgoing + incoming. Using any cushion requires incoming > outgoing,
+      so post > pre. A team starting at-or-above the first apron that uses a cushion
+      therefore necessarily LANDS over the first apron, which per Q1 eliminates the
+      cushion. The cushion is mathematically unusable by such teams, so the engine's
+      flat incoming <= outgoing is exactly equivalent to cbaguide's landing-keyed rule.
   second_apron_team:
-    description: "Reported as 100% matching, no aggregation, no cash. (One older source cites 110% — resolve this conflict.)"
-    action: "VERIFY — sources conflict between 100% and 110%. cbaguide.com is the tiebreaker."
+    verified: true
+    description: "100% matching (NOT 110% — conflict resolved to 100%); no aggregation, no cash."
+    source: 'cbaguide.com TPE page (Q3): Aggregated TPE salary limit "100% Outgoing + $250k"; the standard TPE permits the same incoming trade salary. The 110% figure (older secondary source) is rejected — cbaguide is the authority of record.'
+    engine_ref: "salary_rules.py:_check_second_apron (incoming <= outgoing post-trade; aggregation blocked while over). The +$250k from Q3 is eliminated over the apron per Q1 — see first_apron_team.equivalence_note."
 
 # -----------------------------------------------------------------------------
 # CITATIONS — where each block came from, for your spot-checks.

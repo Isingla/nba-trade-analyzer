@@ -8,6 +8,17 @@ Room TPE, a team between the cap and the first apron uses the Expanded TPE
 second-apron aggregation block — including the carve-out where the trade
 itself drops the team below the second apron, which re-enables aggregation
 via the Aggregated TPE.
+
+The pre-trade tier dispatch is provably EQUIVALENT to cbaguide's
+post-transaction, landing-keyed rule (ratified 2026-06-11 against cbaguide.com,
+the authority of record). Per cbaguide Q1 the $250k matching cushion is
+eliminated once a team lands over the first apron, and because
+``post = pre - outgoing + incoming`` any cushion use (incoming > outgoing)
+pushes ``post > pre``. So a team at-or-above an apron that reaches for a cushion
+necessarily lands over it and loses the cushion — which is why the over-apron
+paths use flat 100% matching with no cushion. See the equivalence proofs on
+``_check_first_apron`` and ``_check_second_apron``; do NOT re-introduce a cushion
+there.
 """
 
 from __future__ import annotations
@@ -172,6 +183,18 @@ def _check_expanded_tpe(
 
 
 def _check_first_apron(team_name: str, outgoing: int, incoming: int) -> str | None:
+    # RATIFIED EQUIVALENCE (cbaguide.com, authority of record, 2026-06-11).
+    # Do NOT "helpfully" add a $250k cushion here — it is provably unusable.
+    #   Q1: "Any time there is a $250k cushion referenced, that cushion is
+    #        eliminated if the Team lands over the First Apron."
+    #   Q2: "If the Team's Apron Team Salary exceeds the applicable Apron
+    #        Threshold after executing the transaction, then the Team is
+    #        prohibited from executing the transaction."
+    # Proof: post = pre - outgoing + incoming, so using a cushion (incoming >
+    # outgoing) gives post > pre. This path runs only when FIRST_APRON <= pre
+    # (see _evaluate_team dispatch), hence post > FIRST_APRON — the team lands
+    # over the apron, and Q1 eliminates the cushion. Flat `incoming <= outgoing`
+    # is therefore exactly equivalent to cbaguide's landing-keyed rule.
     if incoming > outgoing:
         return (
             f"{team_name}: over first apron requires 100% matching "
@@ -205,6 +228,10 @@ def _check_second_apron(
             f"apron post-trade (${post_trade:,}) while combining {num_outgoing} "
             f"outgoing salaries."
         )
+    # Same RATIFIED EQUIVALENCE as _check_first_apron (cbaguide Q1 + Q2,
+    # 2026-06-11): this branch runs only when post_trade > SECOND_APRON, i.e. the
+    # team stays over the apron, so per Q1 any $250k cushion is eliminated. Flat
+    # 100% matching is correct — do NOT add a cushion here.
     if incoming > outgoing:
         return (
             f"{team_name}: over second apron requires 100% matching "

@@ -102,6 +102,17 @@ def test_second_apron_matches_verified_reference():
     )
 
 
+def test_minimum_team_salary_matches_verified_reference():
+    # The salary floor is verified:true in the reference and now has an engine
+    # constant, so it CERTIFIES (added in the 2026-06-11 ratification pass).
+    value, verified = _inline_entry("minimum_team_salary")
+    assert verified, "reference minimum_team_salary must be verified:true to certify"
+    assert constants.MINIMUM_TEAM_SALARY == value, (
+        f"engine MINIMUM_TEAM_SALARY={constants.MINIMUM_TEAM_SALARY:,} "
+        f"!= reference {value:,}"
+    )
+
+
 # --- MLEs: verified:true in the reference, but NO engine constant exists ------
 # Each test confirms (a) the reference entry is verified:true and (b) the engine
 # genuinely exposes no constant to certify. The absence is the finding.

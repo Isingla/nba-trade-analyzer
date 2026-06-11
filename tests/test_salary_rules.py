@@ -507,6 +507,123 @@ def test_expanded_tpe_over_100pct_landing_at_first_apron_is_legal():
     assert result.legal, result.error_reason
 
 
+# ----- RATIFIED EQUIVALENCE PINS (cbaguide.com, authority of record 2026-06-11) -
+# These pin the proof that the engine's pre-trade-dispatch + flat-100% over-apron
+# matching is equivalent to cbaguide's post-transaction, landing-keyed, cushion-
+# eliminated rule (Q1 + Q2). A refactor that "helpfully" re-adds a $250k cushion to
+# the over-apron paths, or flips Gate B's strict ">", will break one of these.
+
+
+def test_equiv_a_over_first_apron_takeback_above_100pct_is_illegal():
+    # pre = FIRST_APRON + 1 (over the apron) → _check_first_apron; incoming =
+    # outgoing + 1 (>100%) → illegal. Per Q1 no cushion survives over the apron.
+    trade = _trade(
+        team_a_payroll=FIRST_APRON + 1,
+        team_a_status=CapStatus.FIRST_APRON,
+        team_a_out=[_entry("Out A", "AAA", 20_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 20_000_001)],
+    )
+    result = check_trade_legality(trade)
+    assert not result.legal
+    assert "first apron" in (result.error_reason or "")
+
+
+def test_equiv_b_over_first_apron_exact_100pct_match_is_legal():
+    # Same over-apron team, incoming == outgoing (exactly 100%, no cushion) → legal.
+    trade = _trade(
+        team_a_payroll=FIRST_APRON + 1,
+        team_a_status=CapStatus.FIRST_APRON,
+        team_a_out=[_entry("Out A", "AAA", 20_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 20_000_000)],
+    )
+    result = check_trade_legality(trade)
+    assert result.legal, result.error_reason
+
+
+def test_equiv_c_expanded_landing_exactly_at_first_apron_is_legal():
+    # Expanded-TPE team (pre < FIRST_APRON) taking back >100% and landing EXACTLY
+    # on the apron. Q2 "exceeds … after executing" is strict, so at-exactly is
+    # legal — Gate B fires only on post_trade > FIRST_APRON.
+    incoming = 11_945_000  # 194M - 10M + 11.945M = 195,945,000 == FIRST_APRON
+    trade = _trade(
+        team_a_payroll=194_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", incoming)],
+    )
+    assert 194_000_000 - 10_000_000 + incoming == FIRST_APRON
+    result = check_trade_legality(trade)
+    assert result.legal, result.error_reason
+
+
+def test_equiv_d_expanded_landing_one_over_first_apron_is_illegal():
+    # Same team, one dollar higher → lands FIRST_APRON + 1 with incoming > outgoing
+    # → Gate B rejects (strict ">").
+    incoming = 11_945_001  # 194M - 10M + 11,945,001 = 195,945,001
+    trade = _trade(
+        team_a_payroll=194_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", incoming)],
+    )
+    assert 194_000_000 - 10_000_000 + incoming == FIRST_APRON + 1
+    result = check_trade_legality(trade)
+    assert not result.legal
+    assert "first apron" in (result.error_reason or "")
+
+
+def test_equiv_e_band_boundaries_7_25m_and_29m_are_middle_band():
+    # Q4 semantics: "Less than $7.25MM" vs "$7.25MM – $29MM" vs "More than $29MM".
+    # outgoing == 7.25M is the MIDDLE band (limit = outgoing + 8.527M = 15.777M),
+    # NOT tier-1 (200%+250k = 14.75M). Take back 15.777M (== middle limit) → legal;
+    # one dollar more → illegal.
+    low = check_trade_legality(
+        _trade(
+            team_a_payroll=170_000_000,
+            team_a_status=CapStatus.OVER_CAP,
+            team_a_out=[_entry("Out A", "AAA", 7_250_000)],
+            team_b_payroll=170_000_000,
+            team_b_status=CapStatus.OVER_CAP,
+            team_b_out=[_entry("In A", "BBB", 7_250_000 + EXPANDED_TPE_CUSHION)],
+        )
+    )
+    assert low.legal, low.error_reason  # 15,777,000 allowed only on the middle band
+    low_over = check_trade_legality(
+        _trade(
+            team_a_payroll=170_000_000,
+            team_a_status=CapStatus.OVER_CAP,
+            team_a_out=[_entry("Out A", "AAA", 7_250_000)],
+            team_b_payroll=170_000_000,
+            team_b_status=CapStatus.OVER_CAP,
+            team_b_out=[_entry("In A", "BBB", 7_250_000 + EXPANDED_TPE_CUSHION + 1)],
+        )
+    )
+    assert not low_over.legal
+
+    # outgoing == 29M is STILL the middle band (limit = 29M + 8.527M = 37.527M),
+    # NOT tier-3 (125% = 36.25M). 37M exceeds 125% but is under the cushion limit,
+    # so it is legal only if the engine is on the middle band at exactly 29M.
+    high = check_trade_legality(
+        _trade(
+            team_a_payroll=170_000_000,
+            team_a_status=CapStatus.OVER_CAP,
+            team_a_out=[_entry("Out A", "AAA", 29_000_000)],
+            team_b_payroll=170_000_000,
+            team_b_status=CapStatus.OVER_CAP,
+            team_b_out=[_entry("In A", "BBB", 37_000_000)],
+        )
+    )
+    assert high.legal, high.error_reason  # > 125%(=36.25M) but under cushion limit
+
+
 # ----- Sanity check on the constants used in tests ------------------------
 
 
