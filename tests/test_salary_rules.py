@@ -624,6 +624,146 @@ def test_equiv_e_band_boundaries_7_25m_and_29m_are_middle_band():
     assert high.legal, high.error_reason  # > 125%(=36.25M) but under cushion limit
 
 
+# ----- STAGE 3 BOUNDARY PINS (fresh cbaguide read, 2026-06-15) -------------
+# Characterization pins for the four edge cases the threshold audit verified by a
+# fresh cbaguide read. salary_rules.py is CORRECT as written; these lock the exact
+# boundaries so a future refactor can't silently shift an Expanded-TPE band edge or
+# flip an inclusive "up to" matching limit to exclusive. Pure pins — no logic change.
+
+
+def test_band_edge_outgoing_exactly_7_25m_routes_to_middle_band():
+    # cbaguide expanded-TPE bands: "Less than $7.25MM" → 200% + $250k;
+    # "$7.25MM – $29MM" → 100% + $8.527MM. The lower edge is INCLUSIVE to the
+    # MIDDLE band: outgoing == $7,250,000 is "$7.25MM – $29MM", NOT "less than".
+    # Middle limit = 7.25M + 8.527M = 15.777M; the bottom-band limit would be only
+    # 2×7.25M + 250k = 14.75M. Taking back 15.0M is legal ONLY on the middle band.
+    trade = _trade(
+        team_a_payroll=170_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 7_250_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 15_000_000)],  # > bottom 14.75M, < middle 15.777M
+    )
+    assert check_trade_legality(trade).legal  # middle band selected at the inclusive edge
+
+
+def test_band_edge_outgoing_just_below_7_25m_routes_to_bottom_band():
+    # Neighbor sanity: one dollar under the edge ($7,249,999) is "Less than
+    # $7.25MM" → bottom band (limit 2×7,249,999 + 250k = 14,749,998). The same
+    # 15.0M takeback the inclusive edge allows is now ILLEGAL — proving the band
+    # actually switches at exactly $7.25MM.
+    trade = _trade(
+        team_a_payroll=170_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 7_249_999)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 15_000_000)],
+    )
+    result = check_trade_legality(trade)
+    assert not result.legal
+    assert "Expanded TPE" in (result.error_reason or "")
+
+
+def test_band_edge_outgoing_exactly_29m_routes_to_middle_band():
+    # cbaguide: "$7.25MM – $29MM" → +$8.527MM; "More than $29MM" → 125% (no $250k).
+    # The upper edge is INCLUSIVE to the MIDDLE band: outgoing == $29,000,000 is
+    # "$7.25MM – $29MM", NOT "more than $29MM". Middle limit = 29M + 8.527M =
+    # 37.527M; the top-band 125% limit would be only 36.25M. Taking back 37.0M is
+    # legal ONLY on the middle band.
+    trade = _trade(
+        team_a_payroll=170_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 29_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 37_000_000)],  # > top 36.25M, < middle 37.527M
+    )
+    assert check_trade_legality(trade).legal  # middle band selected at the inclusive edge
+
+
+def test_band_edge_outgoing_just_above_29m_routes_to_top_band():
+    # Neighbor sanity: one dollar over the edge ($29,000,001) is "More than $29MM"
+    # → top band, 125% with NO $250k (limit (5×29,000,001)//4 = 36,250,001). The
+    # same 37.0M takeback the inclusive edge allows is now ILLEGAL — proving the
+    # band switches to 125% strictly above $29MM.
+    trade = _trade(
+        team_a_payroll=170_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 29_000_001)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", 37_000_000)],
+    )
+    result = check_trade_legality(trade)
+    assert not result.legal
+    assert "Expanded TPE" in (result.error_reason or "")
+
+
+def test_room_tpe_matching_limit_is_inclusive_at_exactly_the_limit():
+    # cbaguide TPE absorption is "up to" the limit: incoming may EQUAL the limit
+    # (cap space + outgoing + $250k) and only EXCEEDING it is illegal. Under-cap
+    # team: cap space = 154.647M - 150M = 4.647M, outgoing 10M → limit = 14,897,000.
+    # == limit is legal; limit + $1 is not.
+    limit = (SALARY_CAP - 150_000_000) + 10_000_000 + 250_000
+    assert limit == 14_897_000
+
+    at_limit = _trade(
+        team_a_payroll=150_000_000,
+        team_a_status=CapStatus.UNDER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", limit)],
+    )
+    assert check_trade_legality(at_limit).legal  # incoming == limit → "up to" allows it
+
+    over_limit = _trade(
+        team_a_payroll=150_000_000,
+        team_a_status=CapStatus.UNDER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 10_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", limit + 1)],
+    )
+    result = check_trade_legality(over_limit)
+    assert not result.legal
+    assert "Room TPE" in (result.error_reason or "")
+
+
+def test_expanded_tpe_matching_limit_is_inclusive_at_exactly_the_band_limit():
+    # Same "up to" inclusivity for the Expanded-TPE band limit. Middle band,
+    # outgoing 20M → limit = 20M + 8.527M = 28,527,000. incoming == limit is legal;
+    # limit + $1 is not. Post-trade (170M - 20M + 28.527M = 178.527M) stays below
+    # the first apron, so Gate B is not implicated — this isolates the band-limit
+    # boundary itself.
+    limit = 20_000_000 + EXPANDED_TPE_CUSHION
+    assert limit == 28_527_000
+
+    at_limit = _trade(
+        team_a_payroll=170_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 20_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", limit)],
+    )
+    assert check_trade_legality(at_limit).legal  # incoming == band limit → legal
+
+    over_limit = _trade(
+        team_a_payroll=170_000_000,
+        team_a_status=CapStatus.OVER_CAP,
+        team_a_out=[_entry("Out A", "AAA", 20_000_000)],
+        team_b_payroll=170_000_000,
+        team_b_status=CapStatus.OVER_CAP,
+        team_b_out=[_entry("In A", "BBB", limit + 1)],
+    )
+    result = check_trade_legality(over_limit)
+    assert not result.legal
+    assert "Expanded TPE" in (result.error_reason or "")
+
+
 # ----- Sanity check on the constants used in tests ------------------------
 
 
