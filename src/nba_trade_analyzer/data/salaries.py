@@ -342,6 +342,41 @@ def _load_csv_fallback(path: Path) -> pd.DataFrame:
     return df[list(EXPECTED_COLUMNS)]
 
 
+def _dedupe_salary_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse repeat contract lines that share a ``(team, bbref_slug)``.
+
+    ROOT CAUSE: Basketball Reference's contracts ``tbody`` itself lists some
+    players on MULTIPLE rows — min / two-way / dead-money players who signed
+    several 10-day or rest-of-season minimum deals in one season, each rendered
+    as its own line with the same salary (verified live: e.g. ``bradlto01`` is
+    3 identical IND rows, ``robinje02`` is 3 identical IND rows + 1 DAL row).
+    The parser faithfully emits one record per ``<tr>``, so these byte-identical
+    rows flow downstream and double-count salary AND roster WAA, corrupting cap
+    totals and surplus.
+
+    We keep the FIRST row per ``(team, bbref_slug)`` and DELIBERATELY preserve
+    the same player on DIFFERENT teams (legitimate two-stint / dead-money cap
+    hits that belong on each team's books — e.g. ``robinje02`` stays on both IND
+    and DAL). Rows with an empty slug can't be keyed reliably, so they are never
+    collapsed. Applied at every ``fetch_all_salaries`` return path (live parse,
+    warm cache, CSV fallback) so no source can reintroduce duplicates.
+    """
+    if df.empty or "bbref_slug" not in df.columns:
+        return df
+    slug = df["bbref_slug"].fillna("").astype(str)
+    team = df["team"].fillna("").astype(str) if "team" in df.columns else ""
+    keyable = slug != ""
+    deduped_keyable = (
+        df[keyable]
+        .assign(_team=team[keyable], _slug=slug[keyable])
+        .drop_duplicates(subset=["_team", "_slug"], keep="first")
+        .drop(columns=["_team", "_slug"])
+    )
+    # Preserve original row order; keep all un-slugged rows as-is.
+    out = pd.concat([deduped_keyable, df[~keyable]]).sort_index()
+    return out.reset_index(drop=True)
+
+
 def fetch_all_salaries(
     season: str = _DEFAULT_SEASON,
     cache: JsonCache | None = None,
@@ -351,14 +386,18 @@ def fetch_all_salaries(
 
     Cached for 24 hours. On any HTTP or parse failure, falls back to the
     committed CSV snapshot (``data/salaries_<season>.csv``) and prints a
-    warning, so the project still works offline.
+    warning, so the project still works offline. Every return path is run
+    through ``_dedupe_salary_frame`` so Basketball Reference's repeated
+    contract lines never reach consumers (see that helper for the root cause).
     """
     cache = cache or JsonCache()
     cache_key = f"salaries_{season}"
 
     cached = cache.get(cache_key)
     if cached is not None:
-        return pd.DataFrame(cached, columns=list(EXPECTED_COLUMNS))
+        return _dedupe_salary_frame(
+            pd.DataFrame(cached, columns=list(EXPECTED_COLUMNS))
+        )
 
     try:
         resp = httpx.get(
@@ -371,8 +410,9 @@ def fetch_all_salaries(
         df = _parse_salary_html(resp.text, season=season)
     except (httpx.HTTPError, RuntimeError) as exc:
         print(f"Basketball Reference fetch failed ({exc}), using local CSV fallback")
-        return _load_csv_fallback(csv_path or _csv_path(season))
+        return _dedupe_salary_frame(_load_csv_fallback(csv_path or _csv_path(season)))
 
+    df = _dedupe_salary_frame(df)
     cache.set(cache_key, df.to_dict(orient="records"), ttl_hours=_CACHE_TTL_HOURS)
     return df
 
