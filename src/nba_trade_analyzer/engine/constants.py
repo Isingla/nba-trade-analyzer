@@ -178,7 +178,13 @@ MPG_RECENCY_DECAY = 0.55
 MPG_IMPACT_REF = 0.0    # league-average EPM/DPM impact anchor (~0)
 MPG_IMPACT_COEF = 0.9   # MPG added per +1.0 impact above the reference
 MPG_SALARY_REF = 0.10   # salary as a share of the cap: ~10% is a mid-rotation deal
-MPG_SALARY_COEF = 12.0  # MPG added per +1.0 of cap-share above the reference
+MPG_SALARY_COEF = 6.0   # MPG added per +1.0 of cap-share above the reference.
+# Capped from 12 -> 6 after the issue-2.2 salary guard, re-run on EPM/DARKO
+# impact (not NET_RATING), confirmed salary materially overweighted genuinely
+# overpaid-but-low-impact players: +64 min of projected minutes on that cohort
+# at coef 12, halving to ~+32 min at coef 6 (under the materiality line) while
+# keeping salary's positive "coaches play who they pay" signal. See
+# scripts/backtest_minutes.py and databallr docs/CONTROL_RUNWAY.md.
 MPG_FLOOR = 0.0
 MPG_CEILING = 38.0
 
