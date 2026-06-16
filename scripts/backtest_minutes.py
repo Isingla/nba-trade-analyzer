@@ -29,10 +29,16 @@ from __future__ import annotations
 import math
 import statistics
 
-from nba_trade_analyzer.data.darko import normalize_name
+from nba_trade_analyzer.data.darko import fetch_darko_data, normalize_name
+from nba_trade_analyzer.data.epm import fetch_epm_data
 from nba_trade_analyzer.data.players import fetch_player_stats
 from nba_trade_analyzer.data.salaries import fetch_all_salaries
 from nba_trade_analyzer.engine.constants import (
+    MPG_CEILING,
+    MPG_FLOOR,
+    MPG_IMPACT_COEF,
+    MPG_IMPACT_REF,
+    MPG_SALARY_COEF,
     MPG_SALARY_REF,
     SALARY_CAP,
 )
@@ -82,6 +88,32 @@ def _salary_share_by_name():
     return shares
 
 
+def _prod_impact_by_name():
+    """Production impact (EPM, else DARKO DPM) keyed by normalized name.
+
+    This is the SAME impact source the page prices WAR on, and it mirrors the
+    engine's year-1 precedence (EPM first, DARKO as the fallback). Used both as
+    the MPG model's impact input and as the cohort classifier, so the salary
+    guard runs on the metric production actually trusts — not NET_RATING, which
+    mislabels high-usage stars on bad teams as low-impact. Returns
+    ``name -> (source, value)``.
+    """
+    out: dict[str, tuple[str, float]] = {}
+    for rec in fetch_epm_data().to_dict(orient="records"):
+        key = rec.get("player_name_normalized")
+        val = _safe(rec.get("epm"))
+        if key and not math.isnan(val):
+            out[key] = ("epm", val)
+    for rec in fetch_darko_data().to_dict(orient="records"):
+        key = rec.get("player_name_normalized")
+        if not key or key in out:  # EPM preferred when both exist
+            continue
+        val = _safe(rec.get("dpm"))
+        if not math.isnan(val):
+            out[key] = ("darko", val)
+    return out
+
+
 def _metrics(errors):
     errors = [e for e in errors if not math.isnan(e)]
     mae = statistics.fmean(abs(e) for e in errors)
@@ -95,6 +127,7 @@ def main() -> None:
     history = {s: _index_by_id(fetch_player_stats(s)) for s in HISTORY_SEASONS}
     target = _index_by_id(fetch_player_stats(TARGET_SEASON))
     salary_share = _salary_share_by_name()
+    prod_impact = _prod_impact_by_name()
 
     rows = []
     for pid, trow in target.items():
@@ -120,20 +153,30 @@ def main() -> None:
             continue
 
         age = int(_safe(trow.get("age"), 27))
-        impact = last_net if not math.isnan(last_net) else 0.0
         name = trow.get("player_name") or ""
-        share = salary_share.get(normalize_name(name), 0.0)
+        nkey = normalize_name(name)
+        share = salary_share.get(nkey, 0.0)
         prior_mpg = recency_weighted_mpg(mpg_hist) or 0.0
 
+        # Impact INPUT to the MPG model is now EPM/DARKO (production parity);
+        # NET_RATING is retained only for the labeled artifact-comparison cohort.
+        prod = prod_impact.get(nkey)
+        impact_prod = prod[1] if prod else 0.0
+        impact_net = last_net if not math.isnan(last_net) else 0.0
+
         proj_games = project_games(gp_hist, age)
-        proj_mpg = project_mpg(prior_mpg, impact, share)
-        proj_mpg_no_salary = project_mpg(prior_mpg, impact, MPG_SALARY_REF)
+        proj_mpg = project_mpg(prior_mpg, impact_prod, share)
+        proj_mpg_no_salary = project_mpg(prior_mpg, impact_prod, MPG_SALARY_REF)
 
         rows.append(
             {
                 "name": name,
                 "share": share,
-                "impact": impact,
+                "impact_prod": impact_prod,
+                "impact_prod_source": prod[0] if prod else None,
+                "has_prod": prod is not None,
+                "impact_net": impact_net,
+                "prior_mpg": prior_mpg,
                 "missed": recency_weighted_games_missed(gp_hist) or 0.0,
                 "proj_games": proj_games,
                 "proj_minutes": proj_games * proj_mpg,
@@ -152,6 +195,8 @@ def main() -> None:
     g_mae, g_rmse, g_bias = _metrics([r["err_games"] for r in rows])
     m_mae, m_rmse, m_bias = _metrics([r["err_mpg"] for r in rows])
     t_mae, t_rmse, t_bias = _metrics([r["err_minutes"] for r in rows])
+    n_prod = sum(1 for r in rows if r["has_prod"])
+    print(f"(MPG model impact input = EPM/DARKO; {n_prod}/{n} matched an EPM/DARKO row)")
     print("ACCURACY (projected - actual; + = projection too high)")
     print(f"  games:   MAE {g_mae:5.1f}  RMSE {g_rmse:5.1f}  bias {g_bias:+5.1f}")
     print(f"  mpg:     MAE {m_mae:5.1f}  RMSE {m_rmse:5.1f}  bias {m_bias:+5.1f}")
@@ -159,39 +204,100 @@ def main() -> None:
 
     # --- Salary guard: overpaid-but-low-impact cohort -----------------------
     # "Expensive" uses an ABSOLUTE cap-share cut (>= 15% ~ $23M) so the cohort is
-    # credibly overpaid, not a tercile that collapses under the current-salary
-    # proxy. "Low impact" is below-replacement NET_RATING.
+    # credibly overpaid. We run it two ways:
+    #   PRIMARY  — "low impact" by EPM/DARKO (what production prices on). Threshold
+    #              is MPG_IMPACT_REF (0.0): at/below the model's impact reference
+    #              the impact term contributes nothing, so any minutes uplift for
+    #              these expensive players is the SALARY term's doing — exactly the
+    #              circularity we're testing for.
+    #   ARTIFACT — the original NET_RATING cohort, kept for contrast. NET_RATING
+    #              mislabels high-usage stars on bad teams as low-impact.
     EXPENSIVE_SHARE = 0.15
-    LOW_IMPACT_NET = -2.0
-    bad_expensive = [
-        r for r in rows if r["share"] >= EXPENSIVE_SHARE and r["impact"] <= LOW_IMPACT_NET
-    ]
-    print(
-        f"\nSALARY GUARD — overpaid-but-low-impact cohort "
-        f"(share >= {EXPENSIVE_SHARE:.0%} of cap, impact <= {LOW_IMPACT_NET:+.0f} net): "
-        f"{len(bad_expensive)} players"
-    )
-    if bad_expensive:
+    WATCH = {"cade cunningham", "trae young", "lamelo ball"}
+
+    def _report_cohort(label: str, members: list[dict], threshold_desc: str) -> float:
+        print(f"\nSALARY GUARD [{label}] — {threshold_desc}: {len(members)} players")
+        if not members:
+            print("  (empty cohort)")
+            return 0.0
         with_salary = statistics.fmean(
-            r["proj_minutes"] - r["actual_minutes"] for r in bad_expensive
+            r["proj_minutes"] - r["actual_minutes"] for r in members
         )
         no_salary = statistics.fmean(
-            r["proj_minutes_no_salary"] - r["actual_minutes"] for r in bad_expensive
+            r["proj_minutes_no_salary"] - r["actual_minutes"] for r in members
         )
+        contribution = with_salary - no_salary
         print(f"  mean minutes bias WITH salary term:       {with_salary:+6.0f}")
         print(f"  mean minutes bias WITHOUT salary term:    {no_salary:+6.0f}")
-        print(f"  salary term's contribution to the bias:   {with_salary - no_salary:+6.0f}")
+        print(f"  salary term's contribution to the bias:   {contribution:+6.0f}")
         verdict = (
-            "OVERWEIGHTS — cap the salary coefficient"
-            if (with_salary - no_salary) > 60  # > ~2 MPG over a season
+            "OVERWEIGHTS — recommend capping the salary coefficient"
+            if contribution > 60  # > ~2 MPG over a season
             else "not materially overweighting this cohort (stays in)"
         )
         print(f"  verdict: salary {verdict}")
-        for r in sorted(bad_expensive, key=lambda x: -x["share"])[:6]:
+        watched = sorted(m["name"] for m in members if normalize_name(m["name"]) in WATCH)
+        print(f"  watch-list stars in cohort: {watched or 'none'}")
+        for r in sorted(members, key=lambda x: -x["share"])[:8]:
+            imp = (
+                f"epm/darko {r['impact_prod']:+5.1f}"
+                if "prod" in label.lower()
+                else f"net {r['impact_net']:+5.1f}"
+            )
             print(
-                f"    {r['name']:<22} share {r['share']:.0%}  net {r['impact']:+5.1f}  "
+                f"    {r['name']:<22} share {r['share']:.0%}  {imp}  "
                 f"salary-term +{r['proj_minutes'] - r['proj_minutes_no_salary']:4.0f} min"
             )
+        return contribution
+
+    epm_cohort = [
+        r
+        for r in rows
+        if r["has_prod"]
+        and r["share"] >= EXPENSIVE_SHARE
+        and r["impact_prod"] <= MPG_IMPACT_REF
+    ]
+    _report_cohort(
+        "EPM/DARKO (primary)",
+        epm_cohort,
+        f"share >= {EXPENSIVE_SHARE:.0%} of cap AND EPM/DARKO impact <= {MPG_IMPACT_REF:+.1f}",
+    )
+
+    # Coefficient sensitivity on the corrected cohort: how the salary-attributable
+    # minutes bias scales with MPG_SALARY_COEF, to ground a cap recommendation.
+    def _mpg_at(prior: float, impact: float, share: float, coef: float) -> float:
+        val = (
+            prior
+            + MPG_IMPACT_COEF * (impact - MPG_IMPACT_REF)
+            + coef * (share - MPG_SALARY_REF)
+        )
+        return min(MPG_CEILING, max(MPG_FLOOR, val))
+
+    if epm_cohort:
+        print(
+            f"\n  salary-coefficient sensitivity on this cohort "
+            f"(current MPG_SALARY_COEF = {MPG_SALARY_COEF:g}):"
+        )
+        for coef in (12.0, 10.0, 8.0, 6.0, 5.0, 4.0):
+            contrib = statistics.fmean(
+                r["proj_games"]
+                * (
+                    _mpg_at(r["prior_mpg"], r["impact_prod"], r["share"], coef)
+                    - _mpg_at(r["prior_mpg"], r["impact_prod"], MPG_SALARY_REF, coef)
+                )
+                for r in epm_cohort
+            )
+            flag = "  <- fires (>60)" if contrib > 60 else ""
+            print(f"    coef {coef:4.1f} -> salary-attributable bias {contrib:+6.0f} min{flag}")
+
+    net_cohort = [
+        r for r in rows if r["share"] >= EXPENSIVE_SHARE and r["impact_net"] <= -2.0
+    ]
+    _report_cohort(
+        "NET_RATING (artifact comparison)",
+        net_cohort,
+        f"share >= {EXPENSIVE_SHARE:.0%} of cap AND NET_RATING <= -2.0",
+    )
 
     # --- Durability guard: injury-prone cohort ------------------------------
     missed_sorted = sorted(r["missed"] for r in rows)
