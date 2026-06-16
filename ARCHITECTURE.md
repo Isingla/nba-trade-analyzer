@@ -87,6 +87,26 @@ Feature branches → squash-merge PRs. See `CLAUDE.md` for the full rule set.
 - New CBA rule → lives in the salary-rules engine only; must not touch valuation.
 - New behavior → add tests mirroring the existing layout.
 
+## Minutes projection (issue 2.2)
+
+`engine/minutes.py` projects playing time as **two independent models
+multiplied** — `projected_minutes = project_games() × project_mpg()` — replacing
+the old flat-72-game assumption. `project_games` uses recency-weighted
+games-missed % + an age durability term; `project_mpg` nudges a recency-weighted
+prior MPG by impact and salary. Both outputs are exported separately
+(`projectedGames`, `projectedMpg`) by `export.py` and feed both WAA and
+databallr's WAR. `scripts/backtest_minutes.py` validates accuracy and runs the
+salary guard. Constants live with the cap/aging constants in
+`engine/constants.py`.
+
+### Backlog / future TODO
+
+- **Per-minute impact degradation (fatigue curves / minute-restriction reduced
+  effectiveness).** v1 prices a *flat* per-minute impact across all projected
+  minutes. Upgrade to within-game degradation later.
+- **Re-run the salary guard with EPM/DARKO impact** instead of the backtest's
+  `NET_RATING` proxy before deciding whether to cap `MPG_SALARY_COEF`.
+
 ## Maintenance
 
 This file is a *map*, not a mirror. If you find yourself updating it for a small

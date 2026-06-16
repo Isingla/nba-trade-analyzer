@@ -143,6 +143,45 @@ DARKO_TO_EPM_INTERCEPT = 0.026
 PROJECTED_GP_HEALTHY = 72
 PROJECTED_GP_CAP = 75
 
+# ---- Minutes & Availability Projection (issue 2.2) ----
+# Total playing time is projected as TWO independent models multiplied:
+#     projected_minutes = projected_games * projected_mpg
+# Keeping games and MPG separable lets "injury-prone" (games) and "reduced
+# role" (mpg) move independently. v1 prices a flat per-minute impact across
+# those minutes; within-game effectiveness degradation (fatigue / minute
+# restrictions) is a documented future TODO, NOT modeled here.
+REGULAR_SEASON_GAMES = 82
+
+# Games-played model: recency-weighted games-missed % + an age durability term.
+# Recency weights decay geometrically toward older seasons — the latest season
+# carries weight 1.0 and each season further back is multiplied by
+# GAMES_RECENCY_DECAY (so the most recent availability dominates, never a flat
+# multi-season average). 0.55 puts ~57% of the weight on the latest of 3 seasons.
+GAMES_RECENCY_DECAY = 0.55
+# Durability falls with age: every year a player is older than the pivot adds a
+# small flat games-missed increment, evaluated at the projected season's age so
+# it compounds naturally for out-years.
+GAMES_AGE_DURABILITY_PIVOT = 31
+GAMES_AGE_MISSED_PER_YEAR = 0.012  # +1.2% of the season missed per year past pivot
+# Bounds so neither model tail produces an absurd season.
+PROJECTED_GAMES_FLOOR = 0.0
+PROJECTED_GAMES_CEILING = 78.0  # not even iron-men are projected to a full 82
+# Games projected when a player has no usable GP history (rookies, long
+# absentees): start from the healthy ceiling and let the age term haircut it.
+PROJECTED_GAMES_NO_HISTORY = 70.0
+
+# Minutes-per-game model: a recency-weighted prior MPG nudged by impact and
+# salary. Both nudge terms are deliberately SMALL so prior role dominates; the
+# backtest's salary guard checks whether the salary term overweights
+# overpaid-but-low-impact players (Russ's condition for keeping salary in).
+MPG_RECENCY_DECAY = 0.55
+MPG_IMPACT_REF = 0.0    # league-average EPM/DPM impact anchor (~0)
+MPG_IMPACT_COEF = 0.9   # MPG added per +1.0 impact above the reference
+MPG_SALARY_REF = 0.10   # salary as a share of the cap: ~10% is a mid-rotation deal
+MPG_SALARY_COEF = 12.0  # MPG added per +1.0 of cap-share above the reference
+MPG_FLOOR = 0.0
+MPG_CEILING = 38.0
+
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
 # Fitted conceptually to EPM-based draft value research (Sports Appeal / Pelton).

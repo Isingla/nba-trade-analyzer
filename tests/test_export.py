@@ -9,7 +9,6 @@ taxonomy (epm/darko/aging_epm/aging_darko/replacement), and the fixed
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkEntry
 from nba_trade_analyzer.data.darko import normalize_name as darko_normalize
@@ -69,7 +68,7 @@ def _crosswalk(pairs: list[tuple[int, str, str]]) -> Crosswalk:
 
 # A self-contained fixture league: an EPM+DARKO star, an EPM-only player, a
 # stats-only player (no impact metric), and a player missing from stats.
-def _build_sample_export():
+def _build_sample_export(minutes_history=None):
     salary_df = _salary_df(
         [
             {
@@ -170,6 +169,7 @@ def _build_sample_export():
         darko_df=darko_df,
         stats_df=stats_df,
         crosswalk=crosswalk,
+        minutes_history=minutes_history,
     )
 
 
@@ -230,13 +230,40 @@ def test_missing_stats_player_is_replacement_with_zero_minutes():
     assert all(s.mpg == 0.0 for s in seasons.values())
 
 
-def test_waa_matches_documented_formula():
+def test_waa_is_priced_on_projected_games_times_mpg():
+    # issue 2.2: WAA is unified onto the two-model minutes. It must equal
+    # compute_waa(impact, projected_games * projected_mpg), proving WAA and the
+    # TS WAR/surplus path are priced on the SAME availability-adjusted minutes.
     export = _build_sample_export()
-    seasons = export.projections["curryst01"].seasons
-    expected = round(compute_waa(4.47, 30.9, 38, 0), 1)
-    assert seasons["2025-26"].waa == expected
-    # Spot-check the value verified against the committed snapshot (5.5).
-    assert seasons["2025-26"].waa == pytest.approx(5.5, abs=0.1)
+    season = export.projections["curryst01"].seasons["2025-26"]
+    expected = round(
+        compute_waa(season.impact, season.projected_games * season.projected_mpg), 1
+    )
+    assert season.waa == expected
+    # The minutes channel is populated and bounded by the model's ceilings.
+    assert 0 < season.projected_games <= 78
+    assert 0 < season.projected_mpg <= 38
+
+
+def test_every_season_exposes_projected_games_and_mpg():
+    export = _build_sample_export()
+    for proj in export.projections.values():
+        for season in proj.seasons.values():
+            assert season.projected_games >= 0
+            assert season.projected_mpg >= 0
+
+
+def test_injury_history_cuts_projected_games_and_waa():
+    # Same star, but injected with an injury-prone GP history: fewer projected
+    # games -> fewer minutes -> lower WAA than the no-history (healthy) baseline.
+    healthy = _build_sample_export().projections["curryst01"].seasons["2025-26"]
+    injured = _build_sample_export(
+        minutes_history={
+            201939: {"gp": [82.0, 82.0, 25.0], "mpg": [30.9, 30.9, 30.9]}
+        }
+    ).projections["curryst01"].seasons["2025-26"]
+    assert injured.projected_games < healthy.projected_games
+    assert injured.waa < healthy.waa
 
 
 def test_metadata_counts_and_window():
