@@ -27,9 +27,12 @@ valuation engine stays untouched:
            * (EPM_TO_WINS_FACTOR * WAA_IMPACT_WEIGHT)
        )
 
-   ``projected_minutes`` uses the same aging-availability haircut the engine's
-   multi-year projection applies, so WAA and the engine's per-year minutes
-   agree season-for-season.
+   ``projected_minutes`` comes from the two-model minutes projection (issue
+   2.2): ``projected_games * projected_mpg``, where games is a recency-weighted
+   games-missed + age model and mpg is a recency-weighted prior MPG nudged by
+   impact and salary. The same projected_minutes is exported (as projectedGames
+   / projectedMpg) and is what databallr's TS WAR/surplus path re-prices, so
+   WAA and WAR are unified on one availability-adjusted minutes figure.
 
 2. **Source taxonomy** — the engine labels aged years ``aging_curve``;
    databallr distinguishes ``aging_epm`` vs ``aging_darko`` by the anchor the
@@ -60,18 +63,22 @@ from nba_trade_analyzer.data.epm import (
 )
 from nba_trade_analyzer.data.players import fetch_player_stats
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
-from nba_trade_analyzer.engine.aging_curve import get_aging_factor
 from nba_trade_analyzer.engine.constants import (
     EPM_TO_WINS_FACTOR,
     FULL_SEASON_MINUTES,
     MAX_PROJECTION_YEARS,
     MAX_WINS_ADDED,
-    PROJECTED_GP_CAP,
-    PROJECTED_GP_HEALTHY,
+    PROJECTED_GAMES_NO_HISTORY,
     SALARY_CAP,
 )
+from nba_trade_analyzer.engine.minutes import project_games, project_mpg, recency_weighted_mpg
 from nba_trade_analyzer.engine.valuation import evaluate_player_multiyear
 from nba_trade_analyzer.models.player import Player
+
+# Completed seasons used as the GP/MPG history feeding the minutes models,
+# ordered oldest -> latest. These are the seasons "available before" the
+# 2025-26 projection window, so the projection never leaks future data.
+_HISTORY_SEASONS = ("2022-23", "2023-24", "2024-25")
 
 # First season of the projection window; subsequent seasons follow yearly.
 _FIRST_SEASON_START = 2025
@@ -83,7 +90,8 @@ WAA_IMPACT_WEIGHT = 0.40
 
 _WAA_FORMULA = (
     "impact * projected_minutes / FULL_SEASON_MINUTES "
-    "* (EPM_TO_WINS_FACTOR * 0.40), tanh compressed; no replacement-level offset"
+    "* (EPM_TO_WINS_FACTOR * 0.40), tanh compressed; no replacement-level offset. "
+    "projected_minutes = projected_games * projected_mpg (issue 2.2 minutes models)"
 )
 
 _GENERATED_FROM = (
@@ -93,6 +101,7 @@ _GENERATED_FROM = (
     "src/nba_trade_analyzer/data/players.py",
     "src/nba_trade_analyzer/engine/constants.py",
     "src/nba_trade_analyzer/engine/aging_curve.py",
+    "src/nba_trade_analyzer/engine/minutes.py",
     "data/player_crosswalk.json",
 )
 
@@ -120,6 +129,12 @@ class DataballrSeasonProjection(_CamelModel):
     impact: float
     mpg: float
     source: str
+    # Minutes-adjusted projection (issue 2.2). ``mpg`` stays the player's
+    # current/anchor minutes; these two are the model OUTPUTS that price WAR:
+    # projected_minutes = projected_games * projected_mpg. Kept separate so the
+    # availability channel (games) and role channel (mpg) stay inspectable.
+    projected_games: float
+    projected_mpg: float
 
 
 class DataballrPlayerProjection(_CamelModel):
@@ -161,21 +176,13 @@ def _compress(raw_wins: float) -> float:
     return MAX_WINS_ADDED * math.tanh(raw_wins / MAX_WINS_ADDED)
 
 
-def _projected_minutes(mpg: float, age: int, year_offset: int) -> float:
-    """Minutes for a projected season, with the engine's availability haircut.
+def compute_waa(impact: float, minutes: float) -> float:
+    """databallr WAA for one projected season from total projected minutes.
 
-    Mirrors ``evaluate_player_multiyear``: hold current MPG flat, haircut games
-    played by the aging availability proxy (capped at the healthy ceiling), so
-    WAA's minutes agree with the engine's per-year minutes season-for-season.
+    Minutes now come from the two-model minutes projection (games x mpg, issue
+    2.2) instead of a flat-72 assumption, so WAA and the TS WAR/surplus path
+    are priced on the SAME availability-adjusted minutes.
     """
-    availability_factor = min(1.0, get_aging_factor(age, year_offset))
-    projected_gp = min(PROJECTED_GP_CAP, PROJECTED_GP_HEALTHY * availability_factor)
-    return mpg * projected_gp
-
-
-def compute_waa(impact: float, mpg: float, age: int, year_offset: int) -> float:
-    """databallr WAA for one projected season (see module docstring)."""
-    minutes = _projected_minutes(mpg, age, year_offset)
     raw_wins = (
         impact
         * minutes
@@ -276,15 +283,44 @@ def _fill_age_mpg_from_epm(
     return age, mpg
 
 
+def _salary_share_for_offset(contract, offset: int) -> float:
+    """That season's salary as a share of the cap (mpg-model input)."""
+    yearly = list(getattr(contract, "yearly_salaries", []) or [])
+    if yearly:
+        salary = yearly[offset] if offset < len(yearly) else yearly[-1]
+    else:
+        salary = getattr(contract, "salary", 0)
+    return float(salary) / SALARY_CAP if SALARY_CAP else 0.0
+
+
+def _projected_games_for(
+    gp_history: list[float], age: int | None, offset: int
+) -> float:
+    """Games projection for a season, or the no-history baseline if age unknown."""
+    if age is None:
+        return round(PROJECTED_GAMES_NO_HISTORY, 1)
+    return round(project_games(gp_history, age, year_offset=offset), 1)
+
+
 def _replacement_seasons(
-    mpg: float, keys: list[str]
+    mpg: float,
+    keys: list[str],
+    *,
+    gp_history: list[float] | None = None,
+    age: int | None = None,
 ) -> dict[str, DataballrSeasonProjection]:
     rounded_mpg = round(mpg, 1)
+    gp_history = gp_history or []
     return {
         key: DataballrSeasonProjection(
-            waa=0.0, impact=0.0, mpg=rounded_mpg, source="replacement"
+            waa=0.0,
+            impact=0.0,
+            mpg=rounded_mpg,
+            source="replacement",
+            projected_games=_projected_games_for(gp_history, age, offset),
+            projected_mpg=rounded_mpg,
         )
-        for key in keys
+        for offset, key in enumerate(keys)
     }
 
 
@@ -297,14 +333,25 @@ def _project_player(
     epm_df: pd.DataFrame,
     darko_df: pd.DataFrame,
     keys: list[str],
+    *,
+    gp_history: list[float] | None = None,
+    mpg_history: list[float] | None = None,
 ) -> dict[str, DataballrSeasonProjection]:
     """Project a fixed 5-season window for one player.
 
-    Returns replacement seasons when the player has no usable EPM/DARKO signal
-    or no stats row (so age/minutes are unknown).
+    Minutes for each season come from the two-model projection (issue 2.2):
+    ``project_games`` (recency-weighted games-missed % + age) times
+    ``project_mpg`` (recency-weighted prior MPG nudged by impact + salary). When
+    GP/MPG history is unavailable the models fall back to the player's current
+    MPG and a healthy-minus-age games baseline, so the export still produces a
+    sensible projection. Returns replacement seasons when the player has no
+    usable EPM/DARKO signal or no stats row.
     """
+    gp_history = gp_history or []
+    mpg_history = mpg_history or []
+
     if age is None:
-        return _replacement_seasons(mpg, keys)
+        return _replacement_seasons(mpg, keys, gp_history=gp_history, age=age)
 
     player = Player(
         name=player_name,
@@ -321,7 +368,7 @@ def _project_player(
     )
 
     if multi.primary_metric_source not in ("epm", "darko"):
-        return _replacement_seasons(mpg, keys)
+        return _replacement_seasons(mpg, keys, gp_history=gp_history, age=age)
 
     # The aging chain anchors on DARKO whenever any projected year used it
     # (year-1 DARKO, or the year-2 DARKO override); otherwise it anchors on EPM.
@@ -331,23 +378,66 @@ def _project_player(
         else "epm"
     )
 
+    # Prior MPG anchor for the mpg model: recency-weighted completed-season MPG,
+    # falling back to the player's current MPG when there is no history.
+    prior_mpg = recency_weighted_mpg(mpg_history)
+    if prior_mpg is None:
+        prior_mpg = mpg
+
     rounded_mpg = round(mpg, 1)
     seasons: dict[str, DataballrSeasonProjection] = {}
     for offset, key in enumerate(keys):
+        proj_games = _projected_games_for(gp_history, age, offset)
         if offset >= len(multi.year_by_year):
             seasons[key] = DataballrSeasonProjection(
-                waa=0.0, impact=0.0, mpg=rounded_mpg, source="replacement"
+                waa=0.0,
+                impact=0.0,
+                mpg=rounded_mpg,
+                source="replacement",
+                projected_games=proj_games,
+                projected_mpg=rounded_mpg,
             )
             continue
         year = multi.year_by_year[offset]
         impact = year.projected_epm
+        salary_share = _salary_share_for_offset(contract, offset)
+        proj_mpg = round(project_mpg(prior_mpg, impact, salary_share), 1)
+        minutes = proj_games * proj_mpg
         seasons[key] = DataballrSeasonProjection(
-            waa=round(compute_waa(impact, mpg, age, offset), 1),
+            waa=round(compute_waa(impact, minutes), 1),
             impact=round(impact, 2),
             mpg=rounded_mpg,
             source=map_source(year.projection_source, anchor_source),
+            projected_games=proj_games,
+            projected_mpg=proj_mpg,
         )
     return seasons
+
+
+def _fetch_minutes_history(
+    seasons: tuple[str, ...] = _HISTORY_SEASONS,
+) -> dict[int, dict[str, list[float]]]:
+    """Build per-player GP/MPG history (oldest -> latest) from recent seasons.
+
+    Keyed by nba_id. Only seasons in which the player actually has GP/MPG rows
+    contribute, so a player who entered the league mid-window still gets a
+    correctly-ordered partial history. Each season is fetched once (cached 24h).
+    """
+    history: dict[int, dict[str, list[float]]] = {}
+    for season in seasons:  # oldest -> latest
+        df = fetch_player_stats(season)
+        for record in df.to_dict(orient="records"):
+            pid = record.get("nba_player_id")
+            if pid is None or (isinstance(pid, float) and math.isnan(pid)):
+                continue
+            gp = record.get("GP")
+            mpg = record.get("MPG")
+            if gp is None or mpg is None or _is_nan(gp) or _is_nan(mpg):
+                continue
+            entry = history.setdefault(int(pid), {"gp": [], "mpg": []})
+            entry["gp"].append(float(gp))
+            entry["mpg"].append(float(mpg))
+    return history
 
 
 def build_export(
@@ -357,18 +447,29 @@ def build_export(
     darko_df: pd.DataFrame | None = None,
     stats_df: pd.DataFrame | None = None,
     crosswalk: Crosswalk | None = None,
+    minutes_history: dict[int, dict[str, list[float]]] | None = None,
 ) -> DataballrExport:
     """Assemble the full databallr cap-data payload.
 
     Every data source is injectable so the export is unit-testable with stub
     frames and never touches the network in tests. In normal use each source is
     fetched once (cached 24h, with the salaries CSV offline fallback).
+
+    ``minutes_history`` feeds the games/MPG models (issue 2.2): a mapping of
+    nba_id -> ``{"gp": [...], "mpg": [...]}`` over recent completed seasons
+    (oldest first). It is fetched live only on the production path (when
+    ``stats_df`` is not injected); tests inject frames and omit history, so the
+    minutes models fall back to current MPG + a healthy-minus-age games baseline.
     """
+    fetch_live = stats_df is None
     salary_df = fetch_all_salaries() if salary_df is None else salary_df
     epm_df = fetch_epm_data() if epm_df is None else epm_df
     darko_df = fetch_darko_data() if darko_df is None else darko_df
     stats_df = fetch_player_stats() if stats_df is None else stats_df
     crosswalk = load_crosswalk() if crosswalk is None else crosswalk
+    if minutes_history is None and fetch_live:
+        minutes_history = _fetch_minutes_history()
+    minutes_history = minutes_history or {}
 
     keys = season_keys()
     by_id, by_name = _stats_index(stats_df)
@@ -409,6 +510,10 @@ def build_export(
         mpg = _mpg_from_stats(stats_row)
         age, mpg = _fill_age_mpg_from_epm(epm_df, player_name, age, mpg)
 
+        hist = minutes_history.get(nba_id) if nba_id is not None else None
+        gp_history = list(hist["gp"]) if hist else []
+        mpg_history = list(hist["mpg"]) if hist else []
+
         seasons = _project_player(
             player_name,
             str(record.get("team") or ""),
@@ -418,6 +523,8 @@ def build_export(
             epm_df,
             darko_df,
             keys,
+            gp_history=gp_history,
+            mpg_history=mpg_history,
         )
         for season in seasons.values():
             source_counts[season.source] = source_counts.get(season.source, 0) + 1
