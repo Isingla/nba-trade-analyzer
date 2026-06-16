@@ -246,6 +246,71 @@ def test_fetch_all_salaries_captures_per_year_salaries(tmp_path):
     assert build_contract(jokic).yearly_salaries == (55224526,)
 
 
+# A player Basketball Reference lists on multiple identical contract lines for
+# the same team (min / two-way / dead-money players sign several 10-day or
+# rest-of-season deals), PLUS the same player carrying dead money on a second
+# team. The first kind must collapse to one row; the second must NOT.
+_DUP_FIXTURE_HTML = """
+<html><body>
+<table id="player-contracts">
+<thead>
+  <tr class="over_header thead"><td></td><td colspan="6">Salary</td><td></td></tr>
+  <tr>
+    <th data-stat="ranker">Rk</th>
+    <td data-stat="player">Player</td>
+    <td data-stat="team_id">Tm</td>
+    <td data-stat="y1">2025-26</td>
+    <td data-stat="y2">2026-27</td>
+    <td data-stat="remain_gtd">Guaranteed</td>
+  </tr>
+</thead>
+<tbody>
+  {rows}
+</tbody>
+</table>
+</body></html>
+"""
+
+
+def _contract_row(slug: str, name: str, team: str, y1: int) -> str:
+    return (
+        '<tr><th data-stat="ranker">0</th>'
+        f'<td data-stat="player"><a href="/players/x/{slug}.html">{name}</a></td>'
+        f'<td data-stat="team_id"><a href="/contracts/{team}.html">{team}</a></td>'
+        f'<td class="right" csk="{y1}" data-stat="y1">${y1}</td>'
+        '<td class="right iz" data-stat="y2"></td>'
+        f'<td class="right" csk="{y1}" data-stat="remain_gtd">${y1}</td></tr>'
+    )
+
+
+def test_fetch_all_salaries_collapses_duplicate_bbref_lines(tmp_path):
+    rows = "".join(
+        [
+            _contract_row("mingu01", "Min Guy", "IND", 2_000_000),  # 3 identical IND
+            _contract_row("mingu01", "Min Guy", "IND", 2_000_000),
+            _contract_row("mingu01", "Min Guy", "IND", 2_000_000),
+            _contract_row("mingu01", "Min Guy", "DAL", 2_000_000),  # dead money on DAL
+            _contract_row("starxx01", "Star Player", "BOS", 30_000_000),  # unique
+        ]
+    )
+    html = _DUP_FIXTURE_HTML.format(rows=rows)
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.salaries.httpx.get",
+        return_value=_mocked_response(html),
+    ):
+        df = fetch_all_salaries(cache=cache)
+
+    # 3 IND lines collapse to 1; the DAL line is a legitimate separate cap hit.
+    assert len(df) == 3
+    min_rows = df[df["bbref_slug"] == "mingu01"]
+    assert len(min_rows) == 2
+    assert set(min_rows["team"]) == {"IND", "DAL"}
+    # The kept row preserves the real salary (no double-count, no drop).
+    assert int(min_rows[min_rows["team"] == "IND"].iloc[0]["salary"]) == 2_000_000
+    assert df["bbref_slug"].tolist().count("starxx01") == 1
+
+
 def test_build_contract_defaults_yearly_salaries_to_empty():
     # Missing column / pre-feature row → empty tuple → flat-salary fallback.
     contract = build_contract({"salary": 5_000_000, "years_remaining": 2})
