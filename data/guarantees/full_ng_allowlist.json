@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "purpose": "Source of truth for which non-guaranteed (NG) contract years to mark (issue 3a, v1 Option 1: positive-confirmation).",
+    "verifiedSource": "Hoops Rumors, 2026-06-24 (by hand)",
+    "policy": "A season is marked ONLY if (a) site_Data's salary_spread codes that season 'NG' AND (b) the player-season appears below. Anything not listed stays committed even if coded NG.",
+    "matching": "By nba_id when present, else by normalized name + team (for blank-id players).",
+    "granularity": "One entry per player-season; players with multiple NG years (e.g. fully-NG deals) have multiple entries.",
+    "spreadNgConfirmed": "true = site_Data spread currently carries the NG code (reader will fire). false = site_Data codes it RFA/$0, NOT NG, so positive-confirmation will NOT mark it until the spread carries an NG code — see BACKLOG."
+  },
+  "entries": [
+    { "player": "Kris Dunn", "nbaId": 1627739, "team": "LAC", "season": "2026-27", "salary": 5684800, "spreadNgConfirmed": true },
+
+    { "player": "Cameron Christie", "nbaId": null, "team": "LAC", "season": "2026-27", "salary": 2296271, "matchBy": "name_team", "spreadNgConfirmed": true, "note": "nba_id blank in site_Data — must match by name+team, must NOT silently fall through." },
+
+    { "player": "Sviatoslav Mykhailiuk", "nbaId": 1629004, "team": "UTA", "season": "2025-26", "salary": 3675000, "spreadNgConfirmed": true },
+    { "player": "Sviatoslav Mykhailiuk", "nbaId": 1629004, "team": "UTA", "season": "2026-27", "salary": 3850000, "spreadNgConfirmed": true },
+
+    { "player": "Adem Bona", "nbaId": 1641737, "team": "PHI", "season": "2025-26", "salary": 1955377, "spreadNgConfirmed": true },
+    { "player": "Adem Bona", "nbaId": 1641737, "team": "PHI", "season": "2026-27", "salary": 2296271, "spreadNgConfirmed": true },
+
+    { "player": "Jamison Battle", "nbaId": 1642419, "team": "TOR", "season": "2025-26", "salary": 1955377, "spreadNgConfirmed": true },
+    { "player": "Jamison Battle", "nbaId": 1642419, "team": "TOR", "season": "2026-27", "salary": 2296271, "spreadNgConfirmed": true },
+
+    { "player": "Kyle Filipowski", "nbaId": 1642271, "team": "UTA", "season": "2026-27", "salary": 3000000, "spreadNgConfirmed": true },
+
+    { "player": "Dru Smith", "nbaId": 1630696, "team": "MIA", "season": "2025-26", "salary": 2378870, "spreadNgConfirmed": false, "note": "site_Data spread codes this season RFA/$0, NOT NG — positive-confirmation reader will NOT fire until the spread carries an NG code." },
+
+    { "player": "Pete Nance", "nbaId": null, "team": "MIL", "season": "2026-27", "salary": null, "matchBy": "name_team", "spreadNgConfirmed": false, "note": "blank nba_id; not in the BBRef salary snapshot; site_Data codes RFA not NG. Reader will NOT fire and there is no committed salary to mark." },
+
+    { "player": "Sidy Cissoko", "nbaId": 1631321, "team": "POR", "season": "2026-27", "salary": 2497812, "spreadNgConfirmed": false, "note": "site_Data spread codes this season RFA/$0, NOT NG — reader will NOT fire until the spread carries an NG code." }
+  ]
+}

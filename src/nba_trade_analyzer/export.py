@@ -61,6 +61,7 @@ from nba_trade_analyzer.data.epm import (
     get_player_epm,
     normalize_name,
 )
+from nba_trade_analyzer.data.guarantees import NonGuaranteeResolver
 from nba_trade_analyzer.data.players import fetch_player_stats
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
 from nba_trade_analyzer.engine.constants import (
@@ -122,6 +123,11 @@ class DataballrSalaryRow(_CamelModel):
     has_player_option: bool
     has_team_option: bool
     yearly_salaries: list[int]
+    # Non-guaranteed (NG) seasons (issue 3a, mark-only): season key -> that
+    # season's salary. `yearly_salaries` is LEFT UNCHANGED — this only MARKS the
+    # NG years (allowlisted + spread-NG-confirmed, future seasons only) for the
+    # databallr side to handle the committed/cap%/surplus treatment.
+    non_guaranteed_seasons: dict[str, int] = {}
 
 
 class DataballrSeasonProjection(_CamelModel):
@@ -448,6 +454,7 @@ def build_export(
     stats_df: pd.DataFrame | None = None,
     crosswalk: Crosswalk | None = None,
     minutes_history: dict[int, dict[str, list[float]]] | None = None,
+    guarantee_resolver: NonGuaranteeResolver | None = None,
 ) -> DataballrExport:
     """Assemble the full databallr cap-data payload.
 
@@ -470,6 +477,10 @@ def build_export(
     if minutes_history is None and fetch_live:
         minutes_history = _fetch_minutes_history()
     minutes_history = minutes_history or {}
+    # NG resolver (issue 3a). `load()` reads the allowlist (always present) + the
+    # site_Data spread; a missing spread yields an empty NG set so nothing fires.
+    if guarantee_resolver is None:
+        guarantee_resolver = NonGuaranteeResolver.load()
 
     keys = season_keys()
     by_id, by_name = _stats_index(stats_df)
@@ -485,17 +496,39 @@ def build_export(
             continue
 
         contract = build_contract(record)
+        team = str(record.get("team") or "")
+        nba_id = crosswalk.nba_id_for_slug(slug)
+
+        # MARK confirmed non-guaranteed years (issue 3a, mark-only): record them
+        # but leave yearly_salaries untouched — the committed/cap%/surplus math
+        # stays as-is for the databallr side to handle. yearly_salaries is
+        # current-season-first, so index i maps to season keys[i]. NG can sit on
+        # any year (non-contiguous); each fires only on allowlist + spread-NG and
+        # only for future seasons (the resolver gates out the current league year).
+        yearly = list(contract.yearly_salaries)
+        non_guaranteed: dict[str, int] = {}
+        for i, season in enumerate(keys):
+            if i >= len(yearly):
+                break
+            # `yearly[i] > 0` is the $0-NG guard: some NG-coded seasons carry no
+            # snapshot salary (e.g. Jalen Wilson, Jordan Miller) — nothing to mark.
+            if yearly[i] > 0 and guarantee_resolver.is_non_guaranteed(
+                season, nba_id=nba_id, player=player_name, team=team
+            ):
+                non_guaranteed[season] = yearly[i]
+
         salaries.append(
             DataballrSalaryRow(
                 player_name=player_name,
                 bbref_slug=slug,
-                team=str(record.get("team") or ""),
+                team=team,
                 salary=int(record["salary"]),
                 years_remaining=int(record["years_remaining"]),
                 is_rookie_scale=bool(record.get("is_rookie_scale", False)),
                 has_player_option=bool(record.get("has_player_option", False)),
                 has_team_option=bool(record.get("has_team_option", False)),
-                yearly_salaries=list(contract.yearly_salaries),
+                yearly_salaries=yearly,
+                non_guaranteed_seasons=non_guaranteed,
             )
         )
 
@@ -504,7 +537,6 @@ def build_export(
         if not slug:
             continue
 
-        nba_id = crosswalk.nba_id_for_slug(slug)
         stats_row = _stats_for(player_name, nba_id, by_id, by_name)
         age = _age_from_stats(stats_row)
         mpg = _mpg_from_stats(stats_row)
