@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Repo-root-relative default allowlist path (src/nba_trade_analyzer/data/ -> repo root).
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -42,9 +45,45 @@ _MONEY_IN_CODE_RE = re.compile(r"[\$,]|\d{4,}")
 # is overridable per-resolver for tests).
 CURRENT_LEAGUE_YEAR = "2025-26"
 
+# Generational suffix tokens stripped when isolating a last name, so e.g.
+# "Jaren Jackson Jr." buckets under "jackson", not "jr".
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+# Minimum length of the SHORTER first name for the short/long prefix fallback to
+# fire. Blocks 2-letter initials/abbreviations ("al", "aj") from prefix-matching
+# a longer name; "cam" (3) is the shortest real truncation we want to bridge.
+_MIN_PREFIX_LEN = 3
+
 
 def _norm(value: str | None) -> str:
     return (value or "").strip().lower()
+
+
+def _split_name(full: str | None) -> tuple[str, str]:
+    """Split a full name into (first, last), normalized and suffix-stripped.
+
+    Returns ("", "") for mononyms / unsplittable input, which callers treat as
+    "no fallback possible" (errs toward NOT firing). Both inputs are normalized
+    the same way, so the allowlist, the spread, and the query bucket together.
+    """
+    tokens = [t for t in re.split(r"\s+", _norm(full)) if t]
+    # Drop trailing generational suffixes ("jr", "iii", with or without a dot),
+    # but never strip the name down past a single token.
+    while len(tokens) > 1 and tokens[-1].strip(".") in _NAME_SUFFIXES:
+        tokens.pop()
+    if len(tokens) < 2:
+        return "", ""
+    return tokens[0], tokens[-1]
+
+
+def _first_name_compatible(a: str, b: str) -> bool:
+    """True iff first names a/b are the same OR one is a prefix of the other and
+    the shorter is at least _MIN_PREFIX_LEN chars (the short/long truncation
+    class: "cam"/"cameron"). NOT a fuzzy match — pure prefix containment."""
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return len(shorter) >= _MIN_PREFIX_LEN and longer.startswith(shorter)
 
 
 def _season_start_year(season: str | None) -> int | None:
@@ -139,6 +178,25 @@ def load_spread_ng_codes(spread_path: str | Path) -> set[tuple]:
     return ng
 
 
+def _name_buckets(index: set[tuple]) -> dict[tuple, dict[str, str]]:
+    """Group an index's name-keys by (last, team, season) -> {first: full_norm}.
+
+    Built from the SAME name-keys the exact path uses, so the fallback can only
+    ever bridge to a player already present in that index. id-keys carry no name
+    and are skipped.
+    """
+    buckets: dict[tuple, dict[str, str]] = {}
+    for key in index:
+        if not key or key[0] != "nameteam":
+            continue
+        _, full, team, season = key
+        first, last = _split_name(full)
+        if not first or not last:
+            continue
+        buckets.setdefault((last, team, season), {})[first] = full
+    return buckets
+
+
 class NonGuaranteeResolver:
     """Resolves whether a player-season should be marked as non-guaranteed."""
 
@@ -151,6 +209,11 @@ class NonGuaranteeResolver:
         self._allow = allowlist_index
         self._ng = spread_ng
         self._current_year = _season_start_year(current_league_year)
+        # (last, team, season) -> {first_name: full_name_norm} buckets, derived
+        # from the name-keys already in each index. Power the conservative
+        # short/long first-name fallback (see is_non_guaranteed).
+        self._allow_buckets = _name_buckets(allowlist_index)
+        self._ng_buckets = _name_buckets(spread_ng)
 
     @classmethod
     def load(
@@ -183,6 +246,57 @@ class NonGuaranteeResolver:
         nba_id = _to_int_id(nba_id)
         idk = _id_key(nba_id, season)
         ntk = _name_key(player, team, season)
-        spread_ng = (idk is not None and idk in self._ng) or (ntk in self._ng)
-        allowed = (idk is not None and idk in self._allow) or (ntk in self._allow)
-        return bool(spread_ng and allowed)
+        spread_ng_exact = (idk is not None and idk in self._ng) or (ntk in self._ng)
+        allowed_exact = (idk is not None and idk in self._allow) or (ntk in self._allow)
+        if spread_ng_exact and allowed_exact:
+            return True
+
+        # Conservative short/long first-name fallback. Only reached after an
+        # EXACT miss, so the exact path is unchanged for everyone already
+        # matching. Handles blank-id name mismatches like the BBRef salary
+        # source's "Cam Christie" vs the allowlist/spread's "Cameron Christie".
+        # Guards: same team + same season + same last name (bucket key) + a
+        # min-length first-name prefix + a uniqueness check (_bucket_match
+        # returns None on an ambiguous bucket). Must satisfy BOTH indexes, so it
+        # never fires on a player who isn't both allowlisted and spread-coded NG.
+        first, last = _split_name(player)
+        if not first or not last:
+            return False
+        team_norm = _norm(team)
+        ng_match = self._bucket_match(first, last, team_norm, season, self._ng_buckets)
+        allow_match = self._bucket_match(first, last, team_norm, season, self._allow_buckets)
+        spread_ng = spread_ng_exact or ng_match is not None
+        allowed = allowed_exact or allow_match is not None
+        if spread_ng and allowed:
+            # Audit: the exact path stays silent; every fallback bridge is logged
+            # so a short/long match is never silent.
+            logger.info(
+                "NG short/long fallback bridged: %r -> %r (%s %s)",
+                player,
+                allow_match or ng_match,
+                team,
+                season,
+            )
+            return True
+        return False
+
+    def _bucket_match(
+        self,
+        first: str,
+        last: str,
+        team_norm: str,
+        season: str,
+        buckets: "dict[tuple, dict[str, str]]",
+    ) -> str | None:
+        """Return the matched full name if EXACTLY ONE first name in the
+        (last, team, season) bucket is prefix-compatible with `first`, else None.
+        The uniqueness requirement is the over-match guard: an ambiguous short
+        name (bucket holds two distinct compatible first names) resolves to None.
+        """
+        bucket = buckets.get((last, team_norm, season))
+        if not bucket:
+            return None
+        matched = [f for f in bucket if _first_name_compatible(first, f)]
+        if len(matched) != 1:
+            return None
+        return bucket[matched[0]]
