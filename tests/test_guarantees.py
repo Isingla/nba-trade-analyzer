@@ -57,6 +57,121 @@ def test_blank_id_matches_by_name_team():
     assert r.is_non_guaranteed("2026-27", nba_id=None, player="Cameron Christie", team="NOP") is False
 
 
+# ---------------------------------------------------------------------------
+# Short/long first-name fallback: the BBRef salary source's "Cam Christie" must
+# bridge to the allowlist/spread's "Cameron Christie" (blank id => name+team
+# only), WITHOUT ever colliding two genuinely different players.
+# ---------------------------------------------------------------------------
+def _christie_resolver():
+    # Allowlist + spread both carry the LONG name "Cameron Christie", blank id.
+    allow = [NgAllowEntry("Cameron Christie", None, "LAC", "2026-27", 2296271, True)]
+    spread = {("nameteam", "cameron christie", "lac", "2026-27")}
+    return _resolver(allow, spread)
+
+
+def test_short_first_name_bridges_to_long_via_fallback():
+    r = _christie_resolver()
+    # The exact name differs ("cam" != "cameron") and the id is blank, so this
+    # only fires through the new prefix fallback.
+    assert r.is_non_guaranteed("2026-27", nba_id=None, player="Cam Christie", team="LAC") is True
+    # Symmetric: a long query against a short-named entry also bridges.
+    allow = [NgAllowEntry("Cam Christie", None, "LAC", "2026-27", 2296271, True)]
+    spread = {("nameteam", "cam christie", "lac", "2026-27")}
+    r2 = _resolver(allow, spread)
+    assert r2.is_non_guaranteed("2026-27", nba_id=None, player="Cameron Christie", team="LAC") is True
+
+
+def test_fallback_logs_the_bridged_names(caplog):
+    import logging
+
+    r = _christie_resolver()
+    with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.data.guarantees"):
+        assert r.is_non_guaranteed("2026-27", nba_id=None, player="Cam Christie", team="LAC") is True
+    # Every fallback bridge is auditable: both names + team/season appear.
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any(
+        "Cam Christie" in m and "cameron christie" in m and "LAC" in m and "2026-27" in m
+        for m in msgs
+    ), msgs
+
+
+def test_exact_match_does_not_log(caplog):
+    import logging
+
+    # Exact id match for Dunn must stay silent — only the fallback path logs.
+    allow = [NgAllowEntry("Kris Dunn", 1627739, "LAC", "2026-27", 5684800, True)]
+    spread = {("id", 1627739, "2026-27"), ("nameteam", "kris dunn", "lac", "2026-27")}
+    r = _resolver(allow, spread)
+    with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.data.guarantees"):
+        assert r.is_non_guaranteed("2026-27", nba_id=1627739, player="Kris Dunn", team="LAC") is True
+    assert caplog.records == []
+
+
+def test_fallback_does_not_collide_different_last_name():
+    # "Cam Johnson" (Cameron Johnson is a real, distinct player) must NOT bridge
+    # to "Cameron Christie" — different last name => different bucket.
+    r = _christie_resolver()
+    assert r.is_non_guaranteed("2026-27", nba_id=None, player="Cam Johnson", team="LAC") is False
+
+
+def test_fallback_blocks_ambiguous_short_name():
+    # Two genuinely different players share a team/season and both have a first
+    # name compatible with "cam" (cameron, camron). The short query is ambiguous
+    # and must NOT fire (could otherwise mark the wrong player's salary NG).
+    allow = [
+        NgAllowEntry("Cameron Smith", None, "LAC", "2026-27", 2000000, True),
+        NgAllowEntry("Camron Smith", None, "LAC", "2026-27", 2000000, True),
+    ]
+    spread = {
+        ("nameteam", "cameron smith", "lac", "2026-27"),
+        ("nameteam", "camron smith", "lac", "2026-27"),
+    }
+    r = _resolver(allow, spread)
+    assert r.is_non_guaranteed("2026-27", nba_id=None, player="Cam Smith", team="LAC") is False
+    # An unambiguous exact long query still fires.
+    assert r.is_non_guaranteed("2026-27", nba_id=None, player="Cameron Smith", team="LAC") is True
+
+
+def test_fallback_rejects_too_short_prefix():
+    # 2-letter abbreviations/initials must not prefix-match a longer name.
+    allow = [NgAllowEntry("Alex Sarr", None, "WAS", "2026-27", 12000000, True)]
+    spread = {("nameteam", "alex sarr", "was", "2026-27")}
+    r = _resolver(allow, spread)
+    assert r.is_non_guaranteed("2026-27", nba_id=None, player="Al Sarr", team="WAS") is False
+
+
+def test_fallback_rejects_non_prefix_nickname():
+    # The fix is prefix-only, NOT a nickname table: "Mike" must not match
+    # "Michael" (not a prefix), so distinct players can't be conflated.
+    allow = [NgAllowEntry("Michael Porter", None, "DEN", "2026-27", 35000000, True)]
+    spread = {("nameteam", "michael porter", "den", "2026-27")}
+    r = _resolver(allow, spread)
+    assert r.is_non_guaranteed("2026-27", nba_id=None, player="Mike Porter", team="DEN") is False
+
+
+def test_fallback_requires_both_indexes():
+    # Short/long match in the allowlist only (spread does NOT code it NG) -> no
+    # fire. The fallback can't manufacture a spread-NG coding.
+    allow = [NgAllowEntry("Cameron Christie", None, "LAC", "2026-27", 2296271, True)]
+    r_allow_only = _resolver(allow, set())
+    assert r_allow_only.is_non_guaranteed("2026-27", nba_id=None, player="Cam Christie", team="LAC") is False
+    # And the reverse: spread-NG match but not allowlisted -> no fire.
+    spread = {("nameteam", "cameron christie", "lac", "2026-27")}
+    r_spread_only = _resolver([], spread)
+    assert r_spread_only.is_non_guaranteed("2026-27", nba_id=None, player="Cam Christie", team="LAC") is False
+
+
+def test_fallback_still_gated_to_future_seasons():
+    # The future-season gate runs before the fallback: a current-year NG short
+    # name must not fire.
+    allow = [NgAllowEntry("Cameron Christie", None, "LAC", "2025-26", 2296271, True)]
+    spread = {("nameteam", "cameron christie", "lac", "2025-26")}
+    r = NonGuaranteeResolver(
+        build_allowlist_index(allow), set(spread), current_league_year="2025-26"
+    )
+    assert r.is_non_guaranteed("2025-26", nba_id=None, player="Cam Christie", team="LAC") is False
+
+
 def test_ng_on_any_year_non_contiguous():
     # NG on a middle year only; neighbours must not fire.
     allow = [NgAllowEntry("X Player", 999, "ABC", "2027-28", 1000000, True)]
