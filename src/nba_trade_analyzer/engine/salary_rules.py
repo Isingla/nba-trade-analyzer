@@ -214,6 +214,13 @@ def _check_second_apron(
     # Exception: trade drops team to at-or-below the second apron → Aggregated
     # TPE applies. cbaguide: a team is barred only if it stays "over the Second
     # Apron after the Trade" (strict), so landing exactly on the apron is legal.
+    #
+    # PROTECTIVE NOTE — do NOT flip this `<=` to `<` (ratified 2026-06-24).
+    # Landing EXACTLY on the second apron is NOT prohibited: cbaguide's GOVERNING
+    # clause is strict-over ("...exceeds the applicable Apron Threshold after
+    # executing the transaction..."), so at-apron is legal and the carve-out must
+    # fire. cbaguide's ILLUSTRATIVE example ("drops below the Second Apron") reads
+    # strict — that is the trap; the governing "exceeds" clause wins, not the example.
     if post_trade <= SECOND_APRON:
         if incoming > outgoing:
             return (
