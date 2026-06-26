@@ -54,6 +54,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from nba_trade_analyzer.data.cap_holds import load_cap_holds
 from nba_trade_analyzer.data.crosswalk import Crosswalk, load_crosswalk
 from nba_trade_analyzer.data.darko import fetch_darko_data
 from nba_trade_analyzer.data.epm import (
@@ -100,10 +101,18 @@ _GENERATED_FROM = (
     "src/nba_trade_analyzer/data/epm.py",
     "src/nba_trade_analyzer/data/darko.py",
     "src/nba_trade_analyzer/data/players.py",
+    "src/nba_trade_analyzer/data/cap_holds.py",
     "src/nba_trade_analyzer/engine/constants.py",
     "src/nba_trade_analyzer/engine/aging_curve.py",
     "src/nba_trade_analyzer/engine/minutes.py",
     "data/player_crosswalk.json",
+)
+
+# Own-FA cap holds are placeholder estimates, not exact Bird-rights holds — the
+# page footnotes them from this note.
+_CAP_HOLDS_NOTE = (
+    "Own-FA cap holds are round-number ESTIMATES (placeholder tiers), not exact "
+    "Bird-rights holds; team-season totals, future seasons only."
 )
 
 
@@ -163,11 +172,29 @@ class DataballrExportMetadata(_CamelModel):
     source_counts: dict[str, int]
 
 
+class DataballrCapHolds(_CamelModel):
+    """Own-FA cap holds (Tier 3c, Phase A), aggregated per team per future season.
+
+    ``totals`` is ``{team: {season: summed_hold_dollars}}`` — team-level, kept
+    SEPARATE from contract salaries so the page can render a distinct "cap holds"
+    line and subtract it from Open Cap. ``estimated`` + ``note`` carry the
+    placeholder-tier caveat through to the UI.
+    """
+
+    estimated: bool
+    note: str
+    team_seasons: int  # number of (team, season) totals — visibility on coverage.
+    totals: dict[str, dict[str, int]]
+
+
 class DataballrExport(_CamelModel):
     metadata: DataballrExportMetadata
     salaries: list[DataballrSalaryRow]
     # Keyed by BBRef slug, matching CONTROL_RUNWAY_PROJECTIONS in databallr.
     projections: dict[str, DataballrPlayerProjection]
+    # Per-team-per-season own-FA cap-hold totals (Tier 3c, Phase A). Team-level,
+    # NOT folded into `salaries`.
+    cap_holds: DataballrCapHolds
 
 
 def season_keys() -> list[str]:
@@ -455,6 +482,7 @@ def build_export(
     crosswalk: Crosswalk | None = None,
     minutes_history: dict[int, dict[str, list[float]]] | None = None,
     guarantee_resolver: NonGuaranteeResolver | None = None,
+    cap_holds: dict[str, dict[str, int]] | None = None,
 ) -> DataballrExport:
     """Assemble the full databallr cap-data payload.
 
@@ -481,6 +509,10 @@ def build_export(
     # site_Data spread; a missing spread yields an empty NG set so nothing fires.
     if guarantee_resolver is None:
         guarantee_resolver = NonGuaranteeResolver.load()
+    # Own-FA cap holds (Tier 3c, Phase A). A missing file yields {} so nothing is
+    # subtracted from Open Cap. The loader gates to future seasons only.
+    if cap_holds is None:
+        cap_holds = load_cap_holds()
 
     keys = season_keys()
     by_id, by_name = _stats_index(stats_df)
@@ -582,5 +614,13 @@ def build_export(
     )
 
     return DataballrExport(
-        metadata=metadata, salaries=salaries, projections=projections
+        metadata=metadata,
+        salaries=salaries,
+        projections=projections,
+        cap_holds=DataballrCapHolds(
+            estimated=True,
+            note=_CAP_HOLDS_NOTE,
+            team_seasons=sum(len(seasons) for seasons in cap_holds.values()),
+            totals=cap_holds,
+        ),
     )
