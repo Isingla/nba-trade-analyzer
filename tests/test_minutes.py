@@ -6,12 +6,17 @@ import math
 
 from nba_trade_analyzer.engine.constants import (
     GAMES_RECENCY_DECAY,
+    MPG_AGE_DELTA,
+    MPG_AGE_DELTA_MAX_AGE,
+    MPG_AGE_DELTA_MIN_AGE,
+    MPG_CEILING,
     MPG_SALARY_COEF,
     MPG_SALARY_REF,
     PROJECTED_GAMES_CEILING,
 )
 from nba_trade_analyzer.engine.minutes import (
     MinutesProjection,
+    cumulative_mpg_age_delta,
     project_games,
     project_minutes,
     project_mpg,
@@ -146,3 +151,64 @@ def test_injury_prone_loses_minutes_vs_durable_same_role():
     # Same role/impact/salary => identical MPG; minutes gap is pure availability.
     assert math.isclose(durable.projected_mpg, fragile.projected_mpg, rel_tol=1e-9)
     assert fragile.projected_minutes < durable.projected_minutes * 0.7
+
+
+# --- minutes aging curve (Phase 1-3) ----------------------------------------
+
+def test_age_curve_shape_young_bump_prime_decline():
+    """Young bump (positive), prime near zero, increasingly negative past prime."""
+    assert MPG_AGE_DELTA[21] > 0.5          # young ramp
+    assert abs(MPG_AGE_DELTA[26]) < 0.4     # ~prime, near zero
+    assert MPG_AGE_DELTA[34] < MPG_AGE_DELTA[30] < 0  # steepening decline
+
+
+def test_age_curve_non_positive_and_non_increasing_past_prime():
+    """Tail guard: never positive, never drifts back toward zero past prime."""
+    past_prime = [a for a in MPG_AGE_DELTA if a >= 31]
+    for a in past_prime:
+        assert MPG_AGE_DELTA[a] <= 0, f"age {a} must be non-positive"
+    ordered = sorted(past_prime)
+    for older, younger in zip(ordered[1:], ordered):
+        assert MPG_AGE_DELTA[older] <= MPG_AGE_DELTA[younger], (
+            f"age {older} delta drifted up vs {younger}"
+        )
+
+
+def test_cumulative_zero_at_current_season():
+    """year_offset 0 applies no aging (doesn't repeat the current-age delta)."""
+    assert cumulative_mpg_age_delta(30, 0) == 0.0
+
+
+def test_cumulative_sums_forward_by_projected_age():
+    """Cumulative = sum of deltas at age+1 .. age+offset, not the current age."""
+    age = 33
+    expected = MPG_AGE_DELTA[34] + MPG_AGE_DELTA[35] + MPG_AGE_DELTA[36]
+    assert math.isclose(cumulative_mpg_age_delta(age, 3), expected, rel_tol=1e-9)
+    # Strictly more decline two years out than one year out for a vet.
+    assert cumulative_mpg_age_delta(age, 2) < cumulative_mpg_age_delta(age, 1) < 0
+
+
+def test_cumulative_clamps_outside_fitted_range():
+    """41+ keeps shedding the steepest fitted decline; <20 holds the young bump."""
+    steepest = MPG_AGE_DELTA[MPG_AGE_DELTA_MAX_AGE]
+    # A 44-year-old projected 3 years out ages entirely past the table -> 3x floor.
+    assert math.isclose(cumulative_mpg_age_delta(44, 3), steepest * 3, rel_tol=1e-9)
+    youngest = MPG_AGE_DELTA[MPG_AGE_DELTA_MIN_AGE]
+    assert math.isclose(cumulative_mpg_age_delta(18, 1), youngest, rel_tol=1e-9)
+
+
+def test_project_mpg_applies_aging_vet_declines_young_ramps():
+    """With age threaded, a vet's out-year mpg drops and a youngster's rises."""
+    vet_now = project_mpg(34.0, impact=2.0, salary_share=0.30, age=34, year_offset=0)
+    vet_2y = project_mpg(34.0, impact=2.0, salary_share=0.30, age=34, year_offset=2)
+    assert vet_2y < vet_now  # aging beats the (constant) impact/salary nudge
+
+    young_now = project_mpg(22.0, impact=1.0, salary_share=0.10, age=21, year_offset=0)
+    young_2y = project_mpg(22.0, impact=1.0, salary_share=0.10, age=21, year_offset=2)
+    assert young_2y > young_now  # young bump ramps minutes up
+
+
+def test_project_mpg_ceiling_is_36():
+    """A max-impact star clamps at the re-tuned 36 ceiling, not 38."""
+    star = project_mpg(38.0, impact=8.0, salary_share=0.35, age=27, year_offset=0)
+    assert star == MPG_CEILING == 36.0

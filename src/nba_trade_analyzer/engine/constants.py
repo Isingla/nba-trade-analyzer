@@ -186,7 +186,44 @@ MPG_SALARY_COEF = 6.0   # MPG added per +1.0 of cap-share above the reference.
 # keeping salary's positive "coaches play who they pay" signal. See
 # scripts/backtest_minutes.py and databallr docs/CONTROL_RUNWAY.md.
 MPG_FLOOR = 0.0
-MPG_CEILING = 38.0
+# Realistic modern max sustainable MPG. Re-tuned 38 -> 36: in 2024-25 (>= 40 GP)
+# NO player averaged 38, only 4 reached >= 37, and 14 reached >= 36 — so 36 sits
+# right at the genuine high-minute-star load while a 38 ceiling was above every
+# real player and PINNED stars flat, masking the aging curve. 36 is slightly
+# conservative on purpose so the aging curve drives year-over-year movement
+# instead of the model re-clamping a declining star at the cap every season.
+MPG_CEILING = 36.0
+
+# ---- Minutes aging curve: year-over-year ΔMPG by age ----
+# Fitted by scripts/fit_minutes_aging.py (DELTA METHOD): for every player in two
+# CONSECUTIVE seasons, ΔMPG = mpg_later − mpg_earlier, keyed by age in the later
+# season, mean-by-age, then 3-point smoothed.
+#
+#   FIT WINDOW: 2013-14 .. 2024-25 (modern load-management era; don't reach older).
+#   FIT FILTER: a delta pair counts only when BOTH endpoint seasons cleared
+#     >= 15 MPG and >= 20 GP (n = 2,784 pairs). Low-minute role churn is roster
+#     chaos, not aging — it would distort the fit. The curve is still APPLIED to
+#     every player regardless of their minutes.
+#   TAIL GUARD (age >= 31): forced NON-POSITIVE and NON-INCREASING (most-negative
+#     value carried forward). Survivorship — declining players get waived, so the
+#     survivors look like they barely decline — otherwise flattens or ticks the
+#     old-age curve UP and re-creates the "old players gain minutes" bug. The
+#     guard pinned ages 38-40 to the age-37 value (raw age-40 was even +0.371).
+#   KNOWN BIAS (accepted for v1): survivorship still makes the late-decline
+#     MAGNITUDE conservative (gentler than reality) for players who survive.
+#
+# APPLICATION (minutes.py): CUMULATIVE — sum the per-year delta from the player's
+# current age forward. Ages outside [20, 40] clamp to the nearest fitted end, so
+# a 41+ vet holds the steepest -2.747/yr decline and a teenager holds +1.898.
+MPG_AGE_DELTA = {
+    20: 1.898, 21: 1.694, 22: 1.661, 23: 1.073, 24: 0.793,
+    25: 0.354, 26: 0.276, 27: -0.052, 28: -0.401, 29: -0.721,
+    30: -1.036, 31: -1.238, 32: -1.539, 33: -1.671, 34: -1.925,
+    35: -2.407, 36: -2.565, 37: -2.747, 38: -2.747, 39: -2.747,
+    40: -2.747,
+}
+MPG_AGE_DELTA_MIN_AGE = 20
+MPG_AGE_DELTA_MAX_AGE = 40
 
 # ---- Draft Pick Value Constants ----
 # Exponential decay parameters for draft pick surplus value.
