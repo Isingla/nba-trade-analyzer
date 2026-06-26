@@ -28,6 +28,9 @@ from nba_trade_analyzer.engine.constants import (
     GAMES_AGE_DURABILITY_PIVOT,
     GAMES_AGE_MISSED_PER_YEAR,
     GAMES_RECENCY_DECAY,
+    MPG_AGE_DELTA,
+    MPG_AGE_DELTA_MAX_AGE,
+    MPG_AGE_DELTA_MIN_AGE,
     MPG_CEILING,
     MPG_FLOOR,
     MPG_IMPACT_COEF,
@@ -146,25 +149,53 @@ def recency_weighted_mpg(
     return sum(w * m for w, m in zip(weights, mpg_history)) / total_weight
 
 
+def cumulative_mpg_age_delta(age: int, year_offset: int) -> float:
+    """Total MPG aging adjustment from a player's current age forward.
+
+    Sums the per-year ``MPG_AGE_DELTA`` for each year the player ages between the
+    current season and the projected one: a season ``year_offset`` out lands the
+    player at ``age + year_offset``, so this sums the deltas keyed
+    ``age+1 .. age+year_offset`` (the table is keyed by age-in-the-later-season).
+    Returns ``0.0`` at ``year_offset == 0`` (current season — no aging yet), so
+    it never re-applies the current age's delta. Ages outside the fitted table
+    clamp to its ends, so a 41+ vet keeps shedding the steepest decline and a
+    teenager keeps the young-improvement bump.
+    """
+    total = 0.0
+    for k in range(1, year_offset + 1):
+        a = max(MPG_AGE_DELTA_MIN_AGE, min(MPG_AGE_DELTA_MAX_AGE, age + k))
+        total += MPG_AGE_DELTA[a]
+    return total
+
+
 def project_mpg(
     prior_mpg: float,
     impact: float,
     salary_share: float,
     *,
+    age: int | None = None,
+    year_offset: int = 0,
     flat: bool = False,
 ) -> float:
-    """Project MPG from a prior MPG anchor nudged by impact and salary.
+    """Project MPG from a prior MPG anchor nudged by impact, salary, and aging.
 
     ``salary_share`` is salary as a fraction of the cap (e.g. 0.35 for a max).
-    ``flat=True`` returns the bounded prior MPG with no impact/salary nudge
-    (the documented fallback). Both nudges are small so prior role dominates.
+    When ``age`` is given, a CUMULATIVE aging adjustment for ``year_offset``
+    years out is added (``cumulative_mpg_age_delta``) so out-year minutes actually
+    decline for vets and ramp for the young — the impact/salary nudges stay.
+    ``age=None`` applies no aging (back-compat default). ``flat=True`` returns the
+    bounded prior MPG with no nudges at all (the documented fallback).
     """
     if flat:
         return _clamp(prior_mpg, MPG_FLOOR, MPG_CEILING)
+    age_delta = (
+        cumulative_mpg_age_delta(age, year_offset) if age is not None else 0.0
+    )
     nudged = (
         prior_mpg
         + MPG_IMPACT_COEF * (impact - MPG_IMPACT_REF)
         + MPG_SALARY_COEF * (salary_share - MPG_SALARY_REF)
+        + age_delta
     )
     return _clamp(nudged, MPG_FLOOR, MPG_CEILING)
 
@@ -185,5 +216,7 @@ def project_minutes(
         gp_history, age, year_offset=year_offset, flat_average=flat_average
     )
     prior_mpg = recency_weighted_mpg(mpg_history, flat_average=flat_average) or 0.0
-    mpg = project_mpg(prior_mpg, impact, salary_share, flat=flat_mpg)
+    mpg = project_mpg(
+        prior_mpg, impact, salary_share, age=age, year_offset=year_offset, flat=flat_mpg
+    )
     return MinutesProjection(projected_games=games, projected_mpg=mpg)

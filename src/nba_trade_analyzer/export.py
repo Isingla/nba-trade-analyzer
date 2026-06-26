@@ -434,7 +434,10 @@ def _project_player(
         year = multi.year_by_year[offset]
         impact = year.projected_epm
         salary_share = _salary_share_for_offset(contract, offset)
-        proj_mpg = round(project_mpg(prior_mpg, impact, salary_share), 1)
+        proj_mpg = round(
+            project_mpg(prior_mpg, impact, salary_share, age=age, year_offset=offset),
+            1,
+        )
         minutes = proj_games * proj_mpg
         seasons[key] = DataballrSeasonProjection(
             waa=round(compute_waa(impact, minutes), 1),
