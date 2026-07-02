@@ -11,6 +11,74 @@ FIRST_APRON = 195_945_000
 SECOND_APRON = 207_824_000
 EXPANDED_TPE_CUSHION = 8_527_000
 
+# ---- Per-season cap thresholds (Cap Sheet export, Stage 1) ----
+# Every value is a TEAM-SALARY level in whole dollars: the official salary cap,
+# minimum team salary (floor), luxury-tax level, first apron, and second apron
+# that a team's TOTAL salary is measured against for that league year. These
+# are the announced dollar lines themselves — not cap percentages, not
+# exception amounts, and not any alternative salary basis.
+#
+# 2025-26 and 2026-27 are CERTIFIED: primary-sourced from the NBA's league
+# announcements and audited against reference/cba_reference_2025-26.yaml
+# (which, per its own rules, carries ONLY certified figures — projections
+# never go in the yaml).
+#
+# Out-years (2027-28 onward) are PROJECTED, certified=False: the cap grows at
+# the league's ~5.5%/yr guidance (NBA guidance / Bobby Marks: 2027-28 cap
+# ≈ $174M; 164,961,000 x 1.055 = 174,033,855 ✓), and every other line is the
+# certified 2026-27 value scaled by the SAME factor — i.e. by
+# projectedCap[season] / cap[2026-27]. Tax/apron lines are CBA functions of
+# the cap, so deriving them from the projected cap keeps the whole set
+# ratio-consistent instead of inventing a separate per-line growth rate.
+CAP_THRESHOLD_PROJECTED_GROWTH = 0.055  # ~5.5%/yr league cap-growth guidance
+
+_CERTIFIED_LEVELS_2025_26: dict[str, int] = {
+    "salary_cap": SALARY_CAP,
+    "minimum_team_salary": MINIMUM_TEAM_SALARY,
+    "luxury_tax": LUXURY_TAX,
+    "first_apron": FIRST_APRON,
+    "second_apron": SECOND_APRON,
+}
+
+# NBA.com league press release, June 2026 (2026-27 league year).
+_CERTIFIED_LEVELS_2026_27: dict[str, int] = {
+    "salary_cap": 164_961_000,
+    "minimum_team_salary": 148_465_000,
+    "luxury_tax": 200_428_000,
+    "first_apron": 209_015_000,
+    "second_apron": 221_686_000,
+}
+
+
+def _projected_levels(years_past_2026_27: int) -> dict[str, int]:
+    """Certified 2026-27 levels scaled by (1 + growth)^n — see block comment."""
+    factor = (1 + CAP_THRESHOLD_PROJECTED_GROWTH) ** years_past_2026_27
+    return {k: int(round(v * factor)) for k, v in _CERTIFIED_LEVELS_2026_27.items()}
+
+
+_PROJECTED_SOURCE = (
+    "Projected: certified 2026-27 levels x 1.055^n "
+    "(~5.5%/yr league cap-growth guidance; thresholds scale with the cap)"
+)
+
+# season key -> {five threshold levels..., "certified": bool, "source": str}.
+# Covers the databallr export window (see export.season_keys()).
+CAP_THRESHOLDS_BY_SEASON: dict[str, dict[str, int | bool | str]] = {
+    "2025-26": {
+        **_CERTIFIED_LEVELS_2025_26,
+        "certified": True,
+        "source": "NBA PR 2025-26",
+    },
+    "2026-27": {
+        **_CERTIFIED_LEVELS_2026_27,
+        "certified": True,
+        "source": "NBA.com league press release, June 2026",
+    },
+    "2027-28": {**_projected_levels(1), "certified": False, "source": _PROJECTED_SOURCE},
+    "2028-29": {**_projected_levels(2), "certified": False, "source": _PROJECTED_SOURCE},
+    "2029-30": {**_projected_levels(3), "certified": False, "source": _PROJECTED_SOURCE},
+}
+
 # ---- Valuation Constants (tunable) ----
 # Dollars per win above replacement, 2025-26 estimate.
 # Derived from: total league salary (~$4.64B) / total league WAR (~1,300).

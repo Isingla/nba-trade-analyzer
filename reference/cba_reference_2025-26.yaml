@@ -25,10 +25,12 @@ meta:
   last_updated: "2026-06-11"   # cbaguide ratification pass (trade_matching, apron timing/triggers, BAE)
   primary_source: "https://pr.nba.com/nba-salary-cap-2025-26-season"
   note_2026_27: >
-    The NBA projected a ~7% cap rise for 2026-27 but, as of this file's date, the
-    official 2026-27 figures are not yet announced (they typically land in late
-    June / early July). Do NOT populate a 2026-27 block with projections and treat
-    them as verified. Add it only once the league announces.
+    The official 2026-27 cap levels were announced by the league in June 2026 and
+    are entered below as `cap_levels_2026_27` (verified, primary-sourced from the
+    NBA.com league press release). The original rule stands for every LATER year:
+    do NOT populate a season block with projections and treat them as verified —
+    projected out-year levels live ONLY in engine/constants.py
+    (CAP_THRESHOLDS_BY_SEASON), explicitly tagged certified=False.
 
 # -----------------------------------------------------------------------------
 # CAP LEVELS — all primary-sourced from the NBA league announcement.
@@ -40,6 +42,20 @@ cap_levels:
                      { value: 139182000, verified: true,  source: "NBA PR 2025-26 (salary floor)" }
   first_apron:       { value: 195945000, verified: true,  source: "NBA PR 2025-26" }
   second_apron:      { value: 207824000, verified: true,  source: "NBA PR 2025-26" }
+
+# -----------------------------------------------------------------------------
+# CAP LEVELS 2026-27 — primary-sourced from the NBA's June 2026 league
+# announcement (NBA.com league press release). CERTIFIED figures only; per the
+# header rules, projections never enter this file (projected out-years live in
+# engine/constants.py CAP_THRESHOLDS_BY_SEASON, tagged certified=False).
+# -----------------------------------------------------------------------------
+cap_levels_2026_27:
+  salary_cap:        { value: 164961000, verified: true,  source: "NBA PR 2026-27" }
+  luxury_tax_line:   { value: 200428000, verified: true,  source: "NBA PR 2026-27" }
+  minimum_team_salary:
+                     { value: 148465000, verified: true,  source: "NBA PR 2026-27 (salary floor)" }
+  first_apron:       { value: 209015000, verified: true,  source: "NBA PR 2026-27" }
+  second_apron:      { value: 221686000, verified: true,  source: "NBA PR 2026-27" }
 
 # -----------------------------------------------------------------------------
 # EXCEPTIONS — dollar amounts primary-sourced; % derivations shown for cross-check.
