@@ -66,6 +66,7 @@ from nba_trade_analyzer.data.guarantees import NonGuaranteeResolver
 from nba_trade_analyzer.data.players import fetch_player_stats
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
 from nba_trade_analyzer.engine.constants import (
+    CAP_THRESHOLDS_BY_SEASON,
     EPM_TO_WINS_FACTOR,
     FULL_SEASON_MINUTES,
     MAX_PROJECTION_YEARS,
@@ -113,6 +114,13 @@ _GENERATED_FROM = (
 _CAP_HOLDS_NOTE = (
     "Own-FA cap holds are round-number ESTIMATES (placeholder tiers), not exact "
     "Bird-rights holds; team-season totals, future seasons only."
+)
+
+_CAP_THRESHOLDS_NOTE = (
+    "League-wide TEAM-SALARY threshold levels per season (cap, floor, luxury "
+    "tax, first apron, second apron). certified=True seasons are NBA-announced "
+    "figures; certified=False seasons are projections (certified 2026-27 "
+    "levels grown ~5.5%/yr with the cap) and must be labeled as estimates."
 )
 
 
@@ -187,6 +195,37 @@ class DataballrCapHolds(_CamelModel):
     totals: dict[str, dict[str, int]]
 
 
+class DataballrSeasonCapThresholds(_CamelModel):
+    """One league year's official (or projected) cap-threshold levels.
+
+    Every figure is a TEAM-SALARY dollar line — the level a team's total salary
+    is measured against for that season (salary cap, minimum team salary /
+    floor, luxury-tax level, first apron, second apron). These are the
+    announced dollar amounts themselves, never percentages or exception values.
+
+    ``certified`` distinguishes league-announced figures (True: 2025-26,
+    2026-27) from growth-projected out-years (False) so the frontend can label
+    projections honestly. ``source`` names the announcement or the projection
+    method.
+    """
+
+    salary_cap: int
+    minimum_team_salary: int
+    luxury_tax: int
+    first_apron: int
+    second_apron: int
+    certified: bool
+    source: str
+
+
+class DataballrCapThresholds(_CamelModel):
+    """Per-season cap/tax/apron levels (Cap Sheet, Stage 1). League-wide, not
+    per-team; keyed by season like ``projections[...].seasons``."""
+
+    note: str
+    seasons: dict[str, DataballrSeasonCapThresholds]
+
+
 class DataballrExport(_CamelModel):
     metadata: DataballrExportMetadata
     salaries: list[DataballrSalaryRow]
@@ -195,6 +234,9 @@ class DataballrExport(_CamelModel):
     # Per-team-per-season own-FA cap-hold totals (Tier 3c, Phase A). Team-level,
     # NOT folded into `salaries`.
     cap_holds: DataballrCapHolds
+    # Per-season tax/apron threshold levels (Cap Sheet, Stage 1). ADDITIVE:
+    # consumers that predate this field simply ignore it.
+    cap_thresholds: DataballrCapThresholds
 
 
 def season_keys() -> list[str]:
@@ -616,6 +658,23 @@ def build_export(
         source_counts=dict(sorted(source_counts.items())),
     )
 
+    # Per-season tax/apron levels for the export window. Loud failure if the
+    # window ever outgrows the constants table — silently missing thresholds
+    # would read as "no Cap Sheet" downstream instead of a data bug.
+    missing = [s for s in keys if s not in CAP_THRESHOLDS_BY_SEASON]
+    if missing:
+        raise ValueError(
+            f"CAP_THRESHOLDS_BY_SEASON lacks season(s) {missing}; extend the "
+            "table in engine/constants.py to cover the export window."
+        )
+    cap_thresholds = DataballrCapThresholds(
+        note=_CAP_THRESHOLDS_NOTE,
+        seasons={
+            season: DataballrSeasonCapThresholds(**CAP_THRESHOLDS_BY_SEASON[season])
+            for season in keys
+        },
+    )
+
     return DataballrExport(
         metadata=metadata,
         salaries=salaries,
@@ -626,4 +685,5 @@ def build_export(
             team_seasons=sum(len(seasons) for seasons in cap_holds.values()),
             totals=cap_holds,
         ),
+        cap_thresholds=cap_thresholds,
     )

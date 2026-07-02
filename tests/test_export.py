@@ -361,3 +361,67 @@ def test_horizon_years_override_projects_full_window():
         player, contract, epm_df=epm_df, darko_df=darko_df
     )
     assert len(default.year_by_year) == 1
+
+
+# ---- capThresholds block (Cap Sheet, Stage 1) --------------------------------
+
+
+def test_cap_thresholds_block_covers_window_with_certified_and_projected():
+    from nba_trade_analyzer.engine.constants import CAP_THRESHOLDS_BY_SEASON
+
+    export = _build_sample_export()
+    block = export.cap_thresholds
+    assert set(block.seasons) == set(season_keys())
+
+    for season_key, emitted in block.seasons.items():
+        table = CAP_THRESHOLDS_BY_SEASON[season_key]
+        assert emitted.salary_cap == table["salary_cap"]
+        assert emitted.minimum_team_salary == table["minimum_team_salary"]
+        assert emitted.luxury_tax == table["luxury_tax"]
+        assert emitted.first_apron == table["first_apron"]
+        assert emitted.second_apron == table["second_apron"]
+        assert emitted.certified == table["certified"]
+
+    # Certified seasons emit the official announced figures verbatim.
+    y26 = block.seasons["2026-27"]
+    assert y26.certified is True
+    assert y26.salary_cap == 164_961_000
+    assert y26.luxury_tax == 200_428_000
+    assert y26.first_apron == 209_015_000
+    assert y26.second_apron == 221_686_000
+    y25 = block.seasons["2025-26"]
+    assert y25.certified is True
+    assert (y25.luxury_tax, y25.first_apron, y25.second_apron) == (
+        187_895_000,
+        195_945_000,
+        207_824_000,
+    )
+    # Out-years are honest projections.
+    for season_key in ("2027-28", "2028-29", "2029-30"):
+        assert block.seasons[season_key].certified is False
+
+
+def test_cap_thresholds_is_additive_to_the_wire_shape():
+    """The new block must not disturb any pre-existing top-level key."""
+    export = _build_sample_export()
+    payload = export.model_dump(by_alias=True)
+    assert set(payload) == {
+        "metadata",
+        "salaries",
+        "projections",
+        "capHolds",
+        "capThresholds",
+    }
+    # The pre-existing metadata scalar is untouched by this stage.
+    assert payload["metadata"]["salaryCap"] == 154_647_000
+    season = payload["capThresholds"]["seasons"]["2026-27"]
+    # Wire field names are camelCase like every other block.
+    assert set(season) == {
+        "salaryCap",
+        "minimumTeamSalary",
+        "luxuryTax",
+        "firstApron",
+        "secondApron",
+        "certified",
+        "source",
+    }
