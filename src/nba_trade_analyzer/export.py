@@ -240,7 +240,13 @@ class DataballrExport(_CamelModel):
 
 
 def season_keys() -> list[str]:
-    """The fixed projection window, e.g. ``["2025-26", ..., "2029-30"]``."""
+    """The fixed projection window, e.g. ``["2025-26", ..., "2029-30"]``.
+
+    NOTE: extending/rolling this window (contracts already run into 2030-31,
+    which this truncates) is a DEFERRED season-rollover decision; the ingest
+    verifier's coverage intersection (ingest/verify.py) keeps the truncation
+    from producing false mismatches in the meantime.
+    """
     return [
         f"{_FIRST_SEASON_START + i}-{(_FIRST_SEASON_START + i + 1) % 100:02d}"
         for i in range(MAX_PROJECTION_YEARS)
