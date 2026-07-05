@@ -66,6 +66,10 @@ _TEAMS: tuple[TeamInfo, ...] = (
     TeamInfo("WAS", "Washington Wizards", "WAS"),
 )
 
+# Public, read-only view of the 30-team table (the ingest pipeline builds its
+# display<->BBRef abbreviation maps from this).
+ALL_TEAMS: tuple[TeamInfo, ...] = _TEAMS
+
 # Every accepted input form (both conventions) -> its canonical record.
 _BY_ALIAS: dict[str, TeamInfo] = {}
 for _t in _TEAMS:

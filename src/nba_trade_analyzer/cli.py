@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -812,6 +813,78 @@ def export(
         f"epm={meta.epm_rows} darko={meta.darko_rows} stats={meta.stats_rows}",
         err=True,
     )
+
+
+@app.command()
+def ingest(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Load sources, resolve names, evaluate guards and print the plan — write nothing.",
+    ),
+    accept_baseline: str = typer.Option(
+        None,
+        "--accept-baseline",
+        metavar='"REASON"',
+        help=(
+            "SUPERVISED FIRST-RUNS AND KNOWN-BASELINE-RESETS ONLY. Downgrades the "
+            "row-count/dollar collapse guards to report-only for this run (recorded "
+            "in the run summary as baseline_overrides, with this operator reason). "
+            "Use when the current DB state is a known-poisoned baseline — e.g. the "
+            "Phase 1 seed's placeholder cap-hold tiers, which a correct first real "
+            "ingest undercuts. Source-quality guards (empty source, missing "
+            "SITE_DATA_ROOT) still block; the flag never bypasses them."
+        ),
+    ),
+) -> None:
+    """Refresh the databallr v3_* contract tables from living sources (Phase 2A).
+
+    Connects via $CONTRACT_INGEST_DATABASE_URL (the restricted no-delete
+    contract_ingest role) — refuses to run without it, never uses
+    service_role. All writes are upserts; guards hard-block on row/dollar
+    collapse or empty sources; a failed BBRef fetch is a FAILED run, never a
+    silent fallback to stale committed data. Every run ends with the layer-1
+    three-way salary verifier and is recorded in v3_ingest_runs.
+    """
+    # Local imports keep psycopg out of the legacy commands' import path.
+    from nba_trade_analyzer.ingest.db import IngestDb, IngestDbError, connect_from_env
+    from nba_trade_analyzer.ingest.runner import run_ingest
+
+    # The flag REQUIRES an operator note — a baseline override without a
+    # stated reason is not auditable. Validated before any DB connection.
+    if accept_baseline is not None and not accept_baseline.strip():
+        typer.echo(
+            '✗ --accept-baseline requires a non-empty reason, e.g. '
+            '--accept-baseline "first real ingest over seeded placeholder cap holds"',
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    try:
+        conn = connect_from_env()
+    except IngestDbError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        result = run_ingest(
+            IngestDb(conn),
+            dry_run=dry_run,
+            accept_baseline=accept_baseline.strip() if accept_baseline else None,
+        )
+    finally:
+        conn.close()
+
+    if result.status == "dry_run":
+        typer.echo(json.dumps(result.summary, indent=2, default=str))
+        return
+    if result.status == "guard_blocked":
+        typer.echo(f"✗ guard_blocked: {json.dumps(result.guard_failures, default=str)}", err=True)
+        raise typer.Exit(code=3)
+    if result.status == "failed":
+        typer.echo(f"✗ ingest failed: {result.error}", err=True)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

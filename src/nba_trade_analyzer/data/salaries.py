@@ -381,6 +381,7 @@ def fetch_all_salaries(
     season: str = _DEFAULT_SEASON,
     cache: JsonCache | None = None,
     csv_path: Path | None = None,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Fetch every active NBA contract from Basketball Reference.
 
@@ -389,6 +390,12 @@ def fetch_all_salaries(
     warning, so the project still works offline. Every return path is run
     through ``_dedupe_salary_frame`` so Basketball Reference's repeated
     contract lines never reach consumers (see that helper for the root cause).
+
+    ``strict=True`` (the ingest path) DISABLES the CSV fallback: a failed
+    fetch re-raises so the caller records a FAILED run instead of silently
+    ingesting stale committed data (databallr Phase 0 flagged the silent
+    fallback as a regression vector — the committed CSV was months stale).
+    The legacy ``export`` command keeps the fallback unchanged.
     """
     cache = cache or JsonCache()
     cache_key = f"salaries_{season}"
@@ -409,6 +416,8 @@ def fetch_all_salaries(
         resp.raise_for_status()
         df = _parse_salary_html(resp.text, season=season)
     except (httpx.HTTPError, RuntimeError) as exc:
+        if strict:
+            raise
         print(f"Basketball Reference fetch failed ({exc}), using local CSV fallback")
         return _dedupe_salary_frame(_load_csv_fallback(csv_path or _csv_path(season)))
 

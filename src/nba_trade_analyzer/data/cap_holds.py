@@ -25,6 +25,7 @@ import csv
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 # Reuse the single source of truth for the league-year gate, so a rollover bump
@@ -117,3 +118,105 @@ def load_cap_holds(
             team_map[s] = team_map.get(s, 0) + amount
 
     return totals
+
+
+# ---------------------------------------------------------------------------
+# Player-grain loader (Phase 2A ingest). The team-summed loader above serves
+# the legacy export; ingest keeps player identity (databallr Phase 0 Path 2b/2c:
+# the parser used to discard it) and classifies sentinel data as data.
+# ---------------------------------------------------------------------------
+
+# Non-zero hold cells below this are sentinel/placeholder debris, not holds —
+# Phase 0 Path 2d: 25 of 30 teams carry single-digit sentinel rows (BOS all
+# 4.0, summing to a $24 "team total"). No real cap hold is under $10k.
+SENTINEL_MAX_DOLLARS = 10_000
+
+
+@dataclass(frozen=True)
+class CapHoldRow:
+    """One player's cap hold on one team for one season."""
+
+    team: str
+    season: str
+    player_name: str
+    amount: int
+
+
+def load_cap_holds_rows(
+    path: str | Path | None = None,
+    current_league_year: str = CURRENT_LEAGUE_YEAR,
+) -> list[CapHoldRow]:
+    """Player-grain cap holds, future seasons only.
+
+    Same header-driven parsing and future-season gate as :func:`load_cap_holds`,
+    but rows keep (team, season, player, amount) instead of summing per team.
+    Sentinel-vs-real classification is the caller's job (see
+    :func:`classify_cap_hold_teams`) so the loader stays a faithful reader.
+
+    Missing file raises ``FileNotFoundError`` — ingest turns that into
+    guard_blocked, never an empty write (Phase 0 fact #5). The legacy loader's
+    empty-dict default is unchanged for the export path.
+    """
+    if path is None:
+        root = os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data"))
+        path = os.path.join(root, "nba_cap_holds.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"cap-holds source missing: {path}")
+
+    current = _season_start_year(current_league_year)
+    out: list[CapHoldRow] = []
+
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows:
+        return []
+
+    season_cols = [c for c in rows[0].keys() if c and _SEASON_RE.fullmatch(c)]
+
+    for r in rows:
+        team = _norm_team(r.get("Team"))
+        player = (r.get("Player") or "").strip()
+        if not team:
+            logger.warning(
+                "cap_holds: skipping row with blank team (player=%r)", r.get("Player")
+            )
+            continue
+        for s in season_cols:
+            start = _season_start_year(s)
+            if start is None or (current is not None and start <= current):
+                continue
+            raw = (r.get(s) or "").strip()
+            amount = _to_amount(raw)
+            if amount is None:
+                if raw != "":
+                    logger.warning(
+                        "cap_holds: skipping malformed cell team=%s season=%s value=%r",
+                        team,
+                        s,
+                        raw,
+                    )
+                continue
+            if amount <= 0:
+                continue
+            out.append(
+                CapHoldRow(team=team, season=s, player_name=player, amount=amount)
+            )
+    return out
+
+
+def classify_cap_hold_teams(rows: list[CapHoldRow]) -> dict[str, str]:
+    """Per-team quality: 'real' iff the team has at least one plausible hold.
+
+    A team whose every non-zero cell is under ``SENTINEL_MAX_DOLLARS`` is
+    sentinel (the 25-team placeholder problem, Phase 0 Path 2d). Real teams'
+    rows may still individually be small only if the team also carries
+    plausible rows — quality is a TEAM-level statement about the source, so
+    all of a team's rows share its classification.
+    """
+    quality: dict[str, str] = {}
+    for row in rows:
+        if row.amount >= SENTINEL_MAX_DOLLARS:
+            quality[row.team] = "real"
+        else:
+            quality.setdefault(row.team, "sentinel")
+    return quality
