@@ -365,15 +365,15 @@ def _ownership_specs() -> list[dict]:
 
 
 def test_grade_rejects_pick_team_does_not_own_by_default():
-    # DAL tries to send LAC's 2026 first — which OKC controls. On by default.
+    # DAL tries to send LAC's 2028 first — which PHI controls. On by default.
     with _patch_data(_ownership_specs()):
         result = runner.invoke(
             app,
             ["grade", "-a", "DAL", "-b", "MEM",
-             "-sa", "Player One", "-sa", "2026 LAC 1st", "-sb", "Player Two"],
+             "-sa", "Player One", "-sa", "2028 LAC 1st", "-sb", "Player Two"],
         )
     assert result.exit_code == 1
-    assert "controlled by OKC" in result.output
+    assert "controlled by PHI" in result.output
     assert "Score:" not in result.output  # rejected before grading
 
 
@@ -382,7 +382,7 @@ def test_grade_no_ownership_check_flag_skips_verification():
         result = runner.invoke(
             app,
             ["grade", "-a", "DAL", "-b", "MEM",
-             "-sa", "Player One", "-sa", "2026 LAC 1st", "-sb", "Player Two",
+             "-sa", "Player One", "-sa", "2028 LAC 1st", "-sb", "Player Two",
              "--no-ownership-check"],
         )
     assert result.exit_code == 0
@@ -400,7 +400,7 @@ def test_grade_norecord_pick_warns_instead_of_rejecting():
         )
     assert result.exit_code == 0  # not rejected
     assert "no record of this pick" in result.output
-    assert "mirror synced 2026-06-10" in result.output  # staleness self-diagnoses
+    assert "mirror synced 2026-07-06" in result.output  # staleness self-diagnoses
     assert "Score:" in result.output  # still graded
 
 
