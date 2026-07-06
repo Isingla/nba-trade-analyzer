@@ -53,18 +53,22 @@ def _trade(a: str, a_picks: list[DraftPick], b: str, b_picks: list[DraftPick]) -
 
 # --- parity spot-checks against known rows ----------------------------------
 def test_team_owns_its_own_pick(registry: PickRegistry):
-    assert registry.verify("WAS", 2026, 1) == Verified("WAS")
+    # (2026 rows left the mirror after the June 2026 draft — post-draft curation.)
+    assert registry.verify("WAS", 2027, 1) == Verified("WAS")
 
 
 def test_pick_traded_away_returns_not_owner(registry: PickRegistry):
-    # LAC's 2026 first conveys to OKC (LAC,OKC,2026,1).
-    assert registry.verify("LAC", 2026, 1) == NotOwner("OKC")
+    # LAC's 2028 first conveys to PHI (CSV row LAC,PHL,2028,1; the registry
+    # canonicalizes RealGM PHL -> nba_api PHI). (Was LAC 2026 -> OKC
+    # until the 2026 rows conveyed and were curated out of the mirror.)
+    assert registry.verify("LAC", 2028, 1) == NotOwner("PHI")
 
 
-def test_dal_2026_first_is_self_owned_but_second_goes_to_okc(registry: PickRegistry):
-    # The brief's "DAL 2026 1st -> OKC" was off by a round: DAL KEEPS its 2026 first.
-    assert registry.verify("DAL", 2026, 1) == Verified("DAL")
-    assert registry.verify("DAL", 2026, 2) == NotOwner("OKC")
+def test_dal_2028_first_is_self_owned_but_second_goes_to_lac(registry: PickRegistry):
+    # Same shape as the retired 2026 case (the brief's "DAL 2026 1st -> OKC" was
+    # off by a round): DAL KEEPS its 2028 first; its 2028 second goes to LAC.
+    assert registry.verify("DAL", 2028, 1) == Verified("DAL")
+    assert registry.verify("DAL", 2028, 2) == NotOwner("LAC")
 
 
 def test_gapped_pick_is_indeterminate_with_verbatim_clause(registry: PickRegistry):
@@ -140,11 +144,11 @@ def test_coverage_census_is_complete_on_the_real_mirror(registry: PickRegistry):
 
 # --- trade integration ------------------------------------------------------
 def test_trade_rejects_pick_team_does_not_own(registry: PickRegistry):
-    # DAL tries to send LAC's 2026 first, which OKC controls.
-    trade = _trade("DAL", [DraftPick(team="LAC", year=2026, round=1)], "OKC", [])
+    # DAL tries to send LAC's 2028 first, which PHI controls.
+    trade = _trade("DAL", [DraftPick(team="LAC", year=2028, round=1)], "OKC", [])
     report = verify_trade_pick_ownership(trade, registry)
     assert not report.ok
-    assert any("OKC" in r and "DAL" in r for r in report.rejections)
+    assert any("PHI" in r and "DAL" in r for r in report.rejections)
 
 
 def test_trade_rejects_norecord_pick(registry: PickRegistry):
@@ -171,10 +175,10 @@ def test_swap_right_must_be_sent_by_the_holder(registry: PickRegistry):
 
 
 def test_check_trade_legality_rejects_unowned_pick_with_registry(registry: PickRegistry):
-    trade = _trade("DAL", [DraftPick(team="LAC", year=2026, round=1)], "OKC", [])
+    trade = _trade("DAL", [DraftPick(team="LAC", year=2028, round=1)], "OKC", [])
     result = check_trade_legality(trade, registry=registry)
     assert result.legal is False
-    assert "OKC" in (result.error_reason or "")
+    assert "PHI" in (result.error_reason or "")
 
 
 def test_check_trade_legality_surfaces_indeterminate_warning(registry: PickRegistry):
