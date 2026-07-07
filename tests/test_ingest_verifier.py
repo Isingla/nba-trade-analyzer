@@ -360,6 +360,102 @@ def test_one_dollar_delta_from_dead_charge_stays_mismatch(tmp_path):
     assert summary.dead_money_pattern == 0
 
 
+# ---------------------------------------------------------------------------
+# Team attribution (current employment, report-only)
+# ---------------------------------------------------------------------------
+
+def _verify_teams(tmp_path, body, ingested, our_teams, dead_amounts=None):
+    path = _write(tmp_path, body)
+    return verify_salaries(
+        ingested=ingested,
+        bbref=ingested,
+        spotrac_rows=load_nba_salaries(path),
+        resolver=_resolver(),
+        player_names={},
+        cap_hold_slugs=set(),
+        dead_amounts=dead_amounts or {},
+        spotrac_coverage=nba_salaries_season_coverage(path),
+        our_coverage={"2026-27"},
+        our_teams=our_teams,
+    )
+
+
+def test_team_clean_match(tmp_path):
+    body = "Kris Dunn,5684800.0,0,0,0,0,LAC,PG,31,0,0,0\n"
+    rows, summary = _verify_teams(
+        tmp_path, body, {"dunnkr01": {"2026-27": 5684800}}, {"dunnkr01": "LAC"}
+    )
+    team_rows = [r for r in rows if r.field == "team"]
+    assert len(team_rows) == 1
+    assert team_rows[0].verdict == "match"
+    assert (team_rows[0].our_value, team_rows[0].spotrac_value) == ("LAC", "LAC")
+    assert summary.team_match == 1 and summary.team_mismatch == 0
+
+
+def test_team_genuine_mismatch_ayton_shaped(tmp_path):
+    # DB says POR; Spotrac's July-6 row says WAS. Exactly the live drift class.
+    body = "Kris Dunn,5684800.0,0,0,0,0,WAS,PG,31,0,0,0\n"
+    rows, summary = _verify_teams(
+        tmp_path, body, {"dunnkr01": {"2026-27": 5684800}}, {"dunnkr01": "POR"}
+    )
+    team_row = next(r for r in rows if r.field == "team")
+    assert team_row.verdict == "mismatch"
+    assert (team_row.our_value, team_row.spotrac_value) == ("POR", "WAS")
+    assert summary.team_mismatch == 1
+    # Delta keying: the team key coexists with same-player salary keys.
+    assert ("dunnkr01", "team") in summary.mismatch_keys
+
+
+def test_team_waived_only_player_is_skipped(tmp_path):
+    # Spotrac lists him ONLY via a WAIVED (dead-money) row -> no current-team
+    # opinion on that side; no team row, no mismatch.
+    body = "Lillard Damian WAIVED,22516603.0,0,0,0,0,MIL,PG,36,0,0,0\n"
+    rows, summary = _verify_teams(
+        tmp_path,
+        body,
+        {"lillada01": {"2026-27": 3500000}},
+        {"lillada01": "POR"},
+        dead_amounts={"lillada01": {"2026-27": 22516603}},
+    )
+    assert [r for r in rows if r.field == "team"] == []
+    assert summary.team_match == 0 and summary.team_mismatch == 0
+
+
+def test_team_crosswalk_unmatched_single_unverifiable_no_team_row(tmp_path):
+    # Unmatched names produce exactly ONE unverifiable row (the existing
+    # spotrac_name_match row) — the team check must not add a second.
+    body = "Mystery Person,9990000.0,0,0,0,0,BOS,SF,28,0,0,0\n"
+    rows, summary = _verify_teams(tmp_path, body, {}, {})
+    assert summary.unverifiable == 1
+    assert len(rows) == 1
+    assert rows[0].field == "spotrac_name_match"
+    assert [r for r in rows if r.field == "team"] == []
+
+
+def test_team_abbreviation_systems_normalize_pho_phx(tmp_path):
+    # Our side stores BBRef PHO; the CSV uses Spotrac PHX. Same franchise ->
+    # match, and BOTH sides render in the display system (PHX).
+    body = "Kris Dunn,5684800.0,0,0,0,0,PHX,PG,31,0,0,0\n"
+    rows, summary = _verify_teams(
+        tmp_path, body, {"dunnkr01": {"2026-27": 5684800}}, {"dunnkr01": "PHO"}
+    )
+    team_row = next(r for r in rows if r.field == "team")
+    assert team_row.verdict == "match"
+    assert (team_row.our_value, team_row.spotrac_value) == ("PHX", "PHX")
+    assert summary.team_match == 1
+
+
+def test_team_delta_key_cannot_collide_with_salary_keys(tmp_path):
+    # Same player mismatches BOTH salary and team: two distinct keys.
+    body = "Kris Dunn,9999999.0,0,0,0,0,WAS,PG,31,0,0,0\n"
+    _rows, summary = _verify_teams(
+        tmp_path, body, {"dunnkr01": {"2026-27": 5684800}}, {"dunnkr01": "POR"}
+    )
+    assert ("dunnkr01", "salary:2026-27") in summary.mismatch_keys
+    assert ("dunnkr01", "team") in summary.mismatch_keys
+    assert len({f for _, f in summary.mismatch_keys}) == 2  # no key shadowing
+
+
 def test_every_compared_player_season_gets_a_row_including_matches(tmp_path):
     body = "Kris Dunn,5684800.0,1200000.0,0,0,0,LAC,PG,31,0,0,0\n"
     spotrac = load_nba_salaries(_write(tmp_path, body))

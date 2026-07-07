@@ -27,11 +27,15 @@ from dataclasses import dataclass, field
 
 from nba_trade_analyzer.data.nba_salaries_csv import NbaSalaryCsvRow
 from nba_trade_analyzer.ingest.names import NameResolver
+from nba_trade_analyzer.teams import resolve_team
 
 FIELD_SALARY_PREFIX = "salary:"
 FIELD_DEAD_MONEY_PREFIX = "dead_money:"
 FIELD_NAME_MATCH = "spotrac_name_match"
 FIELD_DUPLICATE_TEAM_ROWS = "duplicate_team_rows"
+# Current-state team attribution — deliberately NO season suffix, so its
+# (slug, 'team') delta key can never collide with 'salary:<season>' keys.
+FIELD_TEAM = "team"
 # Field suffix tagging a match recognized via the dead-money carve-out
 # (v3_verifications has no detail column; the tag rides on the field, e.g.
 # "salary:2026-27:dead_money_pattern" — season bucketing via split(':')[1]
@@ -58,6 +62,8 @@ class VerifySummary:
     mismatch: int = 0
     unverifiable: int = 0
     dead_money_pattern: int = 0  # matches recognized via the dead-money carve-out
+    team_match: int = 0  # team-attribution agreements (subset of match)
+    team_mismatch: int = 0  # team-attribution disagreements (subset of mismatch)
     mismatch_keys: set[tuple[str, str]] = field(default_factory=set)  # (slug/name, field)
     # Whole-column coverage gaps, recorded ONCE per run instead of as hundreds
     # of per-row verdicts: spotrac_missing = seasons our data has but the
@@ -71,6 +77,8 @@ class VerifySummary:
             "mismatch": self.mismatch,
             "unverifiable": self.unverifiable,
             "dead_money_pattern": self.dead_money_pattern,
+            "team_match": self.team_match,
+            "team_mismatch": self.team_mismatch,
         }
 
 
@@ -93,6 +101,7 @@ def verify_salaries(
     dead_amounts: dict[str, dict[str, int]],  # slug -> season -> dead-money dollars
     spotrac_coverage: set[str] | None = None,  # seasons the CSV has COLUMNS for
     our_coverage: set[str] | None = None,  # seasons the ingest window covers
+    our_teams: dict[str, str] | None = None,  # slug -> our team code (BBRef style)
 ) -> tuple[list[VerificationRow], VerifySummary]:
     """Three-way compare. Comparisons run only within MUTUAL season coverage:
     a source with no column for a season has no opinion (missing-from-source),
@@ -114,6 +123,7 @@ def verify_salaries(
 
     # ---- resolve the Spotrac side ------------------------------------------
     spotrac_by_slug: dict[str, dict[str, int]] = {}
+    spotrac_team_by_slug: dict[str, str] = {}  # first non-WAIVED row's team
     waived_slugs: set[str] = set()  # slugs Spotrac lists via a WAIVED row
     for r in spotrac_rows:
         # Strip the WAIVED marker before resolving — "Lillard Damian WAIVED"
@@ -166,6 +176,10 @@ def verify_salaries(
             # Two Spotrac rows for one player (team churn) — keep the first;
             # a real disagreement still surfaces as a mismatch below.
             merged.setdefault(season, amount)
+        # Current-team opinion: first NON-WAIVED row wins (same keep-first
+        # convention). WAIVED rows never set it — a player whose only Spotrac
+        # presence is a dead-money entry has no "current team" on that side.
+        spotrac_team_by_slug.setdefault(slug, r.team)
 
     # ---- coverage intersection (the 786-mismatch fix) -----------------------
     # A source with no COLUMN for a season is missing-from-source: neither 0
@@ -257,6 +271,49 @@ def verify_salaries(
                     bbref_value=_fmt_opt(bb_amount),
                     spotrac_value=_fmt_opt(sp_amount),
                     verdict="mismatch" if is_mismatch else "match",
+                )
+            )
+
+    # ---- team attribution (current employment, REPORT-ONLY) -----------------
+    # BBRef remains the team source of record — v3_players.team_bbref is
+    # ingested from the BBRef scrape and this check never changes what ingest
+    # writes anywhere. Spotrac's Team column is a cross-check OPINION: a
+    # mismatch is exactly the salary-staleness class of drift (Ayton POR->WAS,
+    # Smart WAS->? in the July-6 wave) and routes to Hermes/human adjudication
+    # like everything else. Notes:
+    #  - both sides normalize to the DISPLAY abbreviation system via
+    #    resolve_team (accepts BBRef BRK/CHO/PHO and Spotrac BKN/CHA/PHX);
+    #  - crosswalk-unmatched Spotrac names already produced ONE unverifiable
+    #    row (FIELD_NAME_MATCH) above — not re-reported per field;
+    #  - WAIVED-only players have no Spotrac current team -> skipped (their
+    #    dead-money identity is handled by the carve-outs above);
+    #  - a player with dead money on the OLD team and team_bbref = NEW team is
+    #    CORRECT by schema design — nothing special here, we compare current
+    #    employment only.
+    if our_teams is not None:
+        for slug in sorted(set(our_teams) & set(spotrac_team_by_slug)):
+            ours_raw = our_teams[slug]
+            sp_raw = spotrac_team_by_slug[slug]
+            ours_norm = resolve_team(ours_raw)
+            sp_norm = resolve_team(sp_raw)
+            # Display-system codes for the verdict row; unknown codes stay raw
+            # (and surface as a mismatch rather than being silently dropped).
+            our_disp = ours_norm.abbreviation if ours_norm else ours_raw
+            sp_disp = sp_norm.abbreviation if sp_norm else sp_raw
+            is_match = our_disp == sp_disp
+            if is_match:
+                summary.team_match += 1
+            else:
+                summary.team_mismatch += 1
+            emit(
+                VerificationRow(
+                    slug=slug,
+                    player_name=player_names.get(slug, slug),
+                    field=FIELD_TEAM,
+                    our_value=our_disp,
+                    bbref_value=None,
+                    spotrac_value=sp_disp,
+                    verdict="match" if is_match else "mismatch",
                 )
             )
     return rows, summary
