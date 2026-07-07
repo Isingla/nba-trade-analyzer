@@ -77,8 +77,34 @@ def test_skips_malformed_cells_and_logs(tmp_path, caplog):
     assert any("malformed cell" in r.getMessage() for r in caplog.records)
 
 
-def test_real_file_gsw_2026_27_if_present():
-    # Nails the concrete example from the task against the actual source file.
+def test_real_shaped_fixture_end_to_end():
+    """The real file's SHAPE, frozen: header with trailing `2031-32` after `Age`,
+    a sentinel-era team (GSW: single-digit placeholder cells that sum faithfully)
+    and a real-data team (WAS: Trae Young's actual 2026-27 hold).
+
+    Replaces the old live-file value pin (`GSW 2026-27 == 27_100_000`), which
+    rotted when upstream refreshed nba_cap_holds.csv on 2026-07-01 — the intent
+    was "the parser handles a real-shaped row end-to-end," which a checked-in
+    snapshot verifies without a live-data dependency. Fixture rows are verbatim
+    from the 2026-07-01 vintage.
+    """
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "nba_cap_holds_2026-07-01.csv")
+    totals = load_cap_holds(fixture)
+    # Real-data team: Trae's hold + Mahinmi's ghost hold, summed per season.
+    assert totals["WAS"]["2026-27"] == 48_713_805 + 23_175_077
+    assert totals["WAS"]["2027-28"] == 23_175_077
+    # Sentinel-era team: the parser sums the placeholder cells faithfully
+    # (classification to quality='sentinel' is the ingest's job, not the loader's).
+    assert totals["GSW"]["2026-27"] == 12  # 4 + 4 + 4
+    assert totals["GSW"]["2027-28"] == 8  # third row's 0.0 cell doesn't sum
+    # The trailing 2031-32 season column parses (header-driven), even all-blank.
+    assert "2031-32" not in totals["WAS"]  # blank cells never create entries
+
+
+def test_real_file_smoke_if_present():
+    """Live-file smoke: SHAPE assertions only — a value pin here rots whenever
+    upstream refreshes the data (the old GSW pin died on the 2026-07-01
+    refresh). Skips cleanly where SITE_DATA_ROOT has no checkout."""
     real = os.path.join(
         os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data")),
         "nba_cap_holds.csv",
@@ -88,7 +114,12 @@ def test_real_file_gsw_2026_27_if_present():
 
         pytest.skip("nba_cap_holds.csv not present in SITE_DATA_ROOT")
     totals = load_cap_holds(real)
-    assert totals["GSW"]["2026-27"] == 27_100_000
+    assert len(totals) > 0  # parses into at least one team
+    for team, seasons in totals.items():
+        assert team == team.strip().upper() and team  # normalized team keys
+        for season, amount in seasons.items():
+            assert isinstance(amount, int) and amount > 0  # summed whole dollars
+            assert season > "2025-26"  # future-only gate held
 
 
 # ---------------------------------------------------------------------------
