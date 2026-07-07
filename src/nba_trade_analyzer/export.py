@@ -237,6 +237,11 @@ class DataballrExport(_CamelModel):
     # Per-season tax/apron threshold levels (Cap Sheet, Stage 1). ADDITIVE:
     # consumers that predate this field simply ignore it.
     cap_thresholds: DataballrCapThresholds
+    # Staleness marker (ADDITIVE, serializes as `sourceNote`): set when the
+    # salary frame came from the committed-CSV fallback instead of a live
+    # BBRef fetch, so a degraded export is self-describing (never silent).
+    # None on a normal live-scrape export.
+    source_note: str | None = None
 
 
 def season_keys() -> list[str]:
@@ -681,6 +686,16 @@ def build_export(
         },
     )
 
+    # Staleness pass-through: fetch_all_salaries stamps df.attrs on the
+    # committed-CSV fallback path (loud-warn degradation, never silent).
+    fallback = getattr(salary_df, "attrs", {}).get("bbref_fallback")
+    source_note = (
+        "BBREF FETCH FAILED — salaries exported from the committed CSV fallback "
+        f"dated {fallback['csv_mtime']}; DATA MAY BE STALE (reason: {fallback['reason']})"
+        if fallback
+        else None
+    )
+
     return DataballrExport(
         metadata=metadata,
         salaries=salaries,
@@ -692,4 +707,5 @@ def build_export(
             totals=cap_holds,
         ),
         cap_thresholds=cap_thresholds,
+        source_note=source_note,
     )
