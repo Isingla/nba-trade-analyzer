@@ -138,7 +138,103 @@ def test_duplicate_without_any_dead_money_is_flagged_for_review():
     result = separate_dead_money(contracts, {}, DISPLAY_TO_BBREF)
     assert [c.team for c in result.kept] == ["WAS"]  # first team kept
     assert result.flags[0].other_teams == ("LAL",)
+    assert result.flags[0].resolved_by_spotrac is False
     assert result.dropped == []
+
+
+# ---------------------------------------------------------------------------
+# Tier-3 Spotrac tie-break (the davisjd01 class: two-stint BBRef duplicates
+# with NO dead-money signal on either side — file order was the old,
+# arbitrary rule). Spotrac only CHOOSES between the BBRef rows.
+# ---------------------------------------------------------------------------
+
+DAVISON_SCHEDULE = {"2025-26": 2352765, "2026-27": 2584539}  # real cache rows
+
+
+def test_davisjd01_tie_break_keeps_hou_not_file_first_bos():
+    # BBRef file order: BOS (#399) before HOU (#525) — identical schedules,
+    # no dead money anywhere. Spotrac's current-team opinion is HOU.
+    contracts = [
+        _contract("davisjd01", "BOS", dict(DAVISON_SCHEDULE)),
+        _contract("davisjd01", "HOU", dict(DAVISON_SCHEDULE)),
+    ]
+    result = separate_dead_money(
+        contracts, {}, DISPLAY_TO_BBREF, spotrac_teams={"davisjd01": "HOU"}
+    )
+    assert [c.team for c in result.kept] == ["HOU"]
+    assert result.kept[0].amounts == DAVISON_SCHEDULE  # dollars stay BBRef's
+    # The duplicate is STILL flagged — resolution changes which row is kept,
+    # never its visibility in verification.
+    assert len(result.flags) == 1
+    flag = result.flags[0]
+    assert flag.kept_team == "HOU"
+    assert flag.other_teams == ("BOS",)
+    assert flag.resolved_by_spotrac is True
+    assert result.dropped == []
+
+
+def test_tie_break_is_file_order_independent():
+    # Same case with the rows reversed: the outcome is the Spotrac side
+    # either way — the rule keys on the opinion, not on position.
+    contracts = [
+        _contract("davisjd01", "HOU", dict(DAVISON_SCHEDULE)),
+        _contract("davisjd01", "BOS", dict(DAVISON_SCHEDULE)),
+    ]
+    result = separate_dead_money(
+        contracts, {}, DISPLAY_TO_BBREF, spotrac_teams={"davisjd01": "HOU"}
+    )
+    assert [c.team for c in result.kept] == ["HOU"]
+    assert result.flags[0].other_teams == ("BOS",)
+
+
+def test_tie_break_no_spotrac_row_falls_back_to_file_first_plus_flag():
+    contracts = [
+        _contract("x01", "BOS", {"2026-27": 1000000}),
+        _contract("x01", "HOU", {"2026-27": 1000000}),
+    ]
+    result = separate_dead_money(
+        contracts, {}, DISPLAY_TO_BBREF, spotrac_teams={}  # no opinion for x01
+    )
+    assert [c.team for c in result.kept] == ["BOS"]  # file-first, unchanged
+    assert result.flags[0].kept_team == "BOS"
+    assert result.flags[0].resolved_by_spotrac is False
+
+
+def test_tie_break_matching_neither_row_falls_back_never_guesses():
+    # Spotrac says MEM; neither BBRef row is MEM. Spotrac must never SUPPLY
+    # a team — zero matches means keep file-first + flag.
+    contracts = [
+        _contract("x01", "BOS", {"2026-27": 1000000}),
+        _contract("x01", "HOU", {"2026-27": 1000000}),
+    ]
+    result = separate_dead_money(
+        contracts, {}, DISPLAY_TO_BBREF, spotrac_teams={"x01": "MEM"}
+    )
+    assert [c.team for c in result.kept] == ["BOS"]
+    assert all(c.team != "MEM" for c in result.kept)  # no invented team
+    assert result.flags[0].resolved_by_spotrac is False
+
+
+def test_tie_break_never_reaches_tier2_split_cases():
+    # A dead-money-explained pair (the Beal shape) resolves at tier 2; the
+    # Spotrac opinion — even a WRONG one — must have no effect there.
+    amounts = {"2026-27": 19383010}
+    contracts = [
+        _contract("bealbr01", "PHO", amounts),
+        _contract("bealbr01", "LAC", {"2026-27": 5000000}),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Bradley Beal", player_name="Bradley Beal", team="PHX", amounts=dict(amounts)
+    )
+    result = separate_dead_money(
+        contracts,
+        {"bealbr01": [dead]},
+        DISPLAY_TO_BBREF,
+        spotrac_teams={"bealbr01": "PHO"},  # wrong opinion, must be ignored
+    )
+    assert [c.team for c in result.kept] == ["LAC"]  # tier 1/2 outcome unchanged
+    assert result.dropped[0][:2] == ("bealbr01", "PHO")
+    assert result.flags == []
 
 
 def test_single_rows_and_unslugged_rows_pass_through():
