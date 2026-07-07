@@ -411,7 +411,11 @@ def test_cap_thresholds_is_additive_to_the_wire_shape():
         "projections",
         "capHolds",
         "capThresholds",
+        # Staleness marker (additive, 2026-07-07): None on live exports,
+        # populated when salaries came from the committed-CSV fallback.
+        "sourceNote",
     }
+    assert payload["sourceNote"] is None  # sample export is a live-shaped build
     # The pre-existing metadata scalar is untouched by this stage.
     assert payload["metadata"]["salaryCap"] == 154_647_000
     season = payload["capThresholds"]["seasons"]["2026-27"]

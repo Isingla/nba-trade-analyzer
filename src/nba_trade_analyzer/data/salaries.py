@@ -28,6 +28,8 @@ falls back to a committed CSV snapshot so the project works offline.
 from __future__ import annotations
 
 import re
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -395,7 +397,12 @@ def fetch_all_salaries(
     fetch re-raises so the caller records a FAILED run instead of silently
     ingesting stale committed data (databallr Phase 0 flagged the silent
     fallback as a regression vector — the committed CSV was months stale).
-    The legacy ``export`` command keeps the fallback unchanged.
+
+    ``strict=False`` (the export path) keeps the fallback but LOUDLY: an
+    unmissable multi-line stderr warning with the CSV's mtime, plus a
+    ``bbref_fallback`` marker in ``df.attrs`` so ``build_export`` can stamp
+    the payload's ``sourceNote`` — degradation must never be silent, but
+    export must not hard-fail either (it feeds databallr's sync:cap-data).
     """
     cache = cache or JsonCache()
     cache_key = f"salaries_{season}"
@@ -418,8 +425,29 @@ def fetch_all_salaries(
     except (httpx.HTTPError, RuntimeError) as exc:
         if strict:
             raise
-        print(f"Basketball Reference fetch failed ({exc}), using local CSV fallback")
-        return _dedupe_salary_frame(_load_csv_fallback(csv_path or _csv_path(season)))
+        fallback_path = csv_path or _csv_path(season)
+        try:
+            csv_mtime = datetime.fromtimestamp(fallback_path.stat().st_mtime).date().isoformat()
+        except OSError:
+            csv_mtime = "unknown"
+        print(
+            "\n".join(
+                [
+                    "=" * 72,
+                    "!! BBREF FETCH FAILED — EXPORTING FROM COMMITTED CSV FALLBACK !!",
+                    f"!! reason: {exc}",
+                    f"!! fallback: {fallback_path} (dated {csv_mtime})",
+                    "!! DATA MAY BE STALE — salaries reflect the CSV's vintage, not today.",
+                    "=" * 72,
+                ]
+            ),
+            file=sys.stderr,
+        )
+        df = _dedupe_salary_frame(_load_csv_fallback(fallback_path))
+        # Marker for build_export -> payload sourceNote (attrs set on the FINAL
+        # frame object; nothing mutates it between here and the caller).
+        df.attrs["bbref_fallback"] = {"csv_mtime": csv_mtime, "reason": str(exc)}
+        return df
 
     df = _dedupe_salary_frame(df)
     cache.set(cache_key, df.to_dict(orient="records"), ttl_hours=_CACHE_TTL_HOURS)
