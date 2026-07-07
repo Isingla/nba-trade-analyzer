@@ -487,6 +487,10 @@ def _run(
         # are skipped and recorded in the summary, never per-row mismatches.
         spotrac_coverage=nba_salaries_season_coverage(root / "nba_salaries.csv"),
         our_coverage=set(seasons),
+        # Team attribution cross-check (report-only): our side is the kept
+        # post-separation rows — exactly what was just upserted into
+        # v3_players.team_bbref. BBRef stays the team source of record.
+        our_teams={c.slug: c.team for c in separation.kept if c.slug and c.team},
     )
 
     # The run row must exist BEFORE verification rows (v3_verifications.run_id
