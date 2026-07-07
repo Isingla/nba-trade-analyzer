@@ -55,12 +55,18 @@ class ContractSeasonAmounts:
 
 @dataclass(frozen=True)
 class DuplicateFlag:
-    """A cross-team duplicate that dead money could NOT explain — human review."""
+    """A cross-team duplicate that dead money could NOT explain — human review.
+
+    Emitted even when the Spotrac tie-break resolved the kept side
+    (``resolved_by_spotrac=True``): resolution changes WHICH row is kept,
+    never whether the duplicate is surfaced for verification.
+    """
 
     slug: str
     player_name: str
     kept_team: str
     other_teams: tuple[str, ...]
+    resolved_by_spotrac: bool = False
 
 
 @dataclass
@@ -168,6 +174,7 @@ def separate_dead_money(
     contracts: list[ContractSeasonAmounts],
     dead_by_slug: dict[str, list[DeadMoneyRow]],
     display_to_bbref: dict[str, str],
+    spotrac_teams: dict[str, str] | None = None,
 ) -> DeadMoneySeparation:
     """Split phantom dead-money duplicates out of the BBRef contract rows.
 
@@ -184,9 +191,19 @@ def separate_dead_money(
         (see :func:`_season_level_split`) — the mixed-schedule Lillard/Beal
         pattern resolves to (active contract on the other team, dead-money
         team row dropped) with no flag;
-      - if after dropping explained phantoms more than one row remains, the
-        FIRST row (BBRef order) is kept and the rest are flagged for human
-        review — never silently merged.
+      - if after dropping explained phantoms more than one row remains
+        (tier 3, the davisjd01 class: BBRef two-stint duplicates with NO
+        dead-money signal on either side), ``spotrac_teams`` — the caller's
+        slug -> BBRef-style team map from nba_salaries.csv — is used as a
+        TIE-BREAK between the existing BBRef rows: if Spotrac's team matches
+        EXACTLY ONE surviving row, that row is kept (file order was the old,
+        arbitrary rule and landed the stale stint on the player's main row).
+        Spotrac only chooses among BBRef rows — it never supplies a team that
+        isn't on one of them and never supplies any dollar value; BBRef stays
+        source of record. No Spotrac row / zero matches / multiple matches ->
+        fall back to keeping the FIRST row (BBRef order). Never guess.
+        Either way the duplicate is flagged for human review — resolution
+        changes which row is kept, not its visibility.
     """
     by_slug: dict[str, list[ContractSeasonAmounts]] = {}
     order: list[str] = []
@@ -250,14 +267,27 @@ def separate_dead_money(
                 )
                 continue
 
-        result.kept.append(survivors[0])
+        # Tier 3: unexplained duplicate. Spotrac tie-break chooses WHICH BBRef
+        # row is current; anything short of exactly-one match keeps file-first.
+        kept_row = survivors[0]
+        resolved_by_spotrac = False
+        if len(survivors) > 1 and spotrac_teams is not None:
+            opinion = spotrac_teams.get(slug)
+            if opinion is not None:
+                matches = [r for r in survivors if r.team == opinion]
+                if len(matches) == 1:
+                    kept_row = matches[0]
+                    resolved_by_spotrac = True
+
+        result.kept.append(kept_row)
         if len(survivors) > 1:
             result.flags.append(
                 DuplicateFlag(
                     slug=slug,
-                    player_name=survivors[0].player_name,
-                    kept_team=survivors[0].team,
-                    other_teams=tuple(r.team for r in survivors[1:]),
+                    player_name=kept_row.player_name,
+                    kept_team=kept_row.team,
+                    other_teams=tuple(r.team for r in survivors if r is not kept_row),
+                    resolved_by_spotrac=resolved_by_spotrac,
                 )
             )
     return result

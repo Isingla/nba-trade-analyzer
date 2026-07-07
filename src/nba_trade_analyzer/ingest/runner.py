@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,6 +56,10 @@ from nba_trade_analyzer.ingest.verify import (
 from nba_trade_analyzer.teams import ALL_TEAMS
 
 logger = logging.getLogger(__name__)
+
+# Spotrac WAIVED-marker (same shape the verifier/dead-money loader use):
+# waived rows carry dead-money schedules and hold no current-team opinion.
+_SPOTRAC_WAIVED_RE = re.compile(r"\s+WAIVED\s*$", re.IGNORECASE)
 
 SRC_SALARIES = "ingest:bbref-contracts"
 SRC_OPTIONS = "ingest:nba_options.csv"
@@ -212,8 +217,23 @@ def _run(
             dead_by_slug.setdefault(slug, []).append(d)
 
     # ---- dead-money separation (Lillard/Beal fix) ---------------------------
+    # Spotrac current-team opinions (first NON-WAIVED row per slug, display
+    # code -> BBRef code) feed the tier-3 duplicate tie-break ONLY: they choose
+    # between the existing BBRef rows and never supply teams or dollars of
+    # their own — BBRef stays source of record (see separate_dead_money).
+    spotrac_team_bbref: dict[str, str] = {}
+    for r in spotrac_rows:
+        if _SPOTRAC_WAIVED_RE.search(r.player_raw):
+            continue
+        s = resolver.resolve(r.player_raw)
+        if s is None:
+            continue
+        spotrac_team_bbref.setdefault(s, DISPLAY_TO_BBREF.get(r.team, r.team))
+
     contracts = _contract_rows(salary_records, seasons)
-    separation = separate_dead_money(contracts, dead_by_slug, DISPLAY_TO_BBREF)
+    separation = separate_dead_money(
+        contracts, dead_by_slug, DISPLAY_TO_BBREF, spotrac_teams=spotrac_team_bbref
+    )
 
     # ---- salaries plan -------------------------------------------------------
     ng = NonGuaranteeResolver.load()
@@ -509,9 +529,12 @@ def _run(
         db.insert_verification(
             player_id=slug_to_id.get(f.slug),
             field=FIELD_DUPLICATE_TEAM_ROWS,
-            our_value=f"kept {f.kept_team or 'none'}",
+            our_value=(
+                f"kept {f.kept_team or 'none'}"
+                + (" (spotrac tie-break)" if f.resolved_by_spotrac else "")
+            ),
             bbref_value=f"also {', '.join(f.other_teams)}",
-            spotrac_value=None,
+            spotrac_value=spotrac_team_bbref.get(f.slug),
             verdict="mismatch",
             run_id=run_id,
         )
