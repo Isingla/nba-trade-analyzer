@@ -24,6 +24,7 @@ from nba_trade_analyzer.data.dead_money import (
     DeadMoneyRow,
     load_dead_money,
 )
+from nba_trade_analyzer.data.epm import epm_cache_file
 from nba_trade_analyzer.data.guarantees import NonGuaranteeResolver
 from nba_trade_analyzer.data.nba_salaries_csv import (
     load_nba_salaries,
@@ -42,6 +43,7 @@ from nba_trade_analyzer.ingest.plans import (
     TableStats,
     apply_baseline_acceptance,
     empty_source_guards,
+    epm_vintage,
     evaluate_guards,
     plan_option_transitions,
     plan_override_retirements,
@@ -202,6 +204,26 @@ def _run(
     warnings = staleness_warnings(source_dates, started_at)
     for w in warnings:
         logger.warning("staleness: %s", w)
+
+    # ---- EPM vintage stamp (approved 2026-07-07) ----------------------------
+    # EPM refreshes only on a manual pull and nothing else alerts on it aging
+    # out. Stamp the cache's vintage into every run; the stat is guarded —
+    # a missing/unreadable cache reads as "unknown" and must never fail the
+    # ingest.
+    try:
+        epm_mtime: datetime | None = datetime.fromtimestamp(
+            epm_cache_file().stat().st_mtime, tz=timezone.utc
+        )
+    except Exception:  # noqa: BLE001 — any stat failure = unknown vintage
+        epm_mtime = None
+    epm_vintage_label, epm_stale = epm_vintage(epm_mtime, started_at)
+    logger.info("EPM vintage: %s", epm_vintage_label)
+    if epm_stale:
+        logger.warning(
+            "EPM data is stale or of unknown vintage (%s) — projections behind "
+            "valuation are aging; refresh with a manual EPM pull",
+            epm_vintage_label,
+        )
 
     # ---- name resolution ---------------------------------------------------
     crosswalk = load_crosswalk()
@@ -581,6 +603,7 @@ def _run(
         "unresolved_dead_money": [d.player_raw for d in unresolved_dead],
         "unresolved_options": unresolved_options,
         "staleness_warnings": warnings,
+        "epm_vintage": epm_vintage_label,
         "skipped_seasons": summary.skipped_seasons,
     }
     if accept_baseline is not None:
@@ -643,6 +666,8 @@ def _print_summary(summary: dict, rows_written: int) -> None:
         print(f"  retired override: {r}")
     for w in summary["staleness_warnings"]:
         print(f"  ⚠ {w}")
+    if summary.get("epm_vintage"):
+        print(f"  EPM vintage: {summary['epm_vintage']}")
     for b in summary.get("baseline_overrides", []):
         print(
             f"  !! baseline override accepted: {b['guard']} on {b['subject']} {b['detail']} "

@@ -617,6 +617,34 @@ def apply_baseline_acceptance(
     return blocking, report_only
 
 
+# EPM refreshes only on a manual pull; past this age the projections behind
+# valuation/WAR are quietly rotting and the nightly report should say so.
+EPM_MAX_AGE_DAYS = 30
+
+
+def epm_vintage(
+    mtime: datetime | None,
+    now: datetime,
+    max_age_days: int = EPM_MAX_AGE_DAYS,
+) -> tuple[str, bool]:
+    """Human-readable EPM cache vintage + staleness flag (pure; approved 07-07).
+
+    Returns ``("YYYY-MM-DD (N days old)", stale)`` from the cache file's
+    mtime, where ``stale`` fires strictly PAST ``max_age_days`` (exactly 30
+    days old is still fresh). ``None`` — no cache file, unreadable stat —
+    is ``("unknown", True)``: an unknown vintage must alert, never pass
+    silently.
+    """
+    if mtime is None:
+        return "unknown", True
+    if mtime.tzinfo is None:
+        mtime = mtime.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_days = max((now - mtime).days, 0)
+    return f"{mtime.date().isoformat()} ({age_days} days old)", age_days > max_age_days
+
+
 def empty_source_guards(source_rows: dict[str, int]) -> list[GuardFailure]:
     """An empty source is a broken source — guard_blocked, never an empty write."""
     return [

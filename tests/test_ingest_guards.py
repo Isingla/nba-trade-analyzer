@@ -10,6 +10,7 @@ from nba_trade_analyzer.ingest.plans import (
     TableStats,
     apply_baseline_acceptance,
     empty_source_guards,
+    epm_vintage,
     evaluate_guards,
     plan_override_retirements,
     staleness_warnings,
@@ -172,3 +173,33 @@ def test_override_kept_when_ingest_produced_no_value_for_its_target():
     retire, keep = plan_override_retirements([o], {})
     assert retire == []
     assert keep == [o]
+
+
+# ---------------------------------------------------------------------------
+# EPM vintage stamp (approved 2026-07-07): pure vintage/staleness computation.
+# ---------------------------------------------------------------------------
+
+def test_epm_vintage_fresh_cache_reports_age_and_is_not_stale():
+    label, stale = epm_vintage(NOW - timedelta(days=7), NOW)
+    assert label == "2026-06-28 (7 days old)"
+    assert stale is False
+
+
+def test_epm_vintage_stale_past_thirty_days():
+    label, stale = epm_vintage(NOW - timedelta(days=45), NOW)
+    assert stale is True
+    assert "(45 days old)" in label
+
+
+def test_epm_vintage_boundary_is_strictly_greater_than_thirty():
+    # Exactly 30 days old is still fresh; 31 is stale.
+    _, at_30 = epm_vintage(NOW - timedelta(days=30), NOW)
+    _, at_31 = epm_vintage(NOW - timedelta(days=31), NOW)
+    assert at_30 is False
+    assert at_31 is True
+
+
+def test_epm_vintage_missing_file_is_unknown_and_alerts():
+    # No cache file (or unreadable stat) -> the runner passes None. An
+    # unknown vintage must alert, never pass silently.
+    assert epm_vintage(None, NOW) == ("unknown", True)

@@ -26,6 +26,8 @@ import unicodedata
 import httpx
 import pandas as pd
 
+from pathlib import Path
+
 from nba_trade_analyzer.data.cache import JsonCache
 
 # Current-season EPM is free on the public page (scraped from the embedded
@@ -42,6 +44,18 @@ _API_KEY_ENV = "DUNKS_THREES_API_KEY"
 _CACHE_KEY = "epm_dunksandthrees"
 _CACHE_TTL_HOURS = 24.0
 _HTTP_TIMEOUT = 30.0
+
+
+def epm_cache_file(cache: JsonCache | None = None) -> Path:
+    """Path of the CURRENT-season EPM cache file the valuation engine reads.
+
+    EPM refreshes only when someone manually pulls it, so this file's mtime IS
+    the data's vintage — the ingest stamps it into every nightly summary (see
+    ``ingest.plans.epm_vintage``). Resolved through ``JsonCache._path`` so the
+    key -> file mapping can never drift from what ``fetch_epm_data`` writes.
+    """
+    cache = cache or JsonCache()
+    return cache._path(_CACHE_KEY)  # noqa: SLF001 — same-package, single source of truth
 
 EXPECTED_COLUMNS: tuple[str, ...] = (
     "player_name",
