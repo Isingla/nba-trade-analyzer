@@ -344,7 +344,9 @@ def plan_option_transitions(
     - P/T in DB but a DIFFERENT code / cleared cell / absent row in the CSV
       -> DB row untouched, transition flag emitted (exercised vs declined vs
       renegotiated is human judgment via v3_overrides — Phase 2A spec);
-    - non-decision markers (NG/D/UFA/RFA) just track the CSV;
+    - non-decision markers (D/UFA/RFA) just track the CSV;
+    - NG never overwrites: it may fill a season the DB has no row for, but it
+      never replaces a different existing code (see the drift branch);
     - brand-new codes: P/T start ``pending``, markers start ``unknown``.
 
     ``csv_seasons`` bounds the cleared/absent sweep: the CSV cannot speak to
@@ -373,6 +375,16 @@ def plan_option_transitions(
                 )
             else:
                 # Marker drift (e.g. NG -> RFA): not an option decision; track it.
+                # EXCEPT incoming NG: a guarantee-phase marker is weaker
+                # information than any code already present. Spotrac's
+                # Deadlines table is forward-looking — once an exercised
+                # option's row is pruned, only the guarantee-date row remains
+                # and the CSV degrades to NG (davisjd01 2026-27, verified
+                # 2026-07-08). Letting NG replace richer DB state would erase
+                # option history; NG may only fill empty seasons (the
+                # db-is-None branch above).
+                if code == "NG":
+                    continue
                 status = "pending" if code in OPTION_DECISION_CODES else "unknown"
                 plan.upserts.append(
                     OptionUpsert(slug, season, code, status, status_as_of)

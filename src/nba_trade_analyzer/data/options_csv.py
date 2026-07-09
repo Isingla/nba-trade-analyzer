@@ -12,8 +12,9 @@ Schema quirks handled here (verified in Phase 0, Path 3c):
     ``Pos``/``Age``/``2025-26`` columns are scraper-misaligned junk. Parsing
     is header-NAME driven; junk columns only matter if their cells carry a
     valid code, which they don't ("0"/blank).
-  - cell vocabulary: 0 (nothing), P, T, EE, NG, D, UFA, RFA. Anything else is
-    logged and skipped, never silently imported.
+  - cell vocabulary: 0 (nothing), P, T, EE, NG, D, UFA, RFA. EE (extension
+    eligible) is recognized but IGNORED — see ``_IGNORED_CODES``. Anything
+    else is logged and skipped, never silently imported.
 """
 
 from __future__ import annotations
@@ -33,6 +34,18 @@ FILENAME = "nba_options.csv"
 
 # The full marker vocabulary (matches the v3_contract_options CHECK constraint).
 VALID_OPTION_CODES = frozenset({"P", "T", "EE", "NG", "D", "UFA", "RFA"})
+
+# Recognized-but-ignored codes. "EE" (extension eligible) went 0 -> 94 cells
+# in the 2026-07-08 scraper rebuild when Spotrac added EXTENSION ELIGIBLE rows
+# to its Deadlines tables as the July extension windows opened. Extension
+# eligibility is a calendar fact, not a contract-option state: importing it
+# creates unknown-status marker rows in v3_contract_options, and a mislabeled
+# Spotrac option row can leave EE as the only code on a season that really
+# carries a club option (knechda01 2027-28, verified 2026-07-08). Ignored
+# QUIETLY (debug, not the unknown-code warning) because its presence is
+# expected, not anomalous — the warning stays reserved for genuine vocabulary
+# surprises.
+_IGNORED_CODES = frozenset({"EE"})
 
 # Cells that mean "no marker this season".
 _EMPTY_CELLS = frozenset({"", "0", "0.0"})
@@ -82,6 +95,14 @@ def load_options(path: str | Path | None = None) -> list[OptionCsvRow]:
             if cell in _EMPTY_CELLS:
                 continue
             code = cell.upper()
+            if code in _IGNORED_CODES:
+                logger.debug(
+                    "options_csv: ignoring code player=%r season=%s value=%r",
+                    raw_name,
+                    s,
+                    cell,
+                )
+                continue
             if code not in VALID_OPTION_CODES:
                 logger.warning(
                     "options_csv: skipping unknown code player=%r season=%s value=%r",

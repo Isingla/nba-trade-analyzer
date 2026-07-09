@@ -46,6 +46,18 @@ def test_unknown_codes_are_skipped_and_logged(tmp_path, caplog):
     assert any("unknown code" in r.message for r in caplog.records)
 
 
+def test_ee_cells_are_ignored_without_the_unknown_code_warning(tmp_path, caplog):
+    # EE (extension eligible) is a calendar fact, not an option state — the
+    # 2026-07-08 rebuild carried 94 of them once Spotrac added EXTENSION
+    # ELIGIBLE deadline rows. They must vanish quietly: no code imported, and
+    # no "unknown code" warning spam (that stays reserved for real surprises).
+    body = "Dalton Knecht,LAL,T,EE,RFA,0,0,0,0,0,\n"
+    with caplog.at_level("WARNING"):
+        rows = load_options(_write(tmp_path, body))
+    assert rows[0].codes == {"2026-27": "T", "2028-29": "RFA"}
+    assert not any("unknown code" in r.message for r in caplog.records)
+
+
 def test_junk_trailing_season_column_yields_no_codes(tmp_path):
     # The trailing 2025-26 column is scraper junk (0/blank) — header-name
     # parsing keeps it harmless.
@@ -139,6 +151,59 @@ def test_marker_drift_is_tracked_without_flag():
         AS_OF,
     )
     assert plan.upserts[0].code == "RFA"
+    assert plan.flags == []
+
+
+def test_ng_never_overwrites_a_different_marker():
+    # DB says UFA; the fresh CSV degraded to NG (guarantee-phase marker).
+    # NG carries strictly weaker information — the DB row stays untouched
+    # and no flag is raised (this is CSV degradation, not a decision).
+    plan = plan_option_transitions(
+        {"x01": {"2026-27": "NG"}},
+        {("x01", "2026-27"): DbOptionState(code="UFA", status="unknown")},
+        {"2026-27"},
+        AS_OF,
+    )
+    assert plan.upserts == []
+    assert plan.flags == []
+
+
+def test_ng_vs_exercised_option_still_flags_never_overwrites():
+    # davisjd01 pattern (2026-07-08): exercised club option's deadline row was
+    # pruned from Spotrac's forward-looking table, leaving only the
+    # guarantee-date row -> CSV shows NG. The T row must survive and the
+    # change must surface for human adjudication.
+    plan = plan_option_transitions(
+        {"davisjd01": {"2026-27": "NG"}},
+        {("davisjd01", "2026-27"): DbOptionState(code="T", status="exercised")},
+        {"2026-27"},
+        AS_OF,
+    )
+    assert plan.upserts == []
+    assert plan.flags[0].csv_state == "NG"
+    assert (plan.flags[0].db_code, plan.flags[0].db_status) == ("T", "exercised")
+
+
+def test_ng_still_fills_a_season_the_db_has_no_row_for():
+    # Filling an empty season is not an overwrite — genuine new information.
+    plan = plan_option_transitions(
+        {"x01": {"2027-28": "NG"}},
+        {},
+        {"2027-28"},
+        AS_OF,
+    )
+    assert [(u.code, u.status) for u in plan.upserts] == [("NG", "unknown")]
+
+
+def test_ng_same_code_still_refreshes():
+    # NG == NG is the same-code branch: refresh as-of, keep status.
+    plan = plan_option_transitions(
+        {"x01": {"2026-27": "NG"}},
+        {("x01", "2026-27"): DbOptionState(code="NG", status="unknown")},
+        {"2026-27"},
+        AS_OF,
+    )
+    assert plan.upserts[0].code == "NG"
     assert plan.flags == []
 
 
