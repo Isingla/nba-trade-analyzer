@@ -90,6 +90,9 @@ def test_exact_match_drops_the_dead_money_team_row():
     )
     result = separate_dead_money(contracts, {"lillada01": [dead]}, DISPLAY_TO_BBREF)
     assert [c.team for c in result.kept] == ["POR"]
+    # The survivor's amounts are BELOW the dead charge — not blends containing
+    # it — so the decomposition leaves them untouched.
+    assert result.kept[0].amounts == real
     assert result.dropped == [("lillada01", "MIL", "dead-money match (Lillard Damian WAIVED)")]
     assert result.flags == []
 
@@ -283,29 +286,38 @@ BEAL_DEAD = DeadMoneyRow(
 )
 
 
-def test_real_lillard_splits_active_contract_onto_por():
+def test_real_lillard_splits_and_decomposes_blends_onto_por(caplog):
     contracts = [
         _contract("lillada01", "MIL", dict(LILLARD_SCHEDULE)),
         _contract("lillada01", "POR", dict(LILLARD_SCHEDULE)),
     ]
-    result = separate_dead_money(
-        contracts, {"lillada01": [LILLARD_DEAD]}, DISPLAY_TO_BBREF
-    )
+    with caplog.at_level("INFO"):
+        result = separate_dead_money(
+            contracts, {"lillada01": [LILLARD_DEAD]}, DISPLAY_TO_BBREF
+        )
     # Active contract lands on POR (MIL holds the dead money); the seasons
-    # equal to the stretch charge (22516603) are classified out of it.
+    # equal to the stretch charge (22516603) are classified out of it, and
+    # the surviving BLENDED cells are decomposed: BBRef publishes active +
+    # dead sums (35,915,403 = 13,398,800 POR + 22,516,603 MIL), so the
+    # charge is subtracted to recover the real POR salary. 2025-26 keeps its
+    # blend honestly: the dead CSV has no 2025-26 column, so there is no
+    # charge to subtract for that season.
     assert len(result.kept) == 1
     kept = result.kept[0]
     assert kept.team == "POR"
     assert kept.amounts == {
         "2025-26": 36620603,
-        "2026-27": 35915403,
-        "2027-28": 36620603,
+        "2026-27": 13398800,
+        "2027-28": 14104000,
     }
     assert [d[:2] for d in result.dropped] == [("lillada01", "MIL")]
     assert result.flags == []  # no duplicate_team_rows flag
+    # The decomposition is visible in nightly logs.
+    blend_logs = [r.message for r in caplog.records if "dead-money blend" in r.message]
+    assert any("13398800" in m for m in blend_logs)
 
 
-def test_real_beal_splits_active_contract_onto_lac():
+def test_real_beal_splits_and_decomposes_blends_onto_lac():
     contracts = [
         _contract("bealbr01", "PHO", dict(BEAL_SCHEDULE)),
         _contract("bealbr01", "LAC", dict(BEAL_SCHEDULE)),
@@ -314,7 +326,9 @@ def test_real_beal_splits_active_contract_onto_lac():
     assert len(result.kept) == 1
     kept = result.kept[0]
     assert kept.team == "LAC"  # PHX (=PHO) holds the dead money
-    assert kept.amounts == {"2025-26": 24737010, "2026-27": 25004710}
+    # 2026-27: 25,004,710 blend - 19,383,010 PHX stretch = 5,621,700 active.
+    # 2025-26 keeps its blend (no 2025-26 column in the dead CSV).
+    assert kept.amounts == {"2025-26": 24737010, "2026-27": 5621700}
     assert [d[:2] for d in result.dropped] == [("bealbr01", "PHO")]
     assert result.flags == []
 
@@ -388,6 +402,93 @@ def test_split_refuses_when_every_season_matches_dead_money():
     result = separate_dead_money(contracts, {"x01": [dead]}, DISPLAY_TO_BBREF)
     assert [c.team for c in result.kept] == ["POR"]
     assert result.dropped[0][:2] == ("x01", "MIL")
+
+
+# ---------------------------------------------------------------------------
+# Blend decomposition guardrails (subtract-when-dead-overlaps).
+# ---------------------------------------------------------------------------
+
+def test_survivor_of_whole_row_drop_gets_blends_decomposed():
+    # MIL's row IS the dead schedule (whole-row drop); the POR survivor still
+    # carries a blended overlap cell — decompose it.
+    stretch = {"2026-27": 22516603, "2027-28": 22516603}
+    contracts = [
+        _contract("lillada01", "MIL", dict(stretch)),
+        _contract("lillada01", "POR", {"2026-27": 35915403, "2027-28": 22516603}),
+    ]
+    dead = DeadMoneyRow("Lillard Damian WAIVED", "Lillard Damian", "MIL", dict(stretch))
+    result = separate_dead_money(contracts, {"lillada01": [dead]}, DISPLAY_TO_BBREF)
+    assert [c.team for c in result.kept] == ["POR"]
+    # 2026-27 blend decomposed; 2027-28 EQUALS the charge (pure-dead season is
+    # the exact-match classifiers' territory, never subtraction's) — untouched.
+    assert result.kept[0].amounts == {"2026-27": 13398800, "2027-28": 22516603}
+
+
+def test_no_dead_money_means_no_subtraction():
+    # Regression guard: tier-3 duplicates without dead charges keep BBRef's
+    # dollars exactly (davisjd01 class).
+    contracts = [
+        _contract("davisjd01", "BOS", dict(DAVISON_SCHEDULE)),
+        _contract("davisjd01", "HOU", dict(DAVISON_SCHEDULE)),
+    ]
+    result = separate_dead_money(
+        contracts, {}, DISPLAY_TO_BBREF, spotrac_teams={"davisjd01": "HOU"}
+    )
+    assert result.kept[0].amounts == DAVISON_SCHEDULE
+
+
+def test_implausible_residual_is_refused_with_a_warning(caplog):
+    # Blend - charge = $83,397 — far below any real season salary. Keep the
+    # original value and say so loudly, naming the player.
+    schedule = {"2026-27": 22600000, "2027-28": 22516603}
+    contracts = [
+        _contract("x01", "MIL", dict(schedule)),
+        _contract("x01", "POR", dict(schedule)),
+    ]
+    dead = DeadMoneyRow(
+        "X WAIVED", "X", "MIL", {"2026-27": 22516603, "2027-28": 22516603}
+    )
+    with caplog.at_level("WARNING"):
+        result = separate_dead_money(contracts, {"x01": [dead]}, DISPLAY_TO_BBREF)
+    assert [c.team for c in result.kept] == ["POR"]
+    assert result.kept[0].amounts == {"2026-27": 22600000}  # original kept
+    refusals = [r.message for r in caplog.records if "REFUSING" in r.message]
+    assert refusals and "x01" in refusals[0]
+
+
+def test_multiple_dead_streams_subtract_their_sum():
+    # Two former teams each hold a charge in the same season; the blend
+    # contains both, so the SUM is subtracted.
+    schedule = {"2026-27": 30000000, "2027-28": 5000000}
+    contracts = [
+        _contract("x01", "MIL", dict(schedule)),
+        _contract("x01", "POR", dict(schedule)),
+    ]
+    dead_mil = DeadMoneyRow("X WAIVED", "X", "MIL", {"2027-28": 5000000})
+    dead_phx = DeadMoneyRow("X", "X", "PHX", {"2026-27": 10000000})
+    result = separate_dead_money(
+        contracts, {"x01": [dead_mil, dead_phx]}, DISPLAY_TO_BBREF
+    )
+    # Split: 2027-28 == MIL charge -> dead; kept POR 2026-27 blend contains
+    # the PHX stream (30,000,000 - 10,000,000 = 20,000,000 active).
+    assert [c.team for c in result.kept] == ["POR"]
+    assert result.kept[0].amounts == {"2026-27": 20000000}
+
+
+def test_amount_below_charge_is_not_a_blend_and_stays():
+    # The source-side-fix shape: BBRef already publishes the true active
+    # value (smaller than the dead charge) — subtraction must self-disarm.
+    contracts = [
+        _contract("bealbr01", "PHO", {"2026-27": 19383010, "2027-28": 19383010}),
+        _contract("bealbr01", "LAC", {"2026-27": 5354000, "2027-28": 5621700}),
+    ]
+    dead = DeadMoneyRow(
+        "Bradley Beal", "Bradley Beal", "PHX",
+        {"2026-27": 19383010, "2027-28": 19383010},
+    )
+    result = separate_dead_money(contracts, {"bealbr01": [dead]}, DISPLAY_TO_BBREF)
+    assert [c.team for c in result.kept] == ["LAC"]
+    assert result.kept[0].amounts == {"2026-27": 5354000, "2027-28": 5621700}
 
 
 def test_partial_season_coverage_must_still_match_every_dead_season():

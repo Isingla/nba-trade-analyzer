@@ -19,10 +19,13 @@ Phase 0 trace:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 
 from nba_trade_analyzer.data.dead_money import DeadMoneyRow
+
+logger = logging.getLogger(__name__)
 
 # Codes that represent an actual option (a decision someone will make), as
 # opposed to informational markers (NG/D/UFA/RFA drift with roster churn).
@@ -34,6 +37,12 @@ OPTION_DECISION_CODES = frozenset({"P", "T"})
 MIN_RETAIN_RATIO = 0.8
 
 STALENESS_MAX_AGE_DAYS = 7
+
+# Floor for a decomposed ACTIVE season salary. The 2026-27 league minimum is
+# ~$1.27M; a blend-subtraction residual below this is more likely a wrong
+# pairing of charge and cell than a real contract year — refuse it loudly
+# (keep the original value + warning) instead of writing implausible money.
+MIN_PLAUSIBLE_ACTIVE_SALARY = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +112,97 @@ def _merged_dead_seasons(dead_rows: list[DeadMoneyRow]) -> dict[str, int] | None
     return merged
 
 
+def _dead_charge_totals(
+    dead_rows: list[DeadMoneyRow],
+    exclude_team: str,
+    display_to_bbref: dict[str, str],
+) -> dict[str, int]:
+    """Sum this player's dead charges per season across teams OTHER than
+    ``exclude_team`` (BBRef code). Multiple streams for one season add up —
+    a blend containing two former teams' charges needs the sum subtracted."""
+    totals: dict[str, int] = {}
+    for dead in dead_rows:
+        team = display_to_bbref.get(dead.team, dead.team)
+        if team == exclude_team:
+            continue
+        for season, amount in dead.amounts.items():
+            if amount > 0:
+                totals[season] = totals.get(season, 0) + amount
+    return totals
+
+
+def _subtract_dead_blends(
+    kept: ContractSeasonAmounts,
+    dead_rows: list[DeadMoneyRow],
+    display_to_bbref: dict[str, str],
+) -> ContractSeasonAmounts:
+    """Decompose blended cells left on a separated survivor.
+
+    contracts/players.html publishes the SUM of active salary and the other
+    team's dead charge in overlap seasons (lillada01 2026-27 = 35,915,403 =
+    13,398,800 POR active + 22,516,603 MIL dead), so even after row/season
+    separation the kept "active" row can still carry blends. Where the
+    dead-money source has a charge for the same player+season on a DIFFERENT
+    team and the kept amount STRICTLY exceeds it, the difference is the
+    active salary — write that, and log the decomposition at INFO so nightly
+    logs show it working.
+
+    Guardrails — never subtract blindly:
+      - callers gate this to the kept survivor of a duplicate group whose
+        other row dead money explained (whole-row or season-level). A
+        single-row player is never touched: a normal active row coexisting
+        with old stretch charges is NOT a blend, and ``amount > charge``
+        alone cannot tell the two apart — only the duplicate fingerprint can;
+      - ``amount == charge`` is the pure-dead season and belongs to the
+        exact-match classifiers, never here;
+      - ``amount < charge`` cannot be a blend containing the charge — left
+        alone (this is also what a source-side fix looks like: BBRef starts
+        publishing the true active value, and subtraction self-disarms);
+      - a residual below ``MIN_PLAUSIBLE_ACTIVE_SALARY`` is refused loudly:
+        original value kept, WARNING naming the player.
+    """
+    if not dead_rows:
+        return kept
+    totals = _dead_charge_totals(dead_rows, kept.team, display_to_bbref)
+    if not totals:
+        return kept
+
+    amounts = dict(kept.amounts)
+    changed = False
+    for season, amount in sorted(kept.amounts.items()):
+        charge = totals.get(season)
+        if charge is None or amount <= charge:
+            continue
+        active = amount - charge
+        if active < MIN_PLAUSIBLE_ACTIVE_SALARY:
+            logger.warning(
+                "dead-money blend: REFUSING %s (%s) %s: %d - %d = %d is below "
+                "the plausible active minimum — keeping the original value",
+                kept.player_name,
+                kept.slug,
+                season,
+                amount,
+                charge,
+                active,
+            )
+            continue
+        logger.info(
+            "dead-money blend: %s (%s) %s: %d (blended) - %d (dead) = %d (active)",
+            kept.player_name,
+            kept.slug,
+            season,
+            amount,
+            charge,
+            active,
+        )
+        amounts[season] = active
+        changed = True
+
+    if not changed:
+        return kept
+    return replace(kept, amounts=amounts)
+
+
 def _season_level_split(
     survivors: list[ContractSeasonAmounts],
     dead_rows: list[DeadMoneyRow],
@@ -115,8 +215,14 @@ def _season_level_split(
     MIL stretch charge (22516603, to the dollar). The whole-schedule matcher
     can't fire on that, so classify PER SEASON: a season whose amount exactly
     equals that season's dead-money amount on team X belongs to dead money;
-    the remaining seasons form the active contract, attributed to the other
-    (non-dead-money) team.
+    the remaining seasons are attributed to the other (non-dead-money) team.
+
+    Those remaining cells are NOT the active salary yet: BBRef publishes the
+    SUM of both teams' figures in overlap seasons (35,915,403 = 13,398,800
+    POR active + 22,516,603 MIL dead — verified against BBRef's per-team
+    pages 2026-07-09). The caller decomposes the kept row's blends via
+    :func:`_subtract_dead_blends`; this function only decides which seasons
+    and which team survive.
 
     Applies ONLY in the unambiguous shape — anything else returns None and
     the caller keeps the conservative first-team + duplicate_team_rows flag:
@@ -191,6 +297,13 @@ def separate_dead_money(
         (see :func:`_season_level_split`) — the mixed-schedule Lillard/Beal
         pattern resolves to (active contract on the other team, dead-money
         team row dropped) with no flag;
+      - the kept survivor of a dead-money-explained group (whole-row drop or
+        season-level split) then has its BLENDED overlap cells decomposed:
+        where BBRef's cell strictly exceeds the other team's dead charge for
+        that season, the charge is subtracted to recover the active salary
+        (see :func:`_subtract_dead_blends` for the guardrails). Tier-3
+        survivors are NOT decomposed — there dead money explained nothing,
+        so the blend fingerprint is absent;
       - if after dropping explained phantoms more than one row remains
         (tier 3, the davisjd01 class: BBRef two-stint duplicates with NO
         dead-money signal on either side), ``spotrac_teams`` — the caller's
@@ -256,6 +369,7 @@ def separate_dead_money(
             split = _season_level_split(survivors, dead_rows, display_to_bbref)
             if split is not None:
                 kept, dropped_row = split
+                kept = _subtract_dead_blends(kept, dead_rows, display_to_bbref)
                 result.kept.append(kept)
                 result.dropped.append(
                     (
@@ -270,6 +384,14 @@ def separate_dead_money(
         # Tier 3: unexplained duplicate. Spotrac tie-break chooses WHICH BBRef
         # row is current; anything short of exactly-one match keeps file-first.
         kept_row = survivors[0]
+        if len(survivors) == 1:
+            # Exactly one survivor means the whole-row matcher dropped the
+            # other team's row(s) as dead money — the blend fingerprint holds,
+            # so decompose any blended overlap cells on the survivor. Tier-3
+            # (multi-survivor) rows are deliberately excluded: dead money
+            # explained nothing there, and subtracting other-team charges
+            # from an ambiguous duplicate would be a guess.
+            kept_row = _subtract_dead_blends(kept_row, dead_rows, display_to_bbref)
         resolved_by_spotrac = False
         if len(survivors) > 1 and spotrac_teams is not None:
             opinion = spotrac_teams.get(slug)
