@@ -28,8 +28,18 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# Reuse the single source of truth for the league-year gate, so a rollover bump
-# in guarantees.py moves NG marks and cap holds together.
+# Reuse the single source of truth for the league year, so a rollover bump in
+# guarantees.py moves NG marks and cap holds together — but the two consumers
+# DELIBERATELY compare against it differently (fix/cap-holds-current-year-gate,
+# 2026-07-11):
+#   * NG marks gate out seasons AT OR BEFORE the current year: an NG year that
+#     has arrived is settled money, no longer a future commitment.
+#   * Cap holds KEEP the current year and drop only strictly-elapsed seasons:
+#     a hold FOR the current league year is the operative charge sitting on a
+#     team's books right now (Trae Young's 2026-27 hold counted against WAS the
+#     day the league year rolled). The first post-rollover ingest plan proved
+#     the difference: an after-current-only gate here silently dropped ~235
+#     live 2026-27 holds (~$1.16B).
 from nba_trade_analyzer.data.guarantees import CURRENT_LEAGUE_YEAR
 
 logger = logging.getLogger(__name__)
@@ -68,9 +78,11 @@ def load_cap_holds(
 ) -> dict[str, dict[str, int]]:
     """Sum own-FA cap holds into ``{team: {season: total_dollars}}``.
 
-    Only FUTURE seasons (strictly after ``current_league_year``) are kept —
-    settled/elapsed seasons don't need projected holds, consistent with how the
-    NG resolver gates the current league year. A missing file returns ``{}``.
+    CURRENT-and-future seasons (``season >= current_league_year``) are kept;
+    only strictly-elapsed seasons are dropped. This deliberately DIVERGES from
+    the NG resolver's at-or-before gate — see the import comment above: a hold
+    for the current league year is an operative charge, not settled history.
+    A missing file returns ``{}``.
     """
     if path is None:
         root = os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data"))
@@ -98,8 +110,8 @@ def load_cap_holds(
             continue
         for s in season_cols:
             start = _season_start_year(s)
-            # Future seasons only — gate out the current/elapsed league year.
-            if start is None or (current is not None and start <= current):
+            # Keep current-and-future; drop strictly-elapsed seasons only.
+            if start is None or (current is not None and start < current):
                 continue
             raw = (r.get(s) or "").strip()
             amount = _to_amount(raw)
@@ -146,9 +158,9 @@ def load_cap_holds_rows(
     path: str | Path | None = None,
     current_league_year: str = CURRENT_LEAGUE_YEAR,
 ) -> list[CapHoldRow]:
-    """Player-grain cap holds, future seasons only.
+    """Player-grain cap holds, current-and-future seasons.
 
-    Same header-driven parsing and future-season gate as :func:`load_cap_holds`,
+    Same header-driven parsing and elapsed-season gate as :func:`load_cap_holds`,
     but rows keep (team, season, player, amount) instead of summing per team.
     Sentinel-vs-real classification is the caller's job (see
     :func:`classify_cap_hold_teams`) so the loader stays a faithful reader.
@@ -183,7 +195,8 @@ def load_cap_holds_rows(
             continue
         for s in season_cols:
             start = _season_start_year(s)
-            if start is None or (current is not None and start <= current):
+            # Keep current-and-future; drop strictly-elapsed seasons only.
+            if start is None or (current is not None and start < current):
                 continue
             raw = (r.get(s) or "").strip()
             amount = _to_amount(raw)
