@@ -39,18 +39,22 @@ def test_sums_holds_per_team_season(tmp_path):
     assert totals["DAL"]["2026-27"] == 2500000
 
 
-def test_gates_out_elapsed_seasons(tmp_path):
-    # 2024-25 and 2025-26 are at/before the current league year -> excluded;
-    # only future seasons survive.
+def test_gates_out_strictly_elapsed_seasons_keeps_current(tmp_path):
+    # DELIBERATE SEMANTICS CHANGE (fix/cap-holds-current-year-gate,
+    # 2026-07-11): this test previously pinned the NG-style after-current-only
+    # gate ("rolling forward gates 2026-27 too") — which, the night the league
+    # year rolled, silently dropped ~235 live 2026-27 holds (~$1.16B). Cap
+    # holds now KEEP the current league year (an operative charge on the
+    # books) and drop only strictly-elapsed seasons.
     body = "GSW,Player A,SF,30,9990000.0,8880000.0,2500000.0,2800000.0,,,\n"
     totals = load_cap_holds(_write(tmp_path, body), current_league_year="2025-26")
-    assert "2024-25" not in totals["GSW"]
-    assert "2025-26" not in totals["GSW"]
-    assert totals["GSW"] == {"2026-27": 2500000, "2027-28": 2800000}
-    # The gate is a single bump-able year: rolling forward gates 2026-27 too.
+    assert "2024-25" not in totals["GSW"]  # strictly elapsed -> dropped
+    assert totals["GSW"] == {"2025-26": 8880000, "2026-27": 2500000, "2027-28": 2800000}
+    # Rolling forward: 2026-27 (the new current year) SURVIVES the gate...
     rolled = load_cap_holds(_write(tmp_path, body), current_league_year="2026-27")
-    assert "2026-27" not in rolled["GSW"]
-    assert rolled["GSW"] == {"2027-28": 2800000}
+    assert rolled["GSW"] == {"2026-27": 2500000, "2027-28": 2800000}
+    # ...and its mirror: 2025-26 is now strictly elapsed -> dropped.
+    assert "2025-26" not in rolled["GSW"]
 
 
 def test_missing_file_returns_empty(tmp_path):
@@ -102,6 +106,28 @@ def test_real_shaped_fixture_end_to_end():
     assert totals["GSW"]["2027-28"] == 8  # third row's 0.0 cell doesn't sum
     # The trailing 2031-32 season column parses (header-driven), even all-blank.
     assert "2031-32" not in totals["WAS"]  # blank cells never create entries
+
+
+def test_rolled_gate_keeps_live_2026_27_holds_if_present():
+    """The 2026-07-11 regression class, pinned from the real file: under the
+    rolled gate (current = 2026-27) the July-8 CSV's ~235 rows / ~$1.16B of
+    live 2026-27 holds must SURVIVE. Bounds, not exact pins — upstream
+    refreshes retire holds as players sign (the old exact-value pin in this
+    file rotted that way). Skips where SITE_DATA_ROOT has no checkout."""
+    real = os.path.join(
+        os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data")),
+        "nba_cap_holds.csv",
+    )
+    if not os.path.exists(real):
+        import pytest
+
+        pytest.skip("nba_cap_holds.csv not present in SITE_DATA_ROOT")
+    from nba_trade_analyzer.data.cap_holds import load_cap_holds_rows
+
+    rows = load_cap_holds_rows(real, current_league_year="2026-27")
+    current = [r for r in rows if r.season == "2026-27"]
+    assert len(current) >= 100  # the live-hold class, not a handful of stragglers
+    assert sum(r.amount for r in current) >= 500_000_000  # ~$1.16B on 2026-07-11
 
 
 def test_real_file_smoke_if_present():

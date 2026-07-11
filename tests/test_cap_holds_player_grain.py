@@ -31,10 +31,16 @@ def test_keeps_player_grain(tmp_path):
     assert len(rows) == 3  # Other Guy has two seasons
 
 
-def test_future_season_gate_matches_legacy_loader(tmp_path):
+def test_elapsed_season_gate_matches_legacy_loader(tmp_path):
+    # Same deliberate semantics change as the legacy loader's gate test
+    # (fix/cap-holds-current-year-gate, 2026-07-11): the CURRENT league year
+    # survives; only strictly-elapsed seasons drop. Both loaders share the
+    # comparison, so this pin keeps them in lockstep.
     body = "GSW,Player A,2500000.0,2800000.0,0,0,0,,,\n"
     rows = load_cap_holds_rows(_write(tmp_path, body), current_league_year="2026-27")
-    assert [r.season for r in rows] == ["2027-28"]
+    assert [r.season for r in rows] == ["2026-27", "2027-28"]
+    rolled = load_cap_holds_rows(_write(tmp_path, body), current_league_year="2027-28")
+    assert [r.season for r in rolled] == ["2027-28"]  # 2026-27 strictly elapsed
 
 
 def test_missing_file_raises_for_ingest(tmp_path):
