@@ -30,7 +30,9 @@ def test_sums_holds_per_team_season(tmp_path):
         "GSW,Player B,PF,28,1900000.0,2000000.0,2300000.0,2500000.0,2700000.0,,\n"
         "DAL,Player C,C,29,2100000.0,2300000.0,2500000.0,2800000.0,3100000.0,,\n"
     )
-    totals = load_cap_holds(_write(tmp_path, body))
+    # Fixture predates the 2026-07-11 rollover: pin its league year (the
+    # module default rolls every July; the kwarg is the designed test seam).
+    totals = load_cap_holds(_write(tmp_path, body), current_league_year="2025-26")
     # 2500000 + 2300000 summed for GSW 2026-27.
     assert totals["GSW"]["2026-27"] == 4800000
     assert totals["GSW"]["2027-28"] == 2800000 + 2500000
@@ -61,7 +63,7 @@ def test_skips_blank_team_and_logs(tmp_path, caplog):
         "GSW,Player A,SF,30,0,0,2500000.0,0,0,,\n"
     )
     with caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.cap_holds"):
-        totals = load_cap_holds(_write(tmp_path, body))
+        totals = load_cap_holds(_write(tmp_path, body), current_league_year="2025-26")
     assert list(totals.keys()) == ["GSW"]  # orphan row not summed anywhere
     assert any("blank team" in r.getMessage() for r in caplog.records)
 
@@ -71,7 +73,7 @@ def test_skips_malformed_cells_and_logs(tmp_path, caplog):
     # ignored; the rest of the row still sums.
     body = "GSW,Player A,SF,30,,,N/A,2800000.0,0,,\n"
     with caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.cap_holds"):
-        totals = load_cap_holds(_write(tmp_path, body))
+        totals = load_cap_holds(_write(tmp_path, body), current_league_year="2025-26")
     assert totals["GSW"] == {"2027-28": 2800000}  # only the valid future cell
     assert "2026-27" not in totals["GSW"]  # the "N/A" cell did not sum
     assert any("malformed cell" in r.getMessage() for r in caplog.records)
@@ -89,7 +91,8 @@ def test_real_shaped_fixture_end_to_end():
     from the 2026-07-01 vintage.
     """
     fixture = os.path.join(os.path.dirname(__file__), "fixtures", "nba_cap_holds_2026-07-01.csv")
-    totals = load_cap_holds(fixture)
+    # 2026-07-01-vintage fixture: pin its contemporaneous league year.
+    totals = load_cap_holds(fixture, current_league_year="2025-26")
     # Real-data team: Trae's hold + Mahinmi's ghost hold, summed per season.
     assert totals["WAS"]["2026-27"] == 48_713_805 + 23_175_077
     assert totals["WAS"]["2027-28"] == 23_175_077

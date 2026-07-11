@@ -43,7 +43,7 @@ _MONEY_IN_CODE_RE = re.compile(r"[\$,]|\d{4,}")
 # of the fix — those guarantees are settled, not future commitments. The NBA
 # league year rolls on July 1; **bump this single constant** at rollover (and it
 # is overridable per-resolver for tests).
-CURRENT_LEAGUE_YEAR = "2025-26"
+CURRENT_LEAGUE_YEAR = "2026-27"  # bumped 2026-07-11 (league-year rollover)
 
 # Generational suffix tokens stripped when isolating a last name, so e.g.
 # "Jaren Jackson Jr." buckets under "jackson", not "jr".

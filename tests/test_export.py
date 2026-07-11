@@ -174,7 +174,7 @@ def _build_sample_export(minutes_history=None):
 
 
 def test_season_keys_is_five_year_window():
-    assert season_keys() == ["2025-26", "2026-27", "2027-28", "2028-29", "2029-30"]
+    assert season_keys() == ["2026-27", "2027-28", "2028-29", "2029-30", "2030-31"]
 
 
 def test_salary_rows_map_one_to_one():
@@ -193,23 +193,23 @@ def test_salary_rows_map_one_to_one():
 def test_epm_then_darko_then_aging_darko_source_chain():
     export = _build_sample_export()
     seasons = export.projections["curryst01"].seasons
-    assert seasons["2025-26"].source == "epm"
-    assert seasons["2026-27"].source == "darko"
-    assert seasons["2027-28"].source == "aging_darko"
+    assert seasons["2026-27"].source == "epm"
+    assert seasons["2027-28"].source == "darko"
     assert seasons["2028-29"].source == "aging_darko"
     assert seasons["2029-30"].source == "aging_darko"
+    assert seasons["2030-31"].source == "aging_darko"
     # Year 1 impact is the raw EPM; year 2 is the raw DARKO DPM.
-    assert seasons["2025-26"].impact == 4.47
-    assert seasons["2026-27"].impact == 1.99
+    assert seasons["2026-27"].impact == 4.47
+    assert seasons["2027-28"].impact == 1.99
 
 
 def test_epm_only_player_ages_on_epm_anchor():
     export = _build_sample_export()
     seasons = export.projections["epmon01"].seasons
-    assert seasons["2025-26"].source == "epm"
+    assert seasons["2026-27"].source == "epm"
     # No DARKO row -> year 2 onward ages off the EPM anchor.
-    assert seasons["2026-27"].source == "aging_epm"
-    assert seasons["2029-30"].source == "aging_epm"
+    assert seasons["2027-28"].source == "aging_epm"
+    assert seasons["2030-31"].source == "aging_epm"
 
 
 def test_no_impact_metric_falls_back_to_replacement():
@@ -218,7 +218,7 @@ def test_no_impact_metric_falls_back_to_replacement():
     assert all(s.source == "replacement" for s in seasons.values())
     assert all(s.impact == 0.0 and s.waa == 0.0 for s in seasons.values())
     # Replacement still carries the player's real minutes.
-    assert seasons["2025-26"].mpg == 12.0
+    assert seasons["2026-27"].mpg == 12.0
 
 
 def test_missing_stats_player_is_replacement_with_zero_minutes():
@@ -235,7 +235,7 @@ def test_waa_is_priced_on_projected_games_times_mpg():
     # compute_waa(impact, projected_games * projected_mpg), proving WAA and the
     # TS WAR/surplus path are priced on the SAME availability-adjusted minutes.
     export = _build_sample_export()
-    season = export.projections["curryst01"].seasons["2025-26"]
+    season = export.projections["curryst01"].seasons["2026-27"]
     expected = round(
         compute_waa(season.impact, season.projected_games * season.projected_mpg), 1
     )
@@ -256,12 +256,12 @@ def test_every_season_exposes_projected_games_and_mpg():
 def test_injury_history_cuts_projected_games_and_waa():
     # Same star, but injected with an injury-prone GP history: fewer projected
     # games -> fewer minutes -> lower WAA than the no-history (healthy) baseline.
-    healthy = _build_sample_export().projections["curryst01"].seasons["2025-26"]
+    healthy = _build_sample_export().projections["curryst01"].seasons["2026-27"]
     injured = _build_sample_export(
         minutes_history={
             201939: {"gp": [82.0, 82.0, 25.0], "mpg": [30.9, 30.9, 30.9]}
         }
-    ).projections["curryst01"].seasons["2025-26"]
+    ).projections["curryst01"].seasons["2026-27"]
     assert injured.projected_games < healthy.projected_games
     assert injured.waa < healthy.waa
 
@@ -327,10 +327,10 @@ def test_injured_star_uses_epm_age_mpg_fallback():
     proj = export.projections["injure01"]
     assert proj.age == 26
     seasons = proj.seasons
-    assert seasons["2025-26"].source == "epm"
-    assert seasons["2025-26"].impact == 3.7
-    assert seasons["2025-26"].mpg == 32.5
-    assert seasons["2025-26"].waa > 0  # not a zeroed replacement
+    assert seasons["2026-27"].source == "epm"
+    assert seasons["2026-27"].impact == 3.7
+    assert seasons["2026-27"].mpg == 32.5
+    assert seasons["2026-27"].waa > 0  # not a zeroed replacement
 
 
 def test_map_source_taxonomy():
@@ -389,15 +389,10 @@ def test_cap_thresholds_block_covers_window_with_certified_and_projected():
     assert y26.luxury_tax == 200_428_000
     assert y26.first_apron == 209_015_000
     assert y26.second_apron == 221_686_000
-    y25 = block.seasons["2025-26"]
-    assert y25.certified is True
-    assert (y25.luxury_tax, y25.first_apron, y25.second_apron) == (
-        187_895_000,
-        195_945_000,
-        207_824_000,
-    )
-    # Out-years are honest projections.
-    for season_key in ("2027-28", "2028-29", "2029-30"):
+    # 2025-26 left the window at the 2026-07-11 rollover; 2026-27 is now the
+    # only certified season in it. Out-years are honest projections.
+    assert "2025-26" not in block.seasons
+    for season_key in ("2027-28", "2028-29", "2029-30", "2030-31"):
         assert block.seasons[season_key].certified is False
 
 

@@ -16,7 +16,12 @@ from nba_trade_analyzer.export import build_export
 
 
 def _resolver(allow_entries, spread_ng):
-    return NonGuaranteeResolver(build_allowlist_index(allow_entries), set(spread_ng))
+    # Pinned league year: these fixtures predate the 2026-07-11 rollover and
+    # test behavior RELATIVE to the current year (the module default rolls
+    # every July; the constructor override is the designed test seam).
+    return NonGuaranteeResolver(
+        build_allowlist_index(allow_entries), set(spread_ng), current_league_year="2025-26"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,14 +281,17 @@ def test_export_marks_only_confirmed_ng_without_changing_salaries():
             CrosswalkEntry(nba_id=1629627, nba_name="Zion Williamson", bbref_slug="willizi01", bbref_name="Zion Williamson"),
         ]
     )
+    # NG on year-2 of the export window — 2027-28 since the 2026-07-11
+    # rollover (the yearly arrays are positional; the window's first season
+    # is now 2026-27).
     allow = [
-        NgAllowEntry("Kris Dunn", 1627739, "LAC", "2026-27", 5684800, True),
-        NgAllowEntry("Cameron Christie", None, "LAC", "2026-27", 2296271, True),
+        NgAllowEntry("Kris Dunn", 1627739, "LAC", "2027-28", 5684800, True),
+        NgAllowEntry("Cameron Christie", None, "LAC", "2027-28", 2296271, True),
     ]
     spread = {
-        ("id", 1627739, "2026-27"), ("nameteam", "kris dunn", "lac", "2026-27"),
-        ("nameteam", "cameron christie", "lac", "2026-27"),
-        ("id", 1629627, "2026-27"), ("nameteam", "zion williamson", "nop", "2026-27"),
+        ("id", 1627739, "2027-28"), ("nameteam", "kris dunn", "lac", "2027-28"),
+        ("nameteam", "cameron christie", "lac", "2027-28"),
+        ("id", 1629627, "2027-28"), ("nameteam", "zion williamson", "nop", "2027-28"),
     }
     export = build_export(
         salary_df=salary_df, epm_df=epm_df, darko_df=darko_df, stats_df=stats_df,
@@ -291,9 +299,9 @@ def test_export_marks_only_confirmed_ng_without_changing_salaries():
     )
     by_slug = {s.bbref_slug: s for s in export.salaries}
 
-    # Dunn: 2026-27 MARKED, salary value UNCHANGED (mark-only).
+    # Dunn: 2027-28 MARKED, salary value UNCHANGED (mark-only).
     assert by_slug["dunnkr01"].yearly_salaries == [5426400, 5684800]
-    assert by_slug["dunnkr01"].non_guaranteed_seasons == {"2026-27": 5684800}
+    assert by_slug["dunnkr01"].non_guaranteed_seasons == {"2027-28": 5684800}
 
     # Zion: coded NG in spread but NOT allowlisted -> unmarked, fully committed.
     assert by_slug["willizi01"].yearly_salaries == [39446090, 42166510]
@@ -302,4 +310,4 @@ def test_export_marks_only_confirmed_ng_without_changing_salaries():
     # Cam Christie: blank id (slug not in crosswalk) -> matched by name+team,
     # MARKED, salary unchanged.
     assert by_slug["chrisca01"].yearly_salaries == [2237684, 2296271]
-    assert by_slug["chrisca01"].non_guaranteed_seasons == {"2026-27": 2296271}
+    assert by_slug["chrisca01"].non_guaranteed_seasons == {"2027-28": 2296271}

@@ -17,7 +17,7 @@ from nba_trade_analyzer.engine.constants import (
 )
 
 _CACHE_TTL_HOURS = 24.0
-_DEFAULT_SEASON = "2025-26"
+_DEFAULT_SEASON = "2026-27"  # nba_api season string; bumped 2026-07-11 (rollover)
 _HTTP_TIMEOUT = 30.0
 
 EXPECTED_COLUMNS: tuple[str, ...] = (

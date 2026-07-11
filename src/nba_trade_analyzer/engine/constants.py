@@ -77,6 +77,10 @@ CAP_THRESHOLDS_BY_SEASON: dict[str, dict[str, int | bool | str]] = {
     "2027-28": {**_projected_levels(1), "certified": False, "source": _PROJECTED_SOURCE},
     "2028-29": {**_projected_levels(2), "certified": False, "source": _PROJECTED_SOURCE},
     "2029-30": {**_projected_levels(3), "certified": False, "source": _PROJECTED_SOURCE},
+    # Added at the 2026-07-11 league-year rollover: season_keys() now ends at
+    # 2030-31, and export fails loud when the window outgrows this table.
+    # Same projected-growth rule as the other non-certified seasons.
+    "2030-31": {**_projected_levels(4), "certified": False, "source": _PROJECTED_SOURCE},
 }
 
 # ---- Valuation Constants (tunable) ----

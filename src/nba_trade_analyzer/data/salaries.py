@@ -3,10 +3,11 @@
 The Basketball Reference contracts page packs every active NBA contract into
 a single HTML table (``id="player-contracts"``), so one polite request yields
 the whole league — no per-team fan-out. Each row gives a player, their team,
-and year-by-year salary columns ``y1``..``y6`` (seasons 2025-26 .. 2030-31),
+and year-by-year salary columns ``y1``..``y6`` (seasons 2026-27 .. 2031-32
+since the 2026-07 league-year rollover),
 from which we derive everything the frozen :class:`Contract` model needs:
 
-- ``salary``           -> the current-season column (``y1`` for 2025-26)
+- ``salary``           -> the current-season column (``y1`` for 2026-27)
 - ``years_remaining``  -> count of current-or-later columns that carry a value
 - ``has_player_option``-> a year cell tagged with the ``salary-pl`` CSS class
 - ``has_team_option``  -> a year cell tagged with the ``salary-tm`` CSS class
@@ -44,7 +45,12 @@ _CONTRACTS_URL = "https://www.basketball-reference.com/contracts/players.html"
 _TABLE_ID = "player-contracts"
 _CACHE_TTL_HOURS = 24.0
 _HTTP_TIMEOUT = 30.0
-_DEFAULT_SEASON = "2025-26"
+# The CURRENT league year — the label the parser anchors on in the contracts
+# header. Rolled 2026-07-11; must roll together with export.season_keys()
+# (the positional yearly->season mapping) every July. _season_to_year_stat
+# FAILS LOUD when this label is absent, so next July aborts here instead of
+# silently shifting labels.
+_DEFAULT_SEASON = "2026-27"
 
 # Basketball Reference asks for 3s between requests; we make exactly one, so a
 # normal browser-ish UA is all the politeness required.
@@ -217,19 +223,32 @@ def _cell_has_class(cell: Tag | None, cls: str) -> bool:
 
 
 def _season_to_year_stat(table: Tag, season: str) -> str:
-    """Map a season label like ``"2025-26"`` to its ``y*`` column ``data-stat``.
+    """Map a season label like ``"2026-27"`` to its ``y*`` column ``data-stat``.
 
-    Reads the table header so the scraper keeps working when Basketball
-    Reference rolls the page forward a year (``y1`` becomes 2026-27, etc.).
-    Falls back to ``y1`` if the label is not found.
+    Keyed on the header's ACTUAL labels, and FAIL-LOUD (2026-07-11): when the
+    expected current-season label is absent, raise — never guess a column.
+    The old silent ``y1`` fallback is what shifted every salary one season
+    early the night BBRef rolled to 2026-27 (only the collapse guards stopped
+    the mislabeled write). Strict ingest turns this raise into a recorded
+    FAILED run; the export path falls back to the committed CSV, loudly.
     """
     head = table.find("thead")
+    seen: list[str] = []
     if head is not None:
         for cell in head.find_all(["th", "td"]):
             stat = cell.get("data-stat")
-            if stat in _YEAR_STATS and cell.get_text(strip=True) == season:
-                return stat
-    return "y1"
+            if stat in _YEAR_STATS:
+                label = cell.get_text(strip=True)
+                seen.append(label)
+                if label == season:
+                    return stat
+    raise RuntimeError(
+        f"Basketball Reference contracts header has no {season!r} column "
+        f"(year columns seen: {seen or 'none'}) — the page has likely rolled "
+        "to a new league year. Roll _DEFAULT_SEASON and export.season_keys() "
+        "together (see the 2026-07-11 rollover) instead of ingesting shifted "
+        "labels."
+    )
 
 
 def _parse_salary_html(html: str, season: str = _DEFAULT_SEASON) -> pd.DataFrame:
