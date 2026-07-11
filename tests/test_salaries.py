@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import httpx
 import pandas as pd
+import pytest
 
 from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.data.salaries import (
@@ -18,7 +19,7 @@ from nba_trade_analyzer.data.salaries import (
 
 # A trimmed contracts table mirroring the live Basketball Reference markup:
 # the ``player-contracts`` table id, a two-row ``thead`` whose second row
-# labels the season columns (``y1``=2025-26 ..), salary cells carrying a clean
+# labels the season columns (``y1``=2026-27 .. — the post-rollover page), salary cells carrying a clean
 # integer in ``csk``, empty years marked with class ``iz``, and option years
 # tagged ``salary-pl`` (player) / ``salary-tm`` (team). Rows cover every parse
 # path: a plain multi-year deal, a player option, a team option, a rookie-scale
@@ -35,12 +36,12 @@ _FIXTURE_HTML = """
     <th data-stat="ranker">Rk</th>
     <td data-stat="player">Player</td>
     <td data-stat="team_id">Tm</td>
-    <td data-stat="y1">2025-26</td>
-    <td data-stat="y2">2026-27</td>
-    <td data-stat="y3">2027-28</td>
-    <td data-stat="y4">2028-29</td>
-    <td data-stat="y5">2029-30</td>
-    <td data-stat="y6">2030-31</td>
+    <td data-stat="y1">2026-27</td>
+    <td data-stat="y2">2027-28</td>
+    <td data-stat="y3">2028-29</td>
+    <td data-stat="y4">2029-30</td>
+    <td data-stat="y5">2030-31</td>
+    <td data-stat="y6">2031-32</td>
     <td data-stat="remain_gtd">Guaranteed</td>
   </tr>
 </thead>
@@ -259,8 +260,8 @@ _DUP_FIXTURE_HTML = """
     <th data-stat="ranker">Rk</th>
     <td data-stat="player">Player</td>
     <td data-stat="team_id">Tm</td>
-    <td data-stat="y1">2025-26</td>
-    <td data-stat="y2">2026-27</td>
+    <td data-stat="y1">2026-27</td>
+    <td data-stat="y2">2027-28</td>
     <td data-stat="remain_gtd">Guaranteed</td>
   </tr>
 </thead>
@@ -399,6 +400,112 @@ def test_fetch_all_salaries_falls_back_to_csv_on_http_error(tmp_path):
     assert set(EXPECTED_COLUMNS) == set(df.columns)
     curry = get_player_salary(df, "Stephen Curry")
     assert curry["salary"] == 59606817
+
+
+# ---------------------------------------------------------------------------
+# Rollover fail-loud: a header WITHOUT the expected current season must abort,
+# never fall back to positional y1 (the silent fallback shifted every salary
+# one season early the night BBRef rolled to 2026-27; only the collapse
+# guards stopped the write).
+# ---------------------------------------------------------------------------
+
+# Note the anchor is the LABEL, not the position: a table carrying 2026-27
+# at any y-column parses fine. "Missing" means a header from a future roll
+# (y1 = 2027-28, the July-2027 shape) or a mangled page.
+def _header_without(season: str) -> str:
+    """The fixture with every year label bumped so ``season`` is absent."""
+    out = _FIXTURE_HTML
+    for old, new in [
+        ("2031-32", "2032-33"),
+        ("2030-31", "2031-32"),
+        ("2029-30", "2030-31"),
+        ("2028-29", "2029-30"),
+        ("2027-28", "2028-29"),
+        ("2026-27", "2027-28"),
+    ]:
+        out = out.replace(f'>{old}</td>', f'>{new}</td>')
+    assert f">{season}</td>" not in out
+    return out
+
+
+def test_missing_current_season_header_fails_loud_in_strict_mode(tmp_path):
+    cache = JsonCache(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.salaries.httpx.get",
+        return_value=_mocked_response(_header_without("2026-27")),
+    ):
+        with pytest.raises(RuntimeError, match="no '2026-27' column"):
+            fetch_all_salaries(cache=cache, strict=True)
+
+
+def test_missing_current_season_header_falls_back_to_csv_when_not_strict(tmp_path):
+    # Export path: same abort, but degrades to the committed CSV — loudly,
+    # with the fallback marker set for the payload sourceNote.
+    cache = JsonCache(tmp_path)
+    csv_path = _write_fixture_csv(tmp_path)
+    with patch(
+        "nba_trade_analyzer.data.salaries.httpx.get",
+        return_value=_mocked_response(_header_without("2026-27")),
+    ):
+        df = fetch_all_salaries(cache=cache, csv_path=csv_path)
+    assert df.attrs.get("bbref_fallback") is not None
+    assert "no '2026-27' column" in df.attrs["bbref_fallback"]["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Rollover mapping pins — the 2026-07-11 cached scrape shapes, mapped through
+# the rolled window. Correctly parsed, the LEADING value of every array is
+# CURRENT-season (2026-27) money.
+# ---------------------------------------------------------------------------
+
+
+def test_rolled_window_is_2026_27_through_2030_31():
+    from nba_trade_analyzer.export import season_keys
+
+    assert season_keys() == ["2026-27", "2027-28", "2028-29", "2029-30", "2030-31"]
+
+
+def test_contract_rows_map_cached_fixture_shapes_to_correct_seasons():
+    from nba_trade_analyzer.export import season_keys
+    from nba_trade_analyzer.ingest.runner import _contract_rows
+
+    records = [
+        {
+            # Curry, single remaining value — his 2026-27 salary (the shifted
+            # pre-fix parse would have labeled this 2025-26).
+            "player_name": "Stephen Curry",
+            "bbref_slug": "curryst01",
+            "team": "GSW",
+            "salary": 62587158,
+            "years_remaining": 1,
+            "is_rookie_scale": False,
+            "has_player_option": False,
+            "has_team_option": False,
+            "yearly_salaries": "62587158",
+        },
+        {
+            # Lillard, 4 values from 2026-27 on; the two 22,516,603 MIL
+            # stretch-stub values land on 2028-29/2029-30.
+            "player_name": "Damian Lillard",
+            "bbref_slug": "lillada01",
+            "team": "POR",
+            "salary": 35915403,
+            "years_remaining": 4,
+            "is_rookie_scale": False,
+            "has_player_option": True,
+            "has_team_option": False,
+            "yearly_salaries": "35915403|36620603|22516603|22516603",
+        },
+    ]
+    rows = _contract_rows(records, season_keys())
+    by_slug = {r.slug: r for r in rows}
+    assert by_slug["curryst01"].amounts == {"2026-27": 62587158}
+    assert by_slug["lillada01"].amounts == {
+        "2026-27": 35915403,
+        "2027-28": 36620603,
+        "2028-29": 22516603,
+        "2029-30": 22516603,
+    }
 
 
 # ---------------------------------------------------------------------------

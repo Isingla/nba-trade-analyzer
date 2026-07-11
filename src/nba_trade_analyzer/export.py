@@ -80,11 +80,15 @@ from nba_trade_analyzer.models.player import Player
 
 # Completed seasons used as the GP/MPG history feeding the minutes models,
 # ordered oldest -> latest. These are the seasons "available before" the
-# 2025-26 projection window, so the projection never leaks future data.
+# projection window, so the projection never leaks future data.
 _HISTORY_SEASONS = ("2022-23", "2023-24", "2024-25")
 
 # First season of the projection window; subsequent seasons follow yearly.
-_FIRST_SEASON_START = 2025
+# Rolled 2025 -> 2026 at the 2026-07-11 league-year rollover; with
+# MAX_PROJECTION_YEARS=5 the window auto-extended to 2030-31 (closing the
+# old ours_missing-2030-31 coverage gap). Must roll together with
+# data.salaries._DEFAULT_SEASON every July.
+_FIRST_SEASON_START = 2026
 
 # databallr's average-impact weighting on the EPM->wins factor. WAA answers
 # "how much team quality" (centered on average), not "how much surplus over
@@ -245,12 +249,14 @@ class DataballrExport(_CamelModel):
 
 
 def season_keys() -> list[str]:
-    """The fixed projection window, e.g. ``["2025-26", ..., "2029-30"]``.
+    """The fixed projection window, ``["2026-27", ..., "2030-31"]``.
 
-    NOTE: extending/rolling this window (contracts already run into 2030-31,
-    which this truncates) is a DEFERRED season-rollover decision; the ingest
-    verifier's coverage intersection (ingest/verify.py) keeps the truncation
-    from producing false mismatches in the meantime.
+    Rolled at the 2026-07-11 league-year rollover (the previously deferred
+    decision). The window tracks ``_FIRST_SEASON_START`` and must roll
+    together with ``data.salaries._DEFAULT_SEASON``: the salary parser
+    anchors on that label and ``_contract_rows`` maps yearly values onto
+    THIS window positionally — rolling one without the other mislabels
+    every salary by a season.
     """
     return [
         f"{_FIRST_SEASON_START + i}-{(_FIRST_SEASON_START + i + 1) % 100:02d}"

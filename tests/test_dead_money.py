@@ -506,3 +506,57 @@ def test_partial_season_coverage_must_still_match_every_dead_season():
     result = separate_dead_money(contracts, {"x01": [dead]}, DISPLAY_TO_BBREF)
     assert result.dropped == []
     assert len(result.flags) == 1
+
+
+# ---------------------------------------------------------------------------
+# Rollover-corrected blend decomposition (2026-07-11): the first correctly-
+# labeled post-rollover schedules. The night BBRef rolled, the shifted labels
+# produced exactly ONE blend line (Lillard's, attached to the wrong season);
+# correctly parsed, all THREE decompose at the right seasons.
+# ---------------------------------------------------------------------------
+
+def test_rolled_lillard_decomposes_2026_27_and_2027_28():
+    schedule = {"2026-27": 35915403, "2027-28": 36620603, "2028-29": 22516603, "2029-30": 22516603}
+    contracts = [
+        _contract("lillada01", "MIL", dict(schedule)),
+        _contract("lillada01", "POR", dict(schedule)),
+    ]
+    dead = DeadMoneyRow(
+        "Lillard Damian WAIVED", "Lillard Damian", "MIL",
+        {s: 22516603 for s in ("2026-27", "2027-28", "2028-29", "2029-30")},
+    )
+    result = separate_dead_money(contracts, {"lillada01": [dead]}, DISPLAY_TO_BBREF)
+    assert [c.team for c in result.kept] == ["POR"]
+    assert result.kept[0].amounts == {"2026-27": 13398800, "2027-28": 14104000}
+
+
+def test_rolled_beal_decomposes_2026_27():
+    schedule = {"2026-27": 25004710, "2027-28": 19383010, "2028-29": 19383010, "2029-30": 19383010}
+    contracts = [
+        _contract("bealbr01", "PHO", dict(schedule)),
+        _contract("bealbr01", "LAC", dict(schedule)),
+    ]
+    dead = DeadMoneyRow(
+        "Bradley Beal", "Bradley Beal", "PHX",
+        {s: 19383010 for s in ("2026-27", "2027-28", "2028-29", "2029-30")},
+    )
+    result = separate_dead_money(contracts, {"bealbr01": [dead]}, DISPLAY_TO_BBREF)
+    assert [c.team for c in result.kept] == ["LAC"]
+    assert result.kept[0].amounts == {"2026-27": 5621700}
+
+
+def test_rolled_prosper_decomposes_2026_27():
+    schedule = {"2026-27": 3500172, "2027-28": 1002360}
+    contracts = [
+        _contract("prospol01", "MEM", dict(schedule)),
+        _contract("prospol01", "DAL", dict(schedule)),
+    ]
+    dead = DeadMoneyRow(
+        "Olivier-Maxence Prosper", "Olivier-Maxence Prosper", "DAL",
+        {"2026-27": 1002360, "2027-28": 1002360},
+    )
+    result = separate_dead_money(
+        contracts, {"prospol01": [dead]}, {**DISPLAY_TO_BBREF, "DAL": "DAL"}
+    )
+    assert [c.team for c in result.kept] == ["MEM"]
+    assert result.kept[0].amounts == {"2026-27": 2497812}

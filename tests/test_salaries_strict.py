@@ -32,8 +32,12 @@ def test_strict_reraises_instead_of_falling_back(monkeypatch):
 def test_default_path_falls_back_LOUDLY_with_staleness_marker(monkeypatch, capsys):
     # The export path still degrades to the committed CSV (never brick
     # sync:cap-data) — but LOUDLY: multi-line stderr banner + df.attrs marker.
+    # season pinned to the vintage the committed snapshot actually covers:
+    # data/salaries_2026_27.csv doesn't exist yet (ratified follow-up: snapshot
+    # it after the first good post-rollover scrape). The fetch dies before
+    # parsing, so the season only selects the cache key + fallback path here.
     monkeypatch.setattr(salaries_mod.httpx, "get", _boom)
-    df = fetch_all_salaries(cache=_NoCache())
+    df = fetch_all_salaries(season="2025-26", cache=_NoCache())
     assert len(df) > 0
     err = capsys.readouterr().err
     assert "BBREF FETCH FAILED" in err
