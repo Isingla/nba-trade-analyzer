@@ -170,6 +170,9 @@ def _build_sample_export(minutes_history=None):
         stats_df=stats_df,
         crosswalk=crosswalk,
         minutes_history=minutes_history,
+        # Injected empty so stub builds never read the live site_Data CSV
+        # (the None default triggers the scrape-mode loader).
+        dead_money=[],
     )
 
 
@@ -406,6 +409,9 @@ def test_cap_thresholds_is_additive_to_the_wire_shape():
         "projections",
         "capHolds",
         "capThresholds",
+        # Dead-money charges (additive, Phase 2 Day 2): totals + audit rows,
+        # deduped by resolved player; empty block when no charges injected.
+        "deadMoney",
         # Staleness marker (additive, 2026-07-07): None on live exports,
         # populated when salaries came from the committed-CSV fallback.
         "sourceNote",

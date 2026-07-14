@@ -847,6 +847,7 @@ def export(
             salary_df=db_src.frame,
             cap_holds=db_src.cap_holds,
             guarantee_resolver=db_src.resolver,
+            dead_money=db_src.dead_money,
         )
         # Provenance stamp (existing additive field — a db payload is
         # self-describing about its run vintage and applied overrides).

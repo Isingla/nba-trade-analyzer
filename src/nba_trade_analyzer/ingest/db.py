@@ -173,21 +173,29 @@ class IngestDb:
         guaranteed_amount: int | None,
         is_fully_ng: bool,
         is_rookie_scale: bool,
+        has_player_option: bool,
+        has_team_option: bool,
         source: str,
         scraped_at: datetime,
     ) -> None:
+        # has_player_option / has_team_option are the BBRef CSS-truth flags
+        # (contract-level, repeated per season row — G4(b), migration
+        # 20260714210000). Requires that migration; fails loud without it.
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 insert into public.v3_contract_salaries
                   (player_id, season, amount, guaranteed_amount, is_fully_ng,
-                   is_rookie_scale, source, scraped_at)
-                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                   is_rookie_scale, has_player_option, has_team_option,
+                   source, scraped_at)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (player_id, season) do update set
                   amount = excluded.amount,
                   guaranteed_amount = excluded.guaranteed_amount,
                   is_fully_ng = excluded.is_fully_ng,
                   is_rookie_scale = excluded.is_rookie_scale,
+                  has_player_option = excluded.has_player_option,
+                  has_team_option = excluded.has_team_option,
                   source = excluded.source,
                   scraped_at = excluded.scraped_at
                 """,
@@ -198,6 +206,8 @@ class IngestDb:
                     guaranteed_amount,
                     is_fully_ng,
                     is_rookie_scale,
+                    has_player_option,
+                    has_team_option,
                     source,
                     scraped_at,
                 ),
@@ -263,19 +273,24 @@ class IngestDb:
         player_id: str | None,
         amount: int,
         source: str,
+        scraped_at: datetime,
     ) -> None:
+        # scraped_at is the freshness stamp (migration 20260714210500) the
+        # db-mode export filters on; refreshed on every upsert like the other
+        # ingested tables. Requires that migration; fails loud without it.
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 insert into public.v3_dead_money
-                  (team, season, player_name, player_id, amount, source)
-                values (%s, %s, %s, %s, %s, %s)
+                  (team, season, player_name, player_id, amount, source, scraped_at)
+                values (%s, %s, %s, %s, %s, %s, %s)
                 on conflict (team, season, player_name) do update set
                   player_id = excluded.player_id,
                   amount = excluded.amount,
-                  source = excluded.source
+                  source = excluded.source,
+                  scraped_at = excluded.scraped_at
                 """,
-                (team, season, player_name, player_id, amount, source),
+                (team, season, player_name, player_id, amount, source, scraped_at),
             )
 
     def upsert_cap_threshold(
