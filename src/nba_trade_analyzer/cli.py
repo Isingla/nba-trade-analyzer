@@ -789,6 +789,24 @@ def export(
         "--out",
         help='Output path for the databallr JSON payload, or "-" for stdout.',
     ),
+    source: str = typer.Option(
+        "scrape",
+        "--source",
+        help=(
+            'Salary-frame source: "scrape" (default; live BBRef, unchanged '
+            'behavior) or "db" (the adjudicated v3_* contract tables, read-only '
+            "as contract_ingest via $CONTRACT_INGEST_DATABASE_URL). Projections "
+            "stay on the cache path in both modes."
+        ),
+    ),
+    no_overrides: bool = typer.Option(
+        False,
+        "--no-overrides",
+        help=(
+            "db mode only: read base rows WITHOUT the active v3_overrides "
+            "overlay (parity debugging). Default applies overrides on read."
+        ),
+    ),
 ) -> None:
     """Export the databallr cap-data snapshot (salaries + projections) as JSON.
 
@@ -796,9 +814,47 @@ def export(
     24h; salaries fall back to the committed CSV offline), builds the Control
     Runway / Trade Analyzer payload, and writes it as JSON. Progress goes to
     stderr so stdout stays a clean JSON document for the databallr sync script.
+
+    ``--source db`` swaps ONLY the salary frame, NG marks, and cap-hold totals
+    for fresh-filtered reads of the v3_* tables (last-successful-run
+    freshness, fail-loud if that run is stale), through build_export's
+    existing injectable parameters — one payload builder, two sources.
     """
-    typer.echo("Building databallr cap-data export...", err=True)
-    payload = build_export()
+    if source not in ("scrape", "db"):
+        typer.echo(f'✗ --source must be "scrape" or "db", not {source!r}', err=True)
+        raise typer.Exit(code=2)
+    if no_overrides and source != "db":
+        typer.echo("✗ --no-overrides is only valid with --source db", err=True)
+        raise typer.Exit(code=2)
+
+    if source == "db":
+        # Local import keeps psycopg out of the scrape path (ingest convention).
+        from nba_trade_analyzer.data.db_source import (
+            DbSourceError,
+            load_db_salary_source,
+        )
+
+        typer.echo(
+            "Building databallr cap-data export from the v3_* contract DB...",
+            err=True,
+        )
+        try:
+            db_src = load_db_salary_source(apply_overrides=not no_overrides)
+        except DbSourceError as exc:
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        payload = build_export(
+            salary_df=db_src.frame,
+            cap_holds=db_src.cap_holds,
+            guarantee_resolver=db_src.resolver,
+        )
+        # Provenance stamp (existing additive field — a db payload is
+        # self-describing about its run vintage and applied overrides).
+        payload.source_note = db_src.source_note
+        typer.echo(f"  {db_src.source_note}", err=True)
+    else:
+        typer.echo("Building databallr cap-data export...", err=True)
+        payload = build_export()
     text = json.dumps(payload.model_dump(by_alias=True), indent=2)
 
     if out == "-":
