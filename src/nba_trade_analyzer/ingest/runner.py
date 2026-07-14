@@ -410,6 +410,8 @@ def _run(
             guaranteed_amount=0 if is_ng else None,
             is_fully_ng=is_ng,
             is_rookie_scale=c.is_rookie_scale,
+            has_player_option=c.has_player_option,
+            has_team_option=c.has_team_option,
             source=SRC_SALARIES,
             scraped_at=scraped_at,
         )
@@ -461,6 +463,7 @@ def _run(
                 player_id=pid,
                 amount=amount,
                 source=SRC_DEAD_MONEY,
+                scraped_at=scraped_at,
             )
             rows_written += 1
 

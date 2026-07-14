@@ -48,10 +48,13 @@ years.
 
 from __future__ import annotations
 
+import logging
 import math
+import re
+from dataclasses import dataclass
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from nba_trade_analyzer.data.cap_holds import load_cap_holds
@@ -126,6 +129,15 @@ _CAP_THRESHOLDS_NOTE = (
     "figures; certified=False seasons are projections (certified 2026-27 "
     "levels grown ~5.5%/yr with the cap) and must be labeled as estimates."
 )
+
+_DEAD_MONEY_NOTE = (
+    "Waived/stretched dead-money charges on team books, SEPARATE from roster "
+    "salaries (which are decomposed actives). Team-season totals + audit rows; "
+    "name-variant duplicates collapsed by resolved player. Not yet consumed by "
+    "the UI (display line is Phase 4)."
+)
+
+logger = logging.getLogger(__name__)
 
 
 class _CamelModel(BaseModel):
@@ -230,6 +242,33 @@ class DataballrCapThresholds(_CamelModel):
     seasons: dict[str, DataballrSeasonCapThresholds]
 
 
+class DataballrDeadMoneyRow(_CamelModel):
+    """One dead-money charge (audit grain). ``collapsed_variants`` lists raw
+    source-name variants that resolved to the same player and were merged into
+    this row (the Micic rule) — empty for normal rows."""
+
+    team: str
+    season: str
+    player_name: str
+    bbref_slug: str | None
+    amount: int
+    collapsed_variants: list[str] = []
+
+
+class DataballrDeadMoney(_CamelModel):
+    """Dead money per team-season (Phase 2 Day 2). ``totals`` is
+    ``{display_team: {season: dollars}}`` — the same grammar as cap_holds —
+    summed from the DEDUPED ``rows``, so the two views can never disagree."""
+
+    note: str
+    totals: dict[str, dict[str, int]]
+    rows: list[DataballrDeadMoneyRow]
+
+
+def _empty_dead_money() -> DataballrDeadMoney:
+    return DataballrDeadMoney(note=_DEAD_MONEY_NOTE, totals={}, rows=[])
+
+
 class DataballrExport(_CamelModel):
     metadata: DataballrExportMetadata
     salaries: list[DataballrSalaryRow]
@@ -241,6 +280,9 @@ class DataballrExport(_CamelModel):
     # Per-season tax/apron threshold levels (Cap Sheet, Stage 1). ADDITIVE:
     # consumers that predate this field simply ignore it.
     cap_thresholds: DataballrCapThresholds
+    # Dead-money charges (Phase 2 Day 2). ADDITIVE: pre-Day-2 consumers ignore
+    # it; the databallr sync treats it as optional.
+    dead_money: DataballrDeadMoney = Field(default_factory=_empty_dead_money)
     # Staleness marker (ADDITIVE, serializes as `sourceNote`): set when the
     # salary frame came from the committed-CSV fallback instead of a live
     # BBRef fetch, so a degraded export is self-describing (never silent).
@@ -266,6 +308,150 @@ def season_keys() -> list[str]:
 
 def _compress(raw_wins: float) -> float:
     return MAX_WINS_ADDED * math.tanh(raw_wins / MAX_WINS_ADDED)
+
+
+# ---------------------------------------------------------------------------
+# Dead money (Phase 2 Day 2) — one builder, two sources.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DeadMoneyCharge:
+    """One (team, season, player) dead-money charge, source-agnostic.
+
+    db mode fills these from v3_dead_money (slug via the player join); scrape
+    mode from the SAME CSV loader the ingest uses (data/dead_money.py), so the
+    two modes agree by construction.
+    """
+
+    team: str  # display code (PHX/MIL style — the CSV's and DB's grammar)
+    season: str
+    player_name: str  # raw source name (may carry a WAIVED marker)
+    bbref_slug: str | None
+    amount: int
+
+
+def _dead_money_dedupe_key(charge: DeadMoneyCharge) -> tuple[str, str]:
+    """Resolved-player identity for the Micic rule.
+
+    Prefer the slug; else a WAIVED-stripped, order-insensitive token
+    normalization so "Vasilije Micic" and "Micic Vasilije WAIVED" collapse
+    without a resolver in the loop.
+    """
+    if charge.bbref_slug:
+        return ("slug", charge.bbref_slug)
+    tokens = sorted(
+        t for t in re.findall(r"[a-z0-9]+", charge.player_name.lower()) if t != "waived"
+    )
+    return ("name", " ".join(tokens))
+
+
+def build_dead_money(charges: list[DeadMoneyCharge]) -> DataballrDeadMoney:
+    """Dedupe by resolved player, then sum team-season totals from the rows.
+
+    Name-variant duplicates (same team+season+resolved player, SAME amount)
+    are one charge listed twice upstream — merged into a single row with the
+    variants noted, and counted ONCE. Same-key charges with DIFFERENT amounts
+    are NOT merged (variant evidence requires an identical figure); both stay,
+    loudly, for human eyes.
+    """
+    groups: dict[tuple[str, str, tuple[str, str]], list[DeadMoneyCharge]] = {}
+    order: list[tuple[str, str, tuple[str, str]]] = []
+    for charge in charges:
+        key = (charge.team, charge.season, _dead_money_dedupe_key(charge))
+        if key not in groups:
+            order.append(key)
+        groups.setdefault(key, []).append(charge)
+
+    rows: list[DataballrDeadMoneyRow] = []
+    for key in order:
+        group = groups[key]
+        # Prefer the cleanest display name: unmarked over WAIVED-marked.
+        display = min(group, key=lambda c: ("waived" in c.player_name.lower(), c.player_name))
+        slug = next((c.bbref_slug for c in group if c.bbref_slug), None)
+        amounts = {c.amount for c in group}
+        if len(group) > 1 and len(amounts) == 1:
+            variants = sorted({c.player_name for c in group} - {display.player_name})
+            logger.info(
+                "dead money: collapsed %d name variant(s) of %s (%s %s): %s",
+                len(group) - 1,
+                display.player_name,
+                display.team,
+                display.season,
+                variants,
+            )
+            rows.append(
+                DataballrDeadMoneyRow(
+                    team=display.team,
+                    season=display.season,
+                    player_name=display.player_name,
+                    bbref_slug=slug,
+                    amount=display.amount,
+                    collapsed_variants=variants,
+                )
+            )
+            continue
+        if len(group) > 1:
+            logger.warning(
+                "dead money: NOT collapsing %s (%s %s) — same resolved player "
+                "but DIFFERENT amounts %s; keeping all rows for review",
+                display.player_name,
+                display.team,
+                display.season,
+                sorted(amounts),
+            )
+        for charge in group:
+            rows.append(
+                DataballrDeadMoneyRow(
+                    team=charge.team,
+                    season=charge.season,
+                    player_name=charge.player_name,
+                    bbref_slug=charge.bbref_slug,
+                    amount=charge.amount,
+                    collapsed_variants=[],
+                )
+            )
+
+    totals: dict[str, dict[str, int]] = {}
+    for row in rows:
+        team_map = totals.setdefault(row.team, {})
+        team_map[row.season] = team_map.get(row.season, 0) + row.amount
+
+    rows.sort(key=lambda r: (r.team, r.season, r.player_name))
+    return DataballrDeadMoney(note=_DEAD_MONEY_NOTE, totals=totals, rows=rows)
+
+
+def _load_dead_money_charges(crosswalk: Crosswalk) -> list[DeadMoneyCharge]:
+    """Scrape-mode charges: the ingest's CSV loader + name resolution.
+
+    Reuses data/dead_money.py (same parser, same numbers as the ingest by
+    construction). A missing CSV degrades to an empty block with a warning —
+    the export must not hard-fail on an absent side file (cap-holds precedent),
+    unlike the ingest where a missing source is guard_blocked.
+    """
+    from nba_trade_analyzer.data.dead_money import load_dead_money
+    from nba_trade_analyzer.ingest.names import NameResolver
+
+    try:
+        dead_rows = load_dead_money()
+    except FileNotFoundError as exc:
+        logger.warning("dead money: source missing (%s) — exporting empty block", exc)
+        return []
+
+    resolver = NameResolver(crosswalk)
+    charges: list[DeadMoneyCharge] = []
+    for row in dead_rows:
+        slug = resolver.resolve(row.player_name)
+        for season, amount in sorted(row.amounts.items()):
+            charges.append(
+                DeadMoneyCharge(
+                    team=row.team,
+                    season=season,
+                    player_name=row.player_raw,
+                    bbref_slug=slug,
+                    amount=amount,
+                )
+            )
+    return charges
 
 
 def compute_waa(impact: float, minutes: float) -> float:
@@ -545,6 +731,7 @@ def build_export(
     minutes_history: dict[int, dict[str, list[float]]] | None = None,
     guarantee_resolver: NonGuaranteeResolver | None = None,
     cap_holds: dict[str, dict[str, int]] | None = None,
+    dead_money: list[DeadMoneyCharge] | None = None,
 ) -> DataballrExport:
     """Assemble the full databallr cap-data payload.
 
@@ -575,6 +762,10 @@ def build_export(
     # subtracted from Open Cap. The loader gates to future seasons only.
     if cap_holds is None:
         cap_holds = load_cap_holds()
+    # Dead money (Phase 2 Day 2): scrape mode loads the ingest's CSV loader;
+    # db mode injects charges from v3_dead_money. Missing CSV -> empty block.
+    if dead_money is None:
+        dead_money = _load_dead_money_charges(crosswalk)
 
     keys = season_keys()
     by_id, by_name = _stats_index(stats_df)
@@ -713,5 +904,6 @@ def build_export(
             totals=cap_holds,
         ),
         cap_thresholds=cap_thresholds,
+        dead_money=build_dead_money(dead_money),
         source_note=source_note,
     )

@@ -17,6 +17,7 @@ import pytest
 
 from nba_trade_analyzer.data.db_source import (
     DbCapHoldRow,
+    DbDeadMoneyRow,
     DbNonGuaranteeResolver,
     DbOptionRow,
     DbOverrideRow,
@@ -26,6 +27,7 @@ from nba_trade_analyzer.data.db_source import (
     build_cap_hold_totals,
     build_salary_records,
     check_run_freshness,
+    select_dead_money_rows,
 )
 from nba_trade_analyzer.data.salaries import EXPECTED_COLUMNS, build_contract
 
@@ -43,6 +45,8 @@ def _salary(
     nba_id: int | None = None,
     ng: bool = False,
     rookie: bool = False,
+    stored_po: bool | None = None,
+    stored_to: bool | None = None,
 ) -> DbSalaryRow:
     return DbSalaryRow(
         slug=slug,
@@ -53,6 +57,8 @@ def _salary(
         amount=amount,
         is_fully_ng=ng,
         is_rookie_scale=rookie,
+        has_player_option=stored_po,
+        has_team_option=stored_to,
     )
 
 
@@ -236,6 +242,89 @@ def test_stored_ng_mark_without_override():
     resolver = DbNonGuaranteeResolver(build.ng_name_keys, build.ng_id_keys)
     assert resolver.is_non_guaranteed("2027-28", player="Ngguy01", team="POR")
     assert not resolver.is_non_guaranteed("2026-27", player="Ngguy01", team="POR")
+
+
+# ---------------------------------------------------------------------------
+# G4(b) — stored CSS-truth flags (Day 2)
+# ---------------------------------------------------------------------------
+
+def test_stored_flags_beat_derivation():
+    # Stored says PO=True/TO=False; the options table would derive the
+    # OPPOSITE (no P row, an open T row). Stored wins on both.
+    snap = _snapshot(
+        [_salary("store01", "2026-27", 9_000_000, stored_po=True, stored_to=False)],
+        options=[DbOptionRow("store01", "2026-27", "T", "pending")],
+    )
+    record = build_salary_records(snap, SEASONS).records[0]
+    assert record["has_player_option"] is True
+    assert record["has_team_option"] is False
+
+
+def test_null_stored_flags_fall_back_to_derivation():
+    snap = _snapshot(
+        [_salary("null01", "2026-27", 9_000_000)],  # stored flags None
+        options=[DbOptionRow("null01", "2026-27", "T", "pending")],
+    )
+    record = build_salary_records(snap, SEASONS).records[0]
+    assert record["has_team_option"] is True
+    assert record["has_player_option"] is False
+
+
+def test_override_outranks_stored_flag():
+    # Stored CSS still paints a T year, but the option was adjudicated
+    # exercised — the override-touched derivation outranks stored.
+    snap = _snapshot(
+        [_salary("adjud01", "2026-27", 9_000_000, stored_po=False, stored_to=True)],
+        options=[DbOptionRow("adjud01", "2026-27", "T", "pending")],
+        overrides=[
+            DbOverrideRow(
+                "v3_contract_options", "adjud01|2026-27", "status", "exercised"
+            )
+        ],
+    )
+    with_overlay = build_salary_records(snap, SEASONS).records[0]
+    without_overlay = build_salary_records(
+        snap, SEASONS, apply_overrides=False
+    ).records[0]
+    assert with_overlay["has_team_option"] is False
+    # --no-overrides: stored flag is the base truth again.
+    assert without_overlay["has_team_option"] is True
+
+
+# ---------------------------------------------------------------------------
+# Dead money — any-fresh-else-all freshness rule
+# ---------------------------------------------------------------------------
+
+def _dead(team: str, season: str, name: str, amount: int, fresh: bool | None):
+    return DbDeadMoneyRow(
+        team=team,
+        season=season,
+        player_name=name,
+        bbref_slug=None,
+        amount=amount,
+        fresh=fresh,
+    )
+
+
+def test_dead_money_fresh_rows_exclude_stale_and_unstamped():
+    rows = [
+        _dead("MIL", "2026-27", "Damian Lillard", 22_516_603, True),
+        _dead("PHX", "2026-27", "Old Zombie", 1_000_000, False),
+        _dead("DAL", "2026-27", "Unstamped Pre-Migration", 2_000_000, None),
+    ]
+    kept = select_dead_money_rows(rows)
+    assert [r.player_name for r in kept] == ["Damian Lillard"]
+
+
+def test_dead_money_all_unstamped_keeps_everything_loudly(caplog):
+    rows = [
+        _dead("MIL", "2026-27", "A", 1, None),
+        _dead("PHX", "2027-28", "B", 2, None),
+    ]
+    with caplog.at_level(logging.WARNING):
+        kept = select_dead_money_rows(rows)
+    assert len(kept) == 2
+    assert "no freshness-stamped rows yet" in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -86,6 +86,10 @@ class DbSalaryRow:
     amount: int
     is_fully_ng: bool
     is_rookie_scale: bool
+    # Stored BBRef CSS-truth flags (G4(b), migration 20260714210000).
+    # None = pre-migration row -> the Day-1 derivation is the fallback.
+    has_player_option: bool | None = None
+    has_team_option: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,18 @@ class DbCapHoldRow:
 
 
 @dataclass(frozen=True)
+class DbDeadMoneyRow:
+    team: str  # display code (PHX/MIL style)
+    season: str
+    player_name: str  # raw source name (may carry a WAIVED marker)
+    bbref_slug: str | None
+    amount: int
+    # True/False vs run.started_at; None = unstamped pre-migration row
+    # (v3_dead_money gained scraped_at in migration 20260714210500).
+    fresh: bool | None
+
+
+@dataclass(frozen=True)
 class DbSnapshot:
     """Everything one DB round-trip yields; builders never touch the DB."""
 
@@ -123,6 +139,7 @@ class DbSnapshot:
     options: list[DbOptionRow]  # all option rows (builders gate to fresh seasons)
     overrides: list[DbOverrideRow]  # ACTIVE overrides only
     cap_holds: list[DbCapHoldRow]  # all rows, freshness precomputed
+    dead_money: list[DbDeadMoneyRow] = field(default_factory=list)
 
 
 @dataclass
@@ -229,6 +246,12 @@ def build_salary_records(
     ng_overrides = _override_values(snapshot.overrides, _SALARIES_TABLE, "is_fully_ng")
     applied: dict[tuple[str, str, str], DbOverrideRow] = {}
 
+    # (slug, code) pairs an override actually spoke to. Where an override has
+    # spoken, the adjudicated DERIVATION outranks the stored CSS flag (house
+    # semantics: an active override beats ingested data — including the
+    # scraped flags). Everywhere else, stored flags are the parity truth.
+    override_touched: set[tuple[str, str]] = set()
+
     def _effective_option(opt: DbOptionRow) -> tuple[str, str]:
         """(code, status) after the overlay; records what it applied."""
         code, status = opt.code, opt.status
@@ -239,10 +262,13 @@ def build_salary_records(
             o = code_overrides[key]
             code = o.value
             applied[(o.table_name, o.row_key, o.field)] = o
+            override_touched.add((opt.slug, opt.code))
+            override_touched.add((opt.slug, code))
         if key in status_overrides:
             o = status_overrides[key]
             status = o.value
             applied[(o.table_name, o.row_key, o.field)] = o
+            override_touched.add((opt.slug, code))
         return code, status
 
     # Option rows only count on seasons that carry a FRESH salary row for the
@@ -293,7 +319,16 @@ def build_salary_records(
                 if row.nba_id is not None:
                     build.ng_id_keys.add((int(row.nba_id), season))
 
+        # Flag precedence per code: an override that touched this player's
+        # code wins (adjudicated derivation) > stored CSS flag (parity truth,
+        # non-NULL) > Day-1 derivation (pre-migration NULL rows).
         codes = open_codes.get(slug, set())
+
+        def _flag(code: str, stored: bool | None) -> bool:
+            if stored is None or (slug, code) in override_touched:
+                return code in codes
+            return stored
+
         build.records.append(
             {
                 "player_name": current.player_name,
@@ -302,8 +337,10 @@ def build_salary_records(
                 "salary": int(current.amount),
                 "years_remaining": len(rows),
                 "is_rookie_scale": bool(current.is_rookie_scale),
-                "has_player_option": _PLAYER_OPTION_CODE in codes,
-                "has_team_option": _TEAM_OPTION_CODE in codes,
+                "has_player_option": _flag(
+                    _PLAYER_OPTION_CODE, current.has_player_option
+                ),
+                "has_team_option": _flag(_TEAM_OPTION_CODE, current.has_team_option),
                 "yearly_salaries": _YEARLY_SEP.join(str(v) for v in yearly),
             }
         )
@@ -341,6 +378,27 @@ def build_cap_hold_totals(
         team_map = totals.setdefault(row.team, {})
         team_map[row.season] = team_map.get(row.season, 0) + row.amount
     return totals
+
+
+def select_dead_money_rows(rows: list[DbDeadMoneyRow]) -> list[DbDeadMoneyRow]:
+    """Freshness rule for dead money: any-fresh-else-all (self-healing).
+
+    Once ANY row carries a fresh stamp (the first post-migration nightly has
+    run), only fresh rows are kept — NULL-stamped rows are pre-migration
+    zombies. Until then every row is unstamped (scraped_at was added by
+    migration 20260714210500), so all rows pass with a loud warning rather
+    than silently exporting an empty block on day one.
+    """
+    if any(r.fresh is True for r in rows):
+        return [r for r in rows if r.fresh is True]
+    if rows:
+        logger.warning(
+            "dead money: no freshness-stamped rows yet (pre-first-nightly "
+            "after migration 20260714210500) — exporting all %d rows; "
+            "stamps arrive with the next ingest",
+            len(rows),
+        )
+    return list(rows)
 
 
 class DbNonGuaranteeResolver:
@@ -397,7 +455,8 @@ def fetch_db_snapshot(conn) -> DbSnapshot:
         cur.execute(
             """
             select p.bbref_slug, coalesce(p.name, ''), coalesce(p.team_bbref, ''),
-                   p.nba_id, s.season, s.amount, s.is_fully_ng, s.is_rookie_scale
+                   p.nba_id, s.season, s.amount, s.is_fully_ng, s.is_rookie_scale,
+                   s.has_player_option, s.has_team_option
             from public.v3_contract_salaries s
             join public.v3_players p on p.id = s.player_id
             where s.scraped_at >= %s
@@ -415,6 +474,8 @@ def fetch_db_snapshot(conn) -> DbSnapshot:
                 amount=int(r[5]),
                 is_fully_ng=bool(r[6]),
                 is_rookie_scale=bool(r[7]),
+                has_player_option=None if r[8] is None else bool(r[8]),
+                has_team_option=None if r[9] is None else bool(r[9]),
             )
             for r in cur.fetchall()
         ]
@@ -458,6 +519,27 @@ def fetch_db_snapshot(conn) -> DbSnapshot:
             for r in cur.fetchall()
         ]
 
+        cur.execute(
+            """
+            select d.team, d.season, d.player_name, p.bbref_slug, d.amount,
+                   (d.scraped_at >= %s)
+            from public.v3_dead_money d
+            left join public.v3_players p on p.id = d.player_id
+            """,
+            (started_at,),
+        )
+        dead_money = [
+            DbDeadMoneyRow(
+                team=r[0],
+                season=r[1],
+                player_name=r[2],
+                bbref_slug=r[3],
+                amount=int(r[4]),
+                fresh=None if r[5] is None else bool(r[5]),
+            )
+            for r in cur.fetchall()
+        ]
+
     return DbSnapshot(
         run_id=run_id,
         run_started_at=started_at,
@@ -465,6 +547,7 @@ def fetch_db_snapshot(conn) -> DbSnapshot:
         options=options,
         overrides=overrides,
         cap_holds=cap_holds,
+        dead_money=dead_money,
     )
 
 
@@ -480,6 +563,7 @@ class DbSalarySource:
     frame: pd.DataFrame
     cap_holds: dict[str, dict[str, int]]
     resolver: DbNonGuaranteeResolver
+    dead_money: list  # list[export.DeadMoneyCharge] (lazy import boundary)
     run_id: str
     run_started_at: datetime
     applied_overrides: list[DbOverrideRow]
@@ -509,7 +593,8 @@ class DbSalarySource:
         return (
             f"DB-SOURCED (v3_* contract tables): ingest run {self.run_id} "
             f"started {self.run_started_at.isoformat()}; "
-            f"{len(self.frame)} salary rows; {overlay}{skipped}"
+            f"{len(self.frame)} salary rows; "
+            f"{len(self.dead_money)} dead-money charge(s); {overlay}{skipped}"
         )
 
 
@@ -535,6 +620,17 @@ def load_db_salary_source(
             raise DbSourceError(str(exc)) from exc
     try:
         snapshot = fetch_db_snapshot(conn)
+    except Exception as exc:
+        # psycopg.errors.UndefinedColumn (raw import avoided here) — the one
+        # anticipated shape: Day-2 code against a pre-migration DB.
+        if type(exc).__name__ == "UndefinedColumn":
+            raise DbSourceError(
+                f"{exc} — the Day-2 schema migrations have not been applied. "
+                "Run supabase/migrations/20260714210000_add_v3_salary_option_flags.sql "
+                "and 20260714210500_add_v3_dead_money_scraped_at.sql (by hand, "
+                "as service_role) before exporting with --source db."
+            ) from exc
+        raise
     finally:
         if owns_conn:
             conn.close()
@@ -543,16 +639,27 @@ def load_db_salary_source(
 
     # Local import: export.py is heavyweight (engine, pydantic) and importing
     # it at module top would also be a cycle risk if export ever imports us.
-    from nba_trade_analyzer.export import season_keys
+    from nba_trade_analyzer.export import DeadMoneyCharge, season_keys
 
     build = build_salary_records(
         snapshot, season_keys(), apply_overrides=apply_overrides
     )
     frame = pd.DataFrame(build.records, columns=list(EXPECTED_COLUMNS))
+    dead_money = [
+        DeadMoneyCharge(
+            team=r.team,
+            season=r.season,
+            player_name=r.player_name,
+            bbref_slug=r.bbref_slug,
+            amount=r.amount,
+        )
+        for r in select_dead_money_rows(snapshot.dead_money)
+    ]
     return DbSalarySource(
         frame=frame,
         cap_holds=build_cap_hold_totals(snapshot.cap_holds),
         resolver=DbNonGuaranteeResolver(build.ng_name_keys, build.ng_id_keys),
+        dead_money=dead_money,
         run_id=snapshot.run_id,
         run_started_at=snapshot.run_started_at,
         applied_overrides=build.applied_overrides,
