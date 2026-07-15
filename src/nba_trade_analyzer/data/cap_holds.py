@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from nba_trade_analyzer.ingest.site_data import site_data_root
+
 # Reuse the single source of truth for the league year, so a rollover bump in
 # guarantees.py moves NG marks and cap holds together — but the two consumers
 # DELIBERATELY compare against it differently (fix/cap-holds-current-year-gate,
@@ -85,8 +87,7 @@ def load_cap_holds(
     A missing file returns ``{}``.
     """
     if path is None:
-        root = os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data"))
-        path = os.path.join(root, "nba_cap_holds.csv")
+        path = str(site_data_root() / "nba_cap_holds.csv")
     if not os.path.exists(path):
         return {}
 
@@ -170,8 +171,7 @@ def load_cap_holds_rows(
     empty-dict default is unchanged for the export path.
     """
     if path is None:
-        root = os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data"))
-        path = os.path.join(root, "nba_cap_holds.csv")
+        path = str(site_data_root() / "nba_cap_holds.csv")
     if not os.path.exists(path):
         raise FileNotFoundError(f"cap-holds source missing: {path}")
 

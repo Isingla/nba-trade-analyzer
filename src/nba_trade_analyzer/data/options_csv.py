@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import csv
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from nba_trade_analyzer.ingest.site_data import site_data_root
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,7 @@ class OptionCsvRow:
 
 
 def default_path() -> str:
-    root = os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data"))
-    return os.path.join(root, FILENAME)
+    return str(site_data_root() / FILENAME)
 
 
 def load_options(path: str | Path | None = None) -> list[OptionCsvRow]:

@@ -146,7 +146,18 @@ def _run(
     dry_run: bool,
     accept_baseline: str | None = None,
 ) -> RunResult:
-    root = site_data_root()
+    # site_data_root() now fails loud on a missing checkout (consolidated
+    # default); keep the ingest's contract that a missing source is a RECORDED
+    # guard_blocked run, not a generic failure.
+    try:
+        root = site_data_root()
+    except FileNotFoundError as exc:
+        return _guard_blocked(
+            db,
+            started_at,
+            dry_run,
+            [{"guard": "empty_source", "subject": "SITE_DATA_ROOT", "detail": {"error": str(exc)}}],
+        )
     seasons = season_keys()
 
     if accept_baseline is not None:
@@ -159,14 +170,6 @@ def _run(
         logger.warning(banner)
 
     # ---- load sources (strict: any failure here = failed run) -------------
-    if not root.exists():
-        return _guard_blocked(
-            db,
-            started_at,
-            dry_run,
-            [{"guard": "empty_source", "subject": "SITE_DATA_ROOT", "detail": {"path": str(root)}}],
-        )
-
     # BBRef scrape, STRICT — no committed-CSV fallback on the ingest path
     # (Phase 0: the silent fallback shipped months-stale data).
     salary_df = fetch_all_salaries(strict=True)

@@ -27,6 +27,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from nba_trade_analyzer.ingest.site_data import site_data_root
+
 logger = logging.getLogger(__name__)
 
 # Repo-root-relative default allowlist path (src/nba_trade_analyzer/data/ -> repo root).
@@ -223,8 +225,7 @@ class NonGuaranteeResolver:
         current_league_year: str = CURRENT_LEAGUE_YEAR,
     ) -> "NonGuaranteeResolver":
         if spread_path is None:
-            root = os.environ.get("SITE_DATA_ROOT", os.path.expanduser("~/site_Data"))
-            spread_path = os.path.join(root, "salary_spread.csv")
+            spread_path = str(site_data_root() / "salary_spread.csv")
         allow = build_allowlist_index(load_ng_allowlist(allowlist_path))
         # Missing spread => empty NG set => nothing fires (safe default).
         spread_ng = load_spread_ng_codes(spread_path) if os.path.exists(spread_path) else set()
