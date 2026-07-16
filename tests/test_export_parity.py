@@ -68,6 +68,14 @@ TRIO_DB = [  # decomposed actives on the db side
     _row("bealbr01", team="LAC", salary=5_621_700),
     _row("prospol01", team="MEM", salary=2_497_812),
 ]
+# looneke01 (scrape-side allowlist): BBRef prints the two-stint SUM on both
+# stint rows -> scrape carries him TWICE at the wrong amount, DB ONCE (dedup)
+# at the wrong amount — a structural count diff plus an amount diff.
+LOONEY_SCRAPE = [
+    _row("looneke01", team="NOP", salary=10_449_421),
+    _row("looneke01", team="LAL", salary=10_449_421),
+]
+LOONEY_DB = [_row("looneke01", team="LAL", salary=10_449_421)]
 STABLE = [_row("stable01", team="GSW", salary=50_000_000)]
 
 
@@ -90,33 +98,86 @@ def test_p1_float_drift_fails_and_names_the_slug():
     assert "a01" in r.detail
 
 
+def test_p1_trio_only_drift_passes_and_names_the_carve_out():
+    # The trio's decomposed salaries feed their projections — forgiven, but
+    # NEVER silently: the absorbed slugs must appear in the PASS message.
+    a = {
+        "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
+        "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
+    }
+    b = {
+        "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},  # drifted (carved)
+        "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
+    }
+    r = check_projections_identical(_payload([], projections=a), _payload([], projections=b))
+    assert r.passed
+    assert "lillada01" in r.detail  # carve-out visible in every run
+
+
+def test_p1_trio_plus_extra_fails_naming_only_the_extra():
+    a = {
+        "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
+        "extra01": {"seasons": {"2026-27": {"waa": 1.0}}},
+    }
+    b = {
+        "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},
+        "extra01": {"seasons": {"2026-27": {"waa": 1.1}}},
+    }
+    r = check_projections_identical(_payload([], projections=a), _payload([], projections=b))
+    assert not r.passed
+    unexpected_clause, _, carved_clause = r.detail.partition("trio drift absorbed")
+    assert "extra01" in unexpected_clause
+    assert "lillada01" not in unexpected_clause  # trio only in the carved clause
+    assert "lillada01" in carved_clause
+
+
 # ---------------------------------------------------------------------------
 # P2 — salary diff set
 # ---------------------------------------------------------------------------
 
-def test_p2_exact_trio_diff_passes():
-    scrape = _payload(STABLE + TRIO_SCRAPE)
-    db = _payload(STABLE + TRIO_DB)
-    assert diff_salary_slugs(scrape, db) == set(parity.EXPECTED_SALARY_DIFF_SLUGS)
+def test_p2_trio_plus_looney_diff_passes():
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_SCRAPE)
+    db = _payload(STABLE + TRIO_DB + LOONEY_DB)
+    # The structural count diff (2 scrape rows vs 1 DB row, same amount) is
+    # itself the forgiven divergence for looneke01.
+    assert diff_salary_slugs(scrape, db) == set(
+        parity.EXPECTED_SALARY_DIFF_SLUGS | parity.SCRAPE_SIDE_DIFF_SLUGS
+    )
     assert check_salary_diff_players(scrape, db).passed
 
 
-def test_p2_fourth_player_fails_with_offender_named():
-    scrape = _payload(STABLE + TRIO_SCRAPE)
-    db = _payload([_row("stable01", team="GSW", salary=51_000_000)] + TRIO_DB)
+def test_p2_fifth_player_fails_with_offender_named():
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_SCRAPE)
+    db = _payload(
+        [_row("stable01", team="GSW", salary=51_000_000)] + TRIO_DB + LOONEY_DB
+    )
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "stable01" in r.detail
+    # The allowlisted slugs are not blamed.
+    assert "looneke01" not in r.detail.split(";")[0]
 
 
 def test_p2_missing_trio_member_fails_as_regression():
     # Lillard identical on both sides -> the fix regressed (blend came back
     # to the db side or the scrape got fixed silently) -> surface it.
-    scrape = _payload(STABLE + TRIO_SCRAPE)
-    db = _payload(STABLE + [TRIO_SCRAPE[0]] + TRIO_DB[1:])
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_SCRAPE)
+    db = _payload(STABLE + [TRIO_SCRAPE[0]] + TRIO_DB[1:] + LOONEY_DB)
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "lillada01" in r.detail
+    assert "regressed" in r.detail
+
+
+def test_p2_healed_looney_fails_demanding_allowlist_removal():
+    # Scrape and DB agree on looneke01 -> the source healed; the stale
+    # allowlist entry must not pass silently.
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_DB)
+    db = _payload(STABLE + TRIO_DB + LOONEY_DB)
+    r = check_salary_diff_players(scrape, db)
+    assert not r.passed
+    assert "looneke01" in r.detail
+    assert "REMOVE" in r.detail
 
 
 # ---------------------------------------------------------------------------
@@ -325,22 +386,33 @@ def test_parse_missing_stamp_is_none(bad):
 
 
 def test_run_all_green_path_reports_all_pass():
-    projections = {"stable01": {"seasons": {"2026-27": {"waa": 1.0}}}}
-    scrape = _payload(STABLE + TRIO_SCRAPE, projections=projections)
+    # Projections drift on a trio member (absorbed by the P1 carve-out) and
+    # agree everywhere else; salaries diff on exactly trio + looneke01.
+    scrape_projections = {
+        "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
+        "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
+    }
+    db_projections = {
+        "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
+        "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},
+    }
+    scrape = _payload(
+        STABLE + TRIO_SCRAPE + LOONEY_SCRAPE, projections=scrape_projections
+    )
     db_without = _payload(
-        STABLE + TRIO_DB,
-        projections=projections,
-        source_note=_stamp(4, "overrides overlay DISABLED (--no-overrides)"),
+        STABLE + TRIO_DB + LOONEY_DB,
+        projections=db_projections,
+        source_note=_stamp(5, "overrides overlay DISABLED (--no-overrides)"),
     )
     db_with = _payload(
-        STABLE + TRIO_DB,
-        projections=projections,
-        source_note=_stamp(4, "0 overrides applied"),
+        STABLE + TRIO_DB + LOONEY_DB,
+        projections=db_projections,
+        source_note=_stamp(5, "0 overrides applied"),
     )
     results = run_all(scrape, db_without, db_with)
     assert [r.name for r in results] == [
-        "P1 projections byte-identical",
-        "P2 salary diff == known-fixed trio",
+        "P1 projections byte-identical outside trio",
+        "P2 salary diff == known-fixed trio + scrape-side allowlist",
         "P2b cap-holds delta within documented allowlist",
         "P3 option-flag deltas outside trio == 0",
         "P4 override diff == metadata stamp (both directions)",
