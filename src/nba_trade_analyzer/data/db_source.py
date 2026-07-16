@@ -202,8 +202,8 @@ def build_salary_records(
 ) -> SalaryBuild:
     """Reduce a snapshot to scrape-shaped salary records (EXPECTED_COLUMNS).
 
-    ``seasons`` is the export window (``export.season_keys()``), current season
-    first. Derivations per the seam map: ``yearly_salaries`` maps rows onto the
+    ``seasons`` is the SALARY window (``export.salary_season_keys()`` —
+    projection window + BBRef's y6, 2031-32), current season first. Derivations per the seam map: ``yearly_salaries`` maps rows onto the
     window positionally with 0-fill for interior gaps and truncation after the
     last present season (G2); ``years_remaining`` is the fresh-row count;
     option flags are derived (G4 interim; see module docstring);
@@ -297,6 +297,18 @@ def build_salary_records(
                 current_season,
             )
             continue
+
+        # A fresh row OUTSIDE the salary window means BBRef grew another
+        # year column (the next y6-class surprise) — fail crisply instead of
+        # the bare KeyError the positional mapping would otherwise raise;
+        # silent dropping is never an option (that was the Wemby 2031-32 bug).
+        outside = sorted(set(rows) - set(season_index))
+        if outside:
+            raise DbSourceError(
+                f"{slug} has fresh salary row(s) outside the salary window "
+                f"(last window season {seasons[-1]}): {outside} — widen "
+                "export.salary_season_keys() deliberately; never drop money."
+            )
 
         # G2: positional 0-fill onto the window, truncated after the last
         # season that actually has a row.
@@ -639,10 +651,10 @@ def load_db_salary_source(
 
     # Local import: export.py is heavyweight (engine, pydantic) and importing
     # it at module top would also be a cycle risk if export ever imports us.
-    from nba_trade_analyzer.export import DeadMoneyCharge, season_keys
+    from nba_trade_analyzer.export import DeadMoneyCharge, salary_season_keys
 
     build = build_salary_records(
-        snapshot, season_keys(), apply_overrides=apply_overrides
+        snapshot, salary_season_keys(), apply_overrides=apply_overrides
     )
     frame = pd.DataFrame(build.records, columns=list(EXPECTED_COLUMNS))
     dead_money = [

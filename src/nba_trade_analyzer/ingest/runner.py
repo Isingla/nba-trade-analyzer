@@ -33,7 +33,7 @@ from nba_trade_analyzer.data.nba_salaries_csv import (
 from nba_trade_analyzer.data.options_csv import load_options
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
 from nba_trade_analyzer.engine.constants import CAP_THRESHOLDS_BY_SEASON
-from nba_trade_analyzer.export import season_keys
+from nba_trade_analyzer.export import salary_season_keys
 from nba_trade_analyzer.ingest.db import IngestDb, PlayerRec
 from nba_trade_analyzer.ingest.names import NameResolver
 from nba_trade_analyzer.ingest.plans import (
@@ -158,7 +158,10 @@ def _run(
             dry_run,
             [{"guard": "empty_source", "subject": "SITE_DATA_ROOT", "detail": {"error": str(exc)}}],
         )
-    seasons = season_keys()
+    # SALARY window (projection window + BBRef's y6 = 2031-32): salary rows,
+    # dead-money season mapping, and verifier coverage all key off this;
+    # projections/thresholds stay on export.season_keys().
+    seasons = salary_season_keys()
 
     if accept_baseline is not None:
         # Prominent by design: this run can overwrite a larger baseline.
@@ -531,8 +534,10 @@ def _run(
         cap_hold_slugs=hold_slugs,
         dead_amounts=dead_slug_amounts,
         # Mutual-coverage restriction: Spotrac's file has no 2025-26 column
-        # and our ingest window stops at season_keys() — whole-column gaps
-        # are skipped and recorded in the summary, never per-row mismatches.
+        # and our ingest window stops at salary_season_keys() (incl. 2031-32
+        # since 2026-07-16 — kills the ours_missing=["2031-32"] skip) —
+        # whole-column gaps are skipped and recorded in the summary, never
+        # per-row mismatches.
         spotrac_coverage=nba_salaries_season_coverage(root / "nba_salaries.csv"),
         our_coverage=set(seasons),
         # Team attribution cross-check (report-only): our side is the kept
