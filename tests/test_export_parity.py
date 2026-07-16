@@ -17,7 +17,7 @@ from nba_trade_analyzer.parity import (
     check_override_diff,
     check_projections_identical,
     check_salary_diff_players,
-    check_y6_canary,
+    check_season_window_canary,
     diff_salary_slugs,
     parse_applied_overrides,
     parse_stamped_row_count,
@@ -238,25 +238,36 @@ def test_p4_zero_overrides_and_zero_diff_passes():
 
 
 # ---------------------------------------------------------------------------
-# P5 — y6 canary
+# P5 — season-window canary (salary window = 2026-27..2031-32 since 2026-07-16)
 # ---------------------------------------------------------------------------
 
 def test_p5_clean_payload_passes():
-    assert check_y6_canary(_payload([_row("a01", yearly=[1, 2, 3, 4, 5])])).passed
+    assert check_season_window_canary(
+        _payload([_row("a01", yearly=[1, 2, 3, 4, 5])])
+    ).passed
 
 
-def test_p5_six_year_salary_list_fails():
-    r = check_y6_canary(_payload([_row("six01", yearly=[1, 2, 3, 4, 5, 6])]))
+def test_p5_2031_32_now_inside_the_window_passes():
+    # Wemby shape: 6-entry yearly (index 5 = 2031-32) + an in-window NG key.
+    row = _row("wembavi01", yearly=[1, 2, 3, 4, 5, 57_420_000])
+    row["nonGuaranteedSeasons"] = {"2031-32": 57_420_000}
+    assert check_season_window_canary(_payload([row])).passed
+
+
+def test_p5_seven_year_salary_list_fails():
+    r = check_season_window_canary(
+        _payload([_row("seven01", yearly=[1, 2, 3, 4, 5, 6, 7])])
+    )
     assert not r.passed
-    assert "six01" in r.detail
+    assert "seven01" in r.detail
 
 
-def test_p5_2031_32_season_key_fails():
+def test_p5_2032_33_season_key_fails():
     payload = _payload([])
-    payload["capThresholds"]["seasons"]["2031-32"] = {"salaryCap": 1}
-    r = check_y6_canary(payload)
+    payload["capHolds"]["totals"]["GSW"] = {"2032-33": 1_000_000}
+    r = check_season_window_canary(payload)
     assert not r.passed
-    assert "2031-32" in r.detail
+    assert "2032-33" in r.detail
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +344,7 @@ def test_run_all_green_path_reports_all_pass():
         "P2b cap-holds delta within documented allowlist",
         "P3 option-flag deltas outside trio == 0",
         "P4 override diff == metadata stamp (both directions)",
-        "P5 y6 canary: no 2031-32 in DB payload",
+        "P5 season-window canary: no season outside salary window",
         "P6 G7 canary: one row per player, count matches reader stamp",
     ]
     assert all(r.passed for r in results)

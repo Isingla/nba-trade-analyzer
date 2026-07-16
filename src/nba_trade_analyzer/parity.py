@@ -10,7 +10,9 @@ snapshot), normalizes the JSON payloads, and asserts the cutover contract:
   P3  option-flag deltas outside the trio == zero (G4(b) stored flags)
   P4  overrides-on vs overrides-off diff == the payload's applied-override
       metadata stamp, set-equal in BOTH directions
-  P5  y6 canary: no 2031-32 season anywhere in the DB-sourced payload (G1)
+  P5  season-window canary: no season OUTSIDE the salary window
+      (export.salary_season_keys(), 2026-27..2031-32) anywhere in the
+      DB-sourced payload — guards the next surprise BBRef column (G1)
   P6  G7 canary: one salary row per player, and the row count matches the
       reader's own count in the provenance stamp
 
@@ -39,6 +41,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from nba_trade_analyzer.export import salary_season_keys
+
 # The three players whose salary rows are EXPECTED to differ between the
 # scrape path and the DB path: the commit-2315e89 dual-team blend defect
 # (Lillard, Beal, Prosper), fixed DB-side by dead-money separation. Any other
@@ -59,11 +63,14 @@ ALLOWED_CAP_HOLD_DEBRIS: dict[tuple[str, str], int] = {}
 # (player, team, field).
 FLAG_FIELDS = ("hasPlayerOption", "hasTeamOption")
 
-# G1: the export window is 5 seasons (2026-27..2030-31). The 6th BBRef year
-# column (2031-32) must not leak into a DB-sourced payload — the ingest
-# window is deliberately NOT widened; presence here means it was.
-Y6_SEASON = "2031-32"
-MAX_WINDOW_YEARS = 5
+# G1 (retuned 2026-07-16): the SALARY window now carries BBRef's y6
+# (2026-27..2031-32, export.salary_season_keys()). The canary no longer bans
+# 2031-32 — it bans any season OUTSIDE the salary window (e.g. a surprise
+# 2032-33 column), so the next BBRef header growth fails here instead of
+# silently truncating money. Derived from the export module — never a
+# hardcoded season list that could drift from the ingest window.
+SALARY_WINDOW: tuple[str, ...] = tuple(salary_season_keys())
+_SEASON_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -284,30 +291,37 @@ def check_override_diff(db_with: dict, db_without: dict) -> CheckResult:
     return CheckResult(name, False, "; ".join(detail))
 
 
-def _find_y6(value, path: str, hits: list[str]) -> None:
+def _find_out_of_window(value, path: str, hits: list[str]) -> None:
     if isinstance(value, dict):
         for k, v in value.items():
-            if k == Y6_SEASON:
+            if (
+                isinstance(k, str)
+                and _SEASON_KEY_RE.match(k)
+                and k not in SALARY_WINDOW
+            ):
                 hits.append(f"{path}.{k}")
-            _find_y6(v, f"{path}.{k}", hits)
+            _find_out_of_window(v, f"{path}.{k}", hits)
     elif isinstance(value, list):
         for i, v in enumerate(value):
-            _find_y6(v, f"{path}[{i}]", hits)
+            _find_out_of_window(v, f"{path}[{i}]", hits)
 
 
-def check_y6_canary(db: dict) -> CheckResult:
-    name = "P5 y6 canary: no 2031-32 in DB payload"
+def check_season_window_canary(db: dict) -> CheckResult:
+    name = "P5 season-window canary: no season outside salary window"
     hits: list[str] = []
-    _find_y6(db, "$", hits)
+    _find_out_of_window(db, "$", hits)
     for row in db.get("salaries", []):
-        if len(row.get("yearlySalaries", []) or []) > MAX_WINDOW_YEARS:
+        if len(row.get("yearlySalaries", []) or []) > len(SALARY_WINDOW):
             hits.append(
                 f"$.salaries[{row.get('bbrefSlug')}].yearlySalaries has "
-                f"{len(row['yearlySalaries'])} entries (index {MAX_WINDOW_YEARS} = {Y6_SEASON})"
+                f"{len(row['yearlySalaries'])} entries (window is "
+                f"{len(SALARY_WINDOW)} seasons, last {SALARY_WINDOW[-1]})"
             )
     if not hits:
-        return CheckResult(name, True, "no 2031-32 season anywhere")
-    return CheckResult(name, False, f"2031-32 present at: {hits[:10]}")
+        return CheckResult(
+            name, True, f"all seasons within {SALARY_WINDOW[0]}..{SALARY_WINDOW[-1]}"
+        )
+    return CheckResult(name, False, f"out-of-window seasons at: {hits[:10]}")
 
 
 def check_g7_canary(db: dict) -> CheckResult:
@@ -334,7 +348,7 @@ def run_all(scrape: dict, db_without: dict, db_with: dict) -> list[CheckResult]:
         check_cap_hold_debris(scrape, db_without),
         check_option_flags(scrape, db_without),
         check_override_diff(db_with, db_without),
-        check_y6_canary(db_without),
+        check_season_window_canary(db_without),
         check_g7_canary(db_without),
     ]
 

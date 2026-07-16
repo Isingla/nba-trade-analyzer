@@ -297,12 +297,36 @@ def season_keys() -> list[str]:
     decision). The window tracks ``_FIRST_SEASON_START`` and must roll
     together with ``data.salaries._DEFAULT_SEASON``: the salary parser
     anchors on that label and ``_contract_rows`` maps yearly values onto
-    THIS window positionally — rolling one without the other mislabels
-    every salary by a season.
+    the SALARY window (``salary_season_keys``) positionally — rolling one
+    without the other mislabels every salary by a season.
     """
     return [
         f"{_FIRST_SEASON_START + i}-{(_FIRST_SEASON_START + i + 1) % 100:02d}"
         for i in range(MAX_PROJECTION_YEARS)
+    ]
+
+
+# The BBRef contracts table exposes one year column beyond the projection
+# window (y6): real salary can live there — wembavi01's 2031-32 extension
+# year ($57,420,000, surfaced 2026-07-15) — even though projections and
+# CAP_THRESHOLDS_BY_SEASON deliberately stop at MAX_PROJECTION_YEARS.
+# Derived from the same _FIRST_SEASON_START as season_keys(), so the July
+# roll (see that docstring: roll together with data.salaries._DEFAULT_SEASON)
+# moves BOTH windows in lockstep — never hardcode a season label here.
+SALARY_WINDOW_EXTRA_YEARS = 1
+
+
+def salary_season_keys() -> list[str]:
+    """The salary-row window, ``["2026-27", ..., "2031-32"]``.
+
+    SALARY ingest/read shaping only (``_contract_rows``, the db_source
+    reader, verifier coverage). The projection window (``season_keys``) and
+    the cap-thresholds fail-loud check stay on MAX_PROJECTION_YEARS —
+    extending THIS window must never require a thresholds-table entry.
+    """
+    return [
+        f"{_FIRST_SEASON_START + i}-{(_FIRST_SEASON_START + i + 1) % 100:02d}"
+        for i in range(MAX_PROJECTION_YEARS + SALARY_WINDOW_EXTRA_YEARS)
     ]
 
 

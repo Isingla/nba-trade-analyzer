@@ -32,6 +32,8 @@ from nba_trade_analyzer.data.db_source import (
 from nba_trade_analyzer.data.salaries import EXPECTED_COLUMNS, build_contract
 
 SEASONS = ["2026-27", "2027-28", "2028-29", "2029-30", "2030-31"]
+# The salary window since 2026-07-16: projection window + BBRef's y6.
+SALARY_SEASONS = [*SEASONS, "2031-32"]
 RUN_AT = datetime(2026, 7, 11, 5, 2, 27, tzinfo=timezone.utc)
 
 
@@ -124,6 +126,44 @@ def test_zero_fill_interior_gap_and_truncate_trailing():
     assert record["yearly_salaries"] == "5000000|0|7000000"
     # years_remaining counts ROWS, not list length.
     assert record["years_remaining"] == 2
+
+
+def test_sixth_season_row_survives_the_salary_window():
+    # The Wemby shape (2026-07-15): real money in BBRef's y6 = 2031-32.
+    # Under the old 5-season window this row raised KeyError at the G2
+    # positional mapping; under salary_season_keys() it must ride through
+    # untruncated as a 6-entry yearly array.
+    snap = _snapshot(
+        [
+            _salary("wemba01", "2026-27", 50_000_000),
+            _salary("wemba01", "2027-28", 51_000_000),
+            _salary("wemba01", "2028-29", 52_000_000),
+            _salary("wemba01", "2029-30", 53_000_000),
+            _salary("wemba01", "2030-31", 55_000_000),
+            _salary("wemba01", "2031-32", 57_420_000),
+        ]
+    )
+    build = build_salary_records(snap, SALARY_SEASONS)
+    record = build.records[0]
+    assert record["years_remaining"] == 6
+    assert record["yearly_salaries"] == (
+        "50000000|51000000|52000000|53000000|55000000|57420000"
+    )
+
+
+def test_row_outside_salary_window_fails_crisply_not_keyerror():
+    from nba_trade_analyzer.data.db_source import DbSourceError
+
+    snap = _snapshot(
+        [
+            _salary("next01", "2026-27", 1_000_000),
+            _salary("next01", "2032-33", 2_000_000),  # the NEXT surprise column
+        ]
+    )
+    with pytest.raises(DbSourceError) as exc:
+        build_salary_records(snap, SALARY_SEASONS)
+    assert "2032-33" in str(exc.value)
+    assert "next01" in str(exc.value)
 
 
 def test_player_without_current_season_row_is_skipped_loudly(caplog):
