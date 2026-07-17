@@ -68,14 +68,17 @@ TRIO_DB = [  # decomposed actives on the db side
     _row("bealbr01", team="LAC", salary=5_621_700),
     _row("prospol01", team="MEM", salary=2_497_812),
 ]
-# looneke01 (scrape-side allowlist): BBRef prints the two-stint SUM on both
-# stint rows -> scrape carries him TWICE at the wrong amount, DB ONCE (dedup)
-# at the wrong amount — a structural count diff plus an amount diff.
-LOONEY_SCRAPE = [
+# looneke01 HEALED 2026-07-17 (BBRef corrected its two-stint SUM poison; the
+# allowlist entry is removed). These fixtures now model the RELAPSE shape —
+# the old scrape-side divergence reappearing — which must FAIL P2 as a new
+# unexpected slug, since nothing allowlists him anymore.
+LOONEY_RELAPSE_SCRAPE = [
     _row("looneke01", team="NOP", salary=10_449_421),
     _row("looneke01", team="LAL", salary=10_449_421),
 ]
-LOONEY_DB = [_row("looneke01", team="LAL", salary=10_449_421)]
+LOONEY_RELAPSE_DB = [_row("looneke01", team="LAL", salary=10_449_421)]
+# The healed steady state: one row, correct vet-min amount, both sides agree.
+LOONEY_HEALED = [_row("looneke01", team="LAL", salary=2_449_421)]
 STABLE = [_row("stable01", team="GSW", salary=50_000_000)]
 
 
@@ -135,49 +138,46 @@ def test_p1_trio_plus_extra_fails_naming_only_the_extra():
 # P2 — salary diff set
 # ---------------------------------------------------------------------------
 
-def test_p2_trio_plus_looney_diff_passes():
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_SCRAPE)
-    db = _payload(STABLE + TRIO_DB + LOONEY_DB)
-    # The structural count diff (2 scrape rows vs 1 DB row, same amount) is
-    # itself the forgiven divergence for looneke01.
-    assert diff_salary_slugs(scrape, db) == set(
-        parity.EXPECTED_SALARY_DIFF_SLUGS | parity.SCRAPE_SIDE_DIFF_SLUGS
-    )
+def test_p2_trio_only_diff_passes_with_empty_scrape_side_allowlist():
+    # Post-heal green path: the healed Looney row is IDENTICAL on both sides
+    # and contributes no diff; the expected set is exactly the trio.
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_HEALED)
+    db = _payload(STABLE + TRIO_DB + LOONEY_HEALED)
+    assert parity.SCRAPE_SIDE_DIFF_SLUGS == frozenset()
+    assert diff_salary_slugs(scrape, db) == set(parity.EXPECTED_SALARY_DIFF_SLUGS)
     assert check_salary_diff_players(scrape, db).passed
 
 
+def test_p2_looney_relapse_fails_as_new_unexpected_slug():
+    # The old two-stint poison reappearing is no longer forgiven: with the
+    # allowlist empty, a looneke01 diff is a NEW unexpected slug.
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_RELAPSE_SCRAPE)
+    db = _payload(STABLE + TRIO_DB + LOONEY_RELAPSE_DB)
+    r = check_salary_diff_players(scrape, db)
+    assert not r.passed
+    assert "UNEXPECTED" in r.detail
+    assert "looneke01" in r.detail
+
+
 def test_p2_fifth_player_fails_with_offender_named():
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_SCRAPE)
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_HEALED)
     db = _payload(
-        [_row("stable01", team="GSW", salary=51_000_000)] + TRIO_DB + LOONEY_DB
+        [_row("stable01", team="GSW", salary=51_000_000)] + TRIO_DB + LOONEY_HEALED
     )
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "stable01" in r.detail
-    # The allowlisted slugs are not blamed.
-    assert "looneke01" not in r.detail.split(";")[0]
 
 
 def test_p2_missing_trio_member_fails_as_regression():
     # Lillard identical on both sides -> the fix regressed (blend came back
     # to the db side or the scrape got fixed silently) -> surface it.
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_SCRAPE)
-    db = _payload(STABLE + [TRIO_SCRAPE[0]] + TRIO_DB[1:] + LOONEY_DB)
+    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_HEALED)
+    db = _payload(STABLE + [TRIO_SCRAPE[0]] + TRIO_DB[1:] + LOONEY_HEALED)
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "lillada01" in r.detail
     assert "regressed" in r.detail
-
-
-def test_p2_healed_looney_fails_demanding_allowlist_removal():
-    # Scrape and DB agree on looneke01 -> the source healed; the stale
-    # allowlist entry must not pass silently.
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_DB)
-    db = _payload(STABLE + TRIO_DB + LOONEY_DB)
-    r = check_salary_diff_players(scrape, db)
-    assert not r.passed
-    assert "looneke01" in r.detail
-    assert "REMOVE" in r.detail
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +387,8 @@ def test_parse_missing_stamp_is_none(bad):
 
 def test_run_all_green_path_reports_all_pass():
     # Projections drift on a trio member (absorbed by the P1 carve-out) and
-    # agree everywhere else; salaries diff on exactly trio + looneke01.
+    # agree everywhere else; salaries diff on exactly the trio (post-heal:
+    # the scrape-side allowlist is empty, healed Looney contributes no diff).
     scrape_projections = {
         "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
         "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
@@ -397,15 +398,15 @@ def test_run_all_green_path_reports_all_pass():
         "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},
     }
     scrape = _payload(
-        STABLE + TRIO_SCRAPE + LOONEY_SCRAPE, projections=scrape_projections
+        STABLE + TRIO_SCRAPE + LOONEY_HEALED, projections=scrape_projections
     )
     db_without = _payload(
-        STABLE + TRIO_DB + LOONEY_DB,
+        STABLE + TRIO_DB + LOONEY_HEALED,
         projections=db_projections,
         source_note=_stamp(5, "overrides overlay DISABLED (--no-overrides)"),
     )
     db_with = _payload(
-        STABLE + TRIO_DB + LOONEY_DB,
+        STABLE + TRIO_DB + LOONEY_HEALED,
         projections=db_projections,
         source_note=_stamp(5, "0 overrides applied"),
     )

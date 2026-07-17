@@ -60,16 +60,21 @@ EXPECTED_SALARY_DIFF_SLUGS = frozenset({"lillada01", "bealbr01", "prospol01"})
 # a SEPARATE allowlist from the trio (different disease — do not merge).
 # Absence from a live diff means the entry HEALED and must be removed (P2
 # fails with a remove-the-entry message rather than passing silently).
+# Currently EMPTY — retired entries keep their full lifecycle documented
+# below so the next entry has a template and the history has receipts.
 #
-# looneke01 2026-07-16: BBRef contracts page prints the two-stint SUM
-# (declined NOP $8M TO + LAL cap hit $2,449,421 = $10,449,421) on BOTH
-# stint rows; scrape payload carries him twice at the wrong amount, DB
-# once (dedup) at the wrong amount. Truth: 1yr LAL vet-min, cap hit
-# $2,449,421 (Spotrac). Amount override unsupported by reader (status/
-# code/is_fully_ng only) — amount fix rides the Phase-4 overlay; scrape
-# side heals only when BBRef corrects or G7 two-stint grain lands.
-# REMOVE this entry when either happens.
-SCRAPE_SIDE_DIFF_SLUGS = frozenset({"looneke01"})
+# looneke01 — allowlisted 2026-07-16, HEALED AND REMOVED 2026-07-17:
+#   BBRef contracts page printed the two-stint SUM (declined NOP $8M TO +
+#   LAL cap hit $2,449,421 = $10,449,421) on BOTH stint rows; scrape payload
+#   carried him twice at the wrong amount, DB once (dedup) at the wrong
+#   amount. Truth: 1yr LAL vet-min, cap hit $2,449,421 (Spotrac). BBRef
+#   corrected the page: the 2026-07-17 ingest ran with 0 dup flags and the
+#   fresh scrape carries him once at $2,449,421; the harness fired its
+#   designed "source healed; REMOVE the allowlist entry" failure, and the
+#   related status override was retired the same day (P4's no-row-effect
+#   tell, the Reaves pattern). Any looneke01 diff from here on is a NEW
+#   regression and must fail P2 as an unexpected slug.
+SCRAPE_SIDE_DIFF_SLUGS: frozenset[str] = frozenset()
 
 # Cap-holds sentinel-debris allowance: {(team, season): max_abs_dollar_delta}.
 # EXPLICIT allowlist, deliberately EMPTY as of 2026-07-14 — the live probe
