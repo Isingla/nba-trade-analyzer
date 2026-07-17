@@ -255,7 +255,10 @@ def test_tie_break_never_reaches_tier2_split_cases():
     assert result.flags == []
 
 
-def test_single_rows_and_unslugged_rows_pass_through():
+def test_single_rows_without_dead_equality_and_unslugged_rows_pass_through():
+    # NARROWED CLAIM (gap fix 2026-07-18): single rows pass through when
+    # their schedule does NOT whole-schedule-equal an own-team dead charge
+    # (the pure-dead class is dropped/flagged — see the pure-dead tests).
     contracts = [
         _contract("curryst01", "GSW", {"2026-27": 59606817}),
         _contract("", "BOS", {"2026-27": 1000000}),  # un-slugged
@@ -572,16 +575,157 @@ def test_same_team_implausible_residual_is_not_separated(caplog):
     assert refusals and "isaacjo01" in refusals[0]
 
 
-def test_same_team_cell_at_or_below_charge_is_not_separated():
-    # cell == charge is a pure-dead cell and cell < charge cannot contain the
-    # charge — neither shape is a blend, both stay untouched (and silent).
-    for cell in (8000000, 5000000):
-        contracts = [_contract("isaacjo01", "ORL", {"2026-27": cell})]
+# ---------------------------------------------------------------------------
+# Pure-dead single rows (gap fix 2026-07-18): a player waived and signed
+# nowhere gets ONE BBRef row equal to his stretch schedule — Micic/Rubio/
+# McGee/Louzada class. Whole-schedule equality + Spotrac corroboration drops
+# the row (the charge lives only in dead money); equality WITHOUT
+# corroboration keeps + flags (the minimum-salary coincidence guard).
+# ---------------------------------------------------------------------------
+
+def test_pure_dead_single_row_with_spotrac_corroboration_is_dropped():
+    # T1 (inverts the old cell == charge half of the guardian test): cell
+    # equals the own-team charge for the whole schedule, and Spotrac's
+    # actives map (provided, player absent) corroborates he is gone.
+    contracts = [_contract("isaacjo01", "ORL", {"2026-27": 8000000})]
+    result = separate_dead_money(
+        contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF, spotrac_teams={}
+    )
+    assert result.kept == []
+    assert result.flags == []
+    assert result.dropped == [
+        ("isaacjo01", "ORL", "pure-dead single row (Jonathan Isaac WAIVED)")
+    ]
+
+
+def test_same_team_cell_below_charge_is_not_separated():
+    # The surviving half of the old guardian test, UNCHANGED behavior:
+    # cell < charge cannot contain the charge (source-side heal shape) —
+    # untouched and silent, even with Spotrac corroboration data present.
+    contracts = [_contract("isaacjo01", "ORL", {"2026-27": 5000000})]
+    result = separate_dead_money(
+        contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF, spotrac_teams={}
+    )
+    assert result.kept[0].amounts == {"2026-27": 5000000}
+    assert result.dropped == [] and result.flags == []
+
+
+def test_pure_dead_equality_without_corroboration_is_kept_and_flagged():
+    # T2: the minimum-salary coincidence guard, both non-corroborated shapes.
+    # (a) no Spotrac data at all; (b) Spotrac says he IS an active on this
+    # team. Either way: keep the row, flag for human review, never guess.
+    for spotrac in (None, {"isaacjo01": "ORL"}):
+        contracts = [_contract("isaacjo01", "ORL", {"2026-27": 8000000})]
         result = separate_dead_money(
-            contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF
+            contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF, spotrac_teams=spotrac
         )
-        assert result.kept[0].amounts == {"2026-27": cell}
-        assert result.dropped == [] and result.flags == []
+        assert result.kept[0].amounts == {"2026-27": 8000000}
+        assert result.dropped == []
+        assert len(result.flags) == 1
+        assert result.flags[0].slug == "isaacjo01"
+        assert result.flags[0].kept_team == "ORL"
+
+
+def test_pure_dead_multi_season_schedule_is_dropped_within_rounding():
+    # T3: the REAL Louzada shape (live CSVs 2026-07-18) — BBRef prints
+    # 268,032 every season while the dead CSV rounds the stretch split as
+    # 268,032 + 268,031 + 268,031 ($804,095 / 3). The ±$1
+    # PURE_DEAD_ROUNDING_TOLERANCE absorbs exactly this.
+    dead = DeadMoneyRow(
+        player_raw="Didi Louzada WAIVED",
+        player_name="Didi Louzada",
+        team="POR",
+        amounts={"2026-27": 268032, "2027-28": 268031, "2028-29": 268031},
+    )
+    contracts = [
+        _contract(
+            "louzama01",
+            "POR",
+            {"2026-27": 268032, "2027-28": 268032, "2028-29": 268032},
+        )
+    ]
+    result = separate_dead_money(
+        contracts, {"louzama01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
+    )
+    assert result.kept == []
+    assert result.dropped == [
+        ("louzama01", "POR", "pure-dead single row (Didi Louzada WAIVED)")
+    ]
+
+
+def test_pure_dead_superset_charge_still_explains_row():
+    # The Little shape (live CSVs 2026-07-18): a 5-season stretch charge
+    # where BBRef truncates its printed table at 3 seasons. Every VISIBLE
+    # dollar is explained by the charge -> the row drops whole.
+    dead = DeadMoneyRow(
+        player_raw="Nassir Little WAIVED",
+        player_name="Nassir Little",
+        team="PHX",
+        amounts={
+            "2026-27": 3107143,
+            "2027-28": 3107143,
+            "2028-29": 3107143,
+            "2029-30": 3107143,
+            "2030-31": 3107143,
+        },
+    )
+    contracts = [
+        _contract(
+            "littlna01",
+            "PHO",
+            {"2026-27": 3107143, "2027-28": 3107143, "2028-29": 3107143},
+        )
+    ]
+    result = separate_dead_money(
+        contracts, {"littlna01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
+    )
+    assert result.kept == []
+    assert result.dropped == [
+        ("littlna01", "PHO", "pure-dead single row (Nassir Little WAIVED)")
+    ]
+
+
+def test_charge_covering_fewer_seasons_than_row_is_not_pure_dead():
+    # The dangerous direction stays forbidden: a one-season charge must never
+    # erase a multi-season row, even when the covered season matches exactly.
+    # (Falls through to the same-team subtractor, which handles it as the
+    # Isaac-class season-wise blend.)
+    dead = DeadMoneyRow(
+        player_raw="Someone WAIVED",
+        player_name="Someone",
+        team="POR",
+        amounts={"2026-27": 268032},
+    )
+    contracts = [
+        _contract("someoso01", "POR", {"2026-27": 268032, "2027-28": 5000000})
+    ]
+    result = separate_dead_money(
+        contracts, {"someoso01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
+    )
+    assert result.dropped == []
+    assert len(result.kept) == 1
+    # 2027-28 (uncharged season) must survive untouched.
+    assert result.kept[0].amounts["2027-28"] == 5000000
+
+
+def test_partial_equality_is_not_a_pure_dead_candidate():
+    # T4: one season matches the charge, another does not — whole-schedule
+    # equality fails, so the row falls through to the EXISTING paths
+    # unchanged (here: the same-team subtractor refuses the implausible
+    # residual and keeps the original values).
+    schedule = {"2026-27": 268032, "2027-28": 999999}
+    dead = DeadMoneyRow(
+        player_raw="Didi Louzada WAIVED",
+        player_name="Didi Louzada",
+        team="POR",
+        amounts={"2026-27": 268032, "2027-28": 268031},
+    )
+    contracts = [_contract("louzadi01", "POR", dict(schedule))]
+    result = separate_dead_money(
+        contracts, {"louzadi01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
+    )
+    assert result.kept[0].amounts == schedule
+    assert result.dropped == []
 
 
 def test_single_row_cross_team_charge_is_never_subtracted():
