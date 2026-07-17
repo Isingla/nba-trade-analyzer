@@ -58,15 +58,19 @@ def _payload(salaries, projections=None, cap_holds=None, source_note=None):
     }
 
 
-TRIO_SCRAPE = [  # blended dual-team shape on the scrape side
+QUARTET_SCRAPE = [  # blended shapes on the scrape side (by design)
     _row("lillada01", team="POR", salary=35_915_403),
     _row("bealbr01", team="LAC", salary=24_737_010),
     _row("prospol01", team="DAL", salary=3_500_172),
+    # Same-team blend (2026-07-17): BBRef prints Isaac's ORL cell as the
+    # undecomposed waive-and-re-sign total 8,000,000 dead + 2,449,421 vet-min.
+    _row("isaacjo01", team="ORL", salary=10_449_421),
 ]
-TRIO_DB = [  # decomposed actives on the db side
+QUARTET_DB = [  # decomposed actives on the db side
     _row("lillada01", team="POR", salary=13_398_800),
     _row("bealbr01", team="LAC", salary=5_621_700),
     _row("prospol01", team="MEM", salary=2_497_812),
+    _row("isaacjo01", team="ORL", salary=2_449_421),
 ]
 # looneke01 HEALED 2026-07-17 (BBRef corrected its two-stint SUM poison; the
 # allowlist entry is removed). These fixtures now model the RELAPSE shape —
@@ -86,38 +90,49 @@ STABLE = [_row("stable01", team="GSW", salary=50_000_000)]
 # P1 — projections
 # ---------------------------------------------------------------------------
 
+
 def test_p1_identical_projections_pass_despite_key_order():
     a = {"a01": {"seasons": {"2026-27": {"waa": 1.5, "impact": 2.0}}}}
     b = {"a01": {"seasons": {"2026-27": {"impact": 2.0, "waa": 1.5}}}}  # reordered
-    r = check_projections_identical(_payload([], projections=a), _payload([], projections=b))
+    r = check_projections_identical(
+        _payload([], projections=a), _payload([], projections=b)
+    )
     assert r.passed
 
 
 def test_p1_float_drift_fails_and_names_the_slug():
     a = {"a01": {"seasons": {"2026-27": {"waa": 1.5}}}}
     b = {"a01": {"seasons": {"2026-27": {"waa": 1.5000001}}}}
-    r = check_projections_identical(_payload([], projections=a), _payload([], projections=b))
+    r = check_projections_identical(
+        _payload([], projections=a), _payload([], projections=b)
+    )
     assert not r.passed
     assert "a01" in r.detail
 
 
-def test_p1_trio_only_drift_passes_and_names_the_carve_out():
-    # The trio's decomposed salaries feed their projections — forgiven, but
-    # NEVER silently: the absorbed slugs must appear in the PASS message.
+def test_p1_quartet_only_drift_passes_and_names_the_carve_out():
+    # The quartet's decomposed salaries feed their projections — forgiven,
+    # but NEVER silently: the absorbed slugs must appear in the PASS message.
+    # isaacjo01 (the same-team member) is carved exactly like the trio.
     a = {
         "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
+        "isaacjo01": {"seasons": {"2026-27": {"waa": 0.5}}},
         "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
     }
     b = {
         "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},  # drifted (carved)
+        "isaacjo01": {"seasons": {"2026-27": {"waa": 0.9}}},  # drifted (carved)
         "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
     }
-    r = check_projections_identical(_payload([], projections=a), _payload([], projections=b))
+    r = check_projections_identical(
+        _payload([], projections=a), _payload([], projections=b)
+    )
     assert r.passed
     assert "lillada01" in r.detail  # carve-out visible in every run
+    assert "isaacjo01" in r.detail
 
 
-def test_p1_trio_plus_extra_fails_naming_only_the_extra():
+def test_p1_quartet_plus_extra_fails_naming_only_the_extra():
     a = {
         "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
         "extra01": {"seasons": {"2026-27": {"waa": 1.0}}},
@@ -126,11 +141,13 @@ def test_p1_trio_plus_extra_fails_naming_only_the_extra():
         "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},
         "extra01": {"seasons": {"2026-27": {"waa": 1.1}}},
     }
-    r = check_projections_identical(_payload([], projections=a), _payload([], projections=b))
+    r = check_projections_identical(
+        _payload([], projections=a), _payload([], projections=b)
+    )
     assert not r.passed
-    unexpected_clause, _, carved_clause = r.detail.partition("trio drift absorbed")
+    unexpected_clause, _, carved_clause = r.detail.partition("quartet drift absorbed")
     assert "extra01" in unexpected_clause
-    assert "lillada01" not in unexpected_clause  # trio only in the carved clause
+    assert "lillada01" not in unexpected_clause  # quartet only in carved clause
     assert "lillada01" in carved_clause
 
 
@@ -138,11 +155,13 @@ def test_p1_trio_plus_extra_fails_naming_only_the_extra():
 # P2 — salary diff set
 # ---------------------------------------------------------------------------
 
-def test_p2_trio_only_diff_passes_with_empty_scrape_side_allowlist():
+
+def test_p2_quartet_only_diff_passes_with_empty_scrape_side_allowlist():
     # Post-heal green path: the healed Looney row is IDENTICAL on both sides
-    # and contributes no diff; the expected set is exactly the trio.
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_HEALED)
-    db = _payload(STABLE + TRIO_DB + LOONEY_HEALED)
+    # and contributes no diff; the expected set is exactly the quartet
+    # (dual-team trio + same-team isaacjo01).
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED)
+    db = _payload(STABLE + QUARTET_DB + LOONEY_HEALED)
     assert parity.SCRAPE_SIDE_DIFF_SLUGS == frozenset()
     assert diff_salary_slugs(scrape, db) == set(parity.EXPECTED_SALARY_DIFF_SLUGS)
     assert check_salary_diff_players(scrape, db).passed
@@ -151,8 +170,8 @@ def test_p2_trio_only_diff_passes_with_empty_scrape_side_allowlist():
 def test_p2_looney_relapse_fails_as_new_unexpected_slug():
     # The old two-stint poison reappearing is no longer forgiven: with the
     # allowlist empty, a looneke01 diff is a NEW unexpected slug.
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_RELAPSE_SCRAPE)
-    db = _payload(STABLE + TRIO_DB + LOONEY_RELAPSE_DB)
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_RELAPSE_SCRAPE)
+    db = _payload(STABLE + QUARTET_DB + LOONEY_RELAPSE_DB)
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "UNEXPECTED" in r.detail
@@ -160,20 +179,20 @@ def test_p2_looney_relapse_fails_as_new_unexpected_slug():
 
 
 def test_p2_fifth_player_fails_with_offender_named():
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_HEALED)
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED)
     db = _payload(
-        [_row("stable01", team="GSW", salary=51_000_000)] + TRIO_DB + LOONEY_HEALED
+        [_row("stable01", team="GSW", salary=51_000_000)] + QUARTET_DB + LOONEY_HEALED
     )
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "stable01" in r.detail
 
 
-def test_p2_missing_trio_member_fails_as_regression():
+def test_p2_missing_quartet_member_fails_as_regression():
     # Lillard identical on both sides -> the fix regressed (blend came back
     # to the db side or the scrape got fixed silently) -> surface it.
-    scrape = _payload(STABLE + TRIO_SCRAPE + LOONEY_HEALED)
-    db = _payload(STABLE + [TRIO_SCRAPE[0]] + TRIO_DB[1:] + LOONEY_HEALED)
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED)
+    db = _payload(STABLE + [QUARTET_SCRAPE[0]] + QUARTET_DB[1:] + LOONEY_HEALED)
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
     assert "lillada01" in r.detail
@@ -184,9 +203,12 @@ def test_p2_missing_trio_member_fails_as_regression():
 # P2b — cap-holds debris allowlist
 # ---------------------------------------------------------------------------
 
+
 def test_p2b_equal_totals_pass():
     holds = {"GSW": {"2026-27": 27_100_000}}
-    r = check_cap_hold_debris(_payload([], cap_holds=holds), _payload([], cap_holds=holds))
+    r = check_cap_hold_debris(
+        _payload([], cap_holds=holds), _payload([], cap_holds=holds)
+    )
     assert r.passed
 
 
@@ -199,9 +221,7 @@ def test_p2b_non_allowlisted_delta_fails():
 
 
 def test_p2b_allowlisted_delta_passes(monkeypatch):
-    monkeypatch.setattr(
-        parity, "ALLOWED_CAP_HOLD_DEBRIS", {("BOS", "2026-27"): 24}
-    )
+    monkeypatch.setattr(parity, "ALLOWED_CAP_HOLD_DEBRIS", {("BOS", "2026-27"): 24})
     a = _payload([], cap_holds={"BOS": {"2026-27": 24}})
     b = _payload([], cap_holds={})
     assert check_cap_hold_debris(a, b).passed
@@ -211,9 +231,10 @@ def test_p2b_allowlisted_delta_passes(monkeypatch):
 # P3 — option-flag deltas
 # ---------------------------------------------------------------------------
 
-def test_p3_no_flag_deltas_pass_and_trio_is_exempt():
-    scrape = _payload(TRIO_SCRAPE + [_row("flags01", po=True)])
-    db = _payload(TRIO_DB + [_row("flags01", po=True)])
+
+def test_p3_no_flag_deltas_pass_and_quartet_is_exempt():
+    scrape = _payload(QUARTET_SCRAPE + [_row("flags01", po=True)])
+    db = _payload(QUARTET_DB + [_row("flags01", po=True)])
     assert check_option_flags(scrape, db).passed
 
 
@@ -302,6 +323,7 @@ def test_p4_zero_overrides_and_zero_diff_passes():
 # P5 — season-window canary (salary window = 2026-27..2031-32 since 2026-07-16)
 # ---------------------------------------------------------------------------
 
+
 def test_p5_clean_payload_passes():
     assert check_season_window_canary(
         _payload([_row("a01", yearly=[1, 2, 3, 4, 5])])
@@ -335,6 +357,7 @@ def test_p5_2032_33_season_key_fails():
 # P6 — G7 canary
 # ---------------------------------------------------------------------------
 
+
 def test_p6_clean_grain_and_matching_stamp_passes():
     p = _payload(
         [_row("a01"), _row("b01")],
@@ -361,6 +384,7 @@ def test_p6_stamp_count_mismatch_fails():
 # Stamp parsers + full-run wiring
 # ---------------------------------------------------------------------------
 
+
 def test_parse_applied_overrides_real_format():
     note = _stamp(
         412,
@@ -386,36 +410,38 @@ def test_parse_missing_stamp_is_none(bad):
 
 
 def test_run_all_green_path_reports_all_pass():
-    # Projections drift on a trio member (absorbed by the P1 carve-out) and
-    # agree everywhere else; salaries diff on exactly the trio (post-heal:
+    # Projections drift on quartet members (absorbed by the P1 carve-out) and
+    # agree everywhere else; salaries diff on exactly the quartet (post-heal:
     # the scrape-side allowlist is empty, healed Looney contributes no diff).
     scrape_projections = {
         "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
         "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
+        "isaacjo01": {"seasons": {"2026-27": {"waa": 0.5}}},
     }
     db_projections = {
         "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
         "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},
+        "isaacjo01": {"seasons": {"2026-27": {"waa": 0.9}}},
     }
     scrape = _payload(
-        STABLE + TRIO_SCRAPE + LOONEY_HEALED, projections=scrape_projections
+        STABLE + QUARTET_SCRAPE + LOONEY_HEALED, projections=scrape_projections
     )
     db_without = _payload(
-        STABLE + TRIO_DB + LOONEY_HEALED,
+        STABLE + QUARTET_DB + LOONEY_HEALED,
         projections=db_projections,
-        source_note=_stamp(5, "overrides overlay DISABLED (--no-overrides)"),
+        source_note=_stamp(6, "overrides overlay DISABLED (--no-overrides)"),
     )
     db_with = _payload(
-        STABLE + TRIO_DB + LOONEY_HEALED,
+        STABLE + QUARTET_DB + LOONEY_HEALED,
         projections=db_projections,
-        source_note=_stamp(5, "0 overrides applied"),
+        source_note=_stamp(6, "0 overrides applied"),
     )
     results = run_all(scrape, db_without, db_with)
     assert [r.name for r in results] == [
-        "P1 projections byte-identical outside trio",
-        "P2 salary diff == known-fixed trio + scrape-side allowlist",
+        "P1 projections byte-identical outside quartet",
+        "P2 salary diff == known-fixed quartet + scrape-side allowlist",
         "P2b cap-holds delta within documented allowlist",
-        "P3 option-flag deltas outside trio == 0",
+        "P3 option-flag deltas outside quartet == 0",
         "P4 override diff == metadata stamp (both directions)",
         "P5 season-window canary: no season outside salary window",
         "P6 G7 canary: one row per player, count matches reader stamp",

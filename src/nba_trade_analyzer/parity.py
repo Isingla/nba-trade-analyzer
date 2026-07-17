@@ -5,13 +5,13 @@ Runs the export three times — ``--source scrape``, ``--source db
 snapshot), normalizes the JSON payloads, and asserts the cutover contract:
 
   P1  projections byte-identical (normalized) between scrape and db modes,
-      OUTSIDE the trio carve-out (their salary decomposition feeds
+      OUTSIDE the quartet carve-out (their salary decomposition feeds
       projections; absorbed drift is always named in the output)
-  P2  salary-side diff == EXACTLY the known-fixed trio + the scrape-side
+  P2  salary-side diff == EXACTLY the known-fixed quartet + the scrape-side
       allowlist (SCRAPE_SIDE_DIFF_SLUGS, per-entry receipts; healed entries
       FAIL with a remove-me message) + documented cap-holds debris allowlist
       (currently EMPTY — see ALLOWED_CAP_HOLD_DEBRIS)
-  P3  option-flag deltas outside the trio == zero (G4(b) stored flags)
+  P3  option-flag deltas outside the quartet == zero (G4(b) stored flags)
   P4  overrides-on vs overrides-off diff == the payload's applied-override
       metadata stamp, set-equal in BOTH directions
   P5  season-window canary: no season OUTSIDE the salary window
@@ -47,17 +47,34 @@ from pathlib import Path
 
 from nba_trade_analyzer.export import salary_season_keys
 
-# The three players whose salary rows are EXPECTED to differ between the
-# scrape path and the DB path: the commit-2315e89 dual-team blend defect
-# (Lillard, Beal, Prosper), fixed DB-side by dead-money separation. Any other
-# player in the salary diff is a cutover blocker. SHARED by P2's expected-diff
-# set and P1's projection carve-out (payload diff 2026-07-16: the salary
-# decomposition feeds projections, so exactly these slugs drift P1 too) —
-# one constant, never two lists.
-EXPECTED_SALARY_DIFF_SLUGS = frozenset({"lillada01", "bealbr01", "prospol01"})
+# The players whose salary rows are EXPECTED to differ between the scrape
+# path and the DB path — the DESIGN-DIFFERENCE family: BBRef publishes a
+# real-but-blended total, the scrape side carries it by design, and the DB
+# side decomposes it. Any other player in the salary diff is a cutover
+# blocker. SHARED by P2's expected-diff set and P1's projection carve-out
+# (payload diff 2026-07-16: the salary decomposition feeds projections, so
+# exactly these slugs drift P1 too) — one constant, never two lists.
+#
+#   - lillada01, bealbr01, prospol01 — the commit-2315e89 DUAL-team blend
+#     defect, fixed DB-side by dead-money separation.
+#   - isaacjo01 — added 2026-07-17, the SAME-TEAM blend variant: ORL waived
+#     him 6/27 ($8,000,000 gtd, not stretched) and he re-signed ORL on a
+#     vet minimum during the moratorium (moratorium finalization proves the
+#     minimum; cap hit $2,449,421). BBRef prints the undecomposed total
+#     $10,449,421 in his ORL cell; the DB side decomposes 10,449,421 -
+#     8,000,000 = 2,449,421 active, the scrape side carries BBRef's blended
+#     total by design. DESIGN-DIFFERENCE family (this constant, with the
+#     trio) — NOT the scrape-side-lie family (SCRAPE_SIDE_DIFF_SLUGS,
+#     currently empty): there the SOURCE is wrong and the entry must be
+#     removed when it heals; here both sides are faithful to their design
+#     and the entry stays until BBRef changes how it publishes. Different
+#     constants for a reason.
+EXPECTED_SALARY_DIFF_SLUGS = frozenset(
+    {"lillada01", "bealbr01", "prospol01", "isaacjo01"}
+)
 
 # Scrape-side-broken players: the DB is not the diverging side, so these are
-# a SEPARATE allowlist from the trio (different disease — do not merge).
+# a SEPARATE allowlist from the quartet (different disease — do not merge).
 # Absence from a live diff means the entry HEALED and must be removed (P2
 # fails with a remove-the-entry message rather than passing silently).
 # Currently EMPTY — retired entries keep their full lifecycle documented
@@ -115,6 +132,7 @@ class CheckResult:
 # Normalization
 # ---------------------------------------------------------------------------
 
+
 def normalize(value):
     """Canonical form: dict keys sorted (via canonical_json), -0.0 -> 0.0.
 
@@ -138,6 +156,7 @@ def canonical_json(value) -> str:
 # ---------------------------------------------------------------------------
 # Payload accessors
 # ---------------------------------------------------------------------------
+
 
 def salary_rows_by_slug(payload: dict) -> dict[str, list[str]]:
     """slug -> sorted canonical row strings (a player may have >1 row on the
@@ -176,13 +195,18 @@ _APPLIED_RE = re.compile(r"(\d+) override\(s\) applied: (?P<items>.+?)(?:; skipp
 _ROW_COUNT_RE = re.compile(r"(\d+) salary rows")
 
 
-def parse_applied_overrides(source_note: str | None) -> list[tuple[str, str, str, str]] | None:
+def parse_applied_overrides(
+    source_note: str | None,
+) -> list[tuple[str, str, str, str]] | None:
     """Applied-override tuples from the provenance stamp; [] when the stamp
     says zero/disabled; None when the stamp is missing or unparseable (the
     caller must FAIL on None — an unreadable stamp is not a pass)."""
     if not source_note:
         return None
-    if "overrides overlay DISABLED" in source_note or "0 overrides applied" in source_note:
+    if (
+        "overrides overlay DISABLED" in source_note
+        or "0 overrides applied" in source_note
+    ):
         return []
     m = _APPLIED_RE.search(source_note)
     if not m:
@@ -210,15 +234,16 @@ def override_slugs(overrides: list[tuple[str, str, str, str]]) -> set[str]:
 # Checks (pure — unit-tested with stub payloads)
 # ---------------------------------------------------------------------------
 
-def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
-    """Projections byte-identical OUTSIDE the trio carve-out.
 
-    The trio's salary decomposition feeds their projections (2026-07-16
+def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
+    """Projections byte-identical OUTSIDE the quartet carve-out.
+
+    The quartet's salary decomposition feeds their projections (2026-07-16
     payload diff), so P1 excludes the SAME constant P2 forgives — and always
     NAMES what the carve-out absorbed, so the exception is visible in every
     run's output, never silent.
     """
-    name = "P1 projections byte-identical outside trio"
+    name = "P1 projections byte-identical outside quartet"
     scrape_proj = scrape.get("projections", {})
     db_proj = db.get("projections", {})
     drifted = {
@@ -229,7 +254,9 @@ def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
     carved = sorted(drifted & EXPECTED_SALARY_DIFF_SLUGS)
     unexpected = sorted(drifted - EXPECTED_SALARY_DIFF_SLUGS)
     carved_note = (
-        f"trio drift absorbed by carve-out: {carved}" if carved else "carve-out unused"
+        f"quartet drift absorbed by carve-out: {carved}"
+        if carved
+        else "carve-out unused"
     )
     if not unexpected:
         return CheckResult(
@@ -246,17 +273,17 @@ def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
 
 
 def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
-    """Salary diff == trio + the scrape-side allowlist, exactly.
+    """Salary diff == quartet + the scrape-side allowlist, exactly.
 
     diff_salary_slugs compares each slug's full ROW SET, so a structural
     count difference (looneke01: two scrape rows vs one DB row) is the same
     kind of diff as an amount difference — the allowlist forgives the slug,
     whatever shape its divergence takes. Missing members fail in both
-    directions, with direction-specific messages: a missing trio member
+    directions, with direction-specific messages: a missing quartet member
     means the DB-side fix regressed; a missing scrape-side member means the
     source HEALED and the allowlist entry must be removed.
     """
-    name = "P2 salary diff == known-fixed trio + scrape-side allowlist"
+    name = "P2 salary diff == known-fixed quartet + scrape-side allowlist"
     expected = EXPECTED_SALARY_DIFF_SLUGS | SCRAPE_SIDE_DIFF_SLUGS
     diff = diff_salary_slugs(scrape, db)
     unexpected = diff - expected
@@ -266,7 +293,7 @@ def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
             name,
             True,
             f"diff set exactly {sorted(diff)} "
-            f"(trio {sorted(EXPECTED_SALARY_DIFF_SLUGS)} + "
+            f"(quartet {sorted(EXPECTED_SALARY_DIFF_SLUGS)} + "
             f"scrape-side {sorted(SCRAPE_SIDE_DIFF_SLUGS)})",
         )
     detail = []
@@ -275,7 +302,7 @@ def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
     regressed = missing & EXPECTED_SALARY_DIFF_SLUGS
     if regressed:
         detail.append(
-            f"expected trio member(s) NOT in diff (fix regressed?): {sorted(regressed)}"
+            f"expected quartet member(s) NOT in diff (fix regressed?): {sorted(regressed)}"
         )
     healed = missing & SCRAPE_SIDE_DIFF_SLUGS
     if healed:
@@ -302,14 +329,16 @@ def check_cap_hold_debris(scrape: dict, db: dict) -> CheckResult:
     if not violations:
         allowed = len(deltas)
         return CheckResult(
-            name, True, f"{allowed} delta(s), all within allowlist ({len(ALLOWED_CAP_HOLD_DEBRIS)} entries)"
+            name,
+            True,
+            f"{allowed} delta(s), all within allowlist ({len(ALLOWED_CAP_HOLD_DEBRIS)} entries)",
         )
     sample = sorted(violations.items())[:10]
     return CheckResult(name, False, f"non-allowlisted team-season deltas: {sample}")
 
 
 def check_option_flags(scrape: dict, db: dict) -> CheckResult:
-    name = "P3 option-flag deltas outside trio == 0"
+    name = "P3 option-flag deltas outside quartet == 0"
     mismatches: list[tuple[str, str, str]] = []
     scrape_rows = {
         (r.get("bbrefSlug"), r.get("team")): r for r in scrape.get("salaries", [])
@@ -317,7 +346,7 @@ def check_option_flags(scrape: dict, db: dict) -> CheckResult:
     for row in db.get("salaries", []):
         slug = row.get("bbrefSlug")
         if slug in EXPECTED_SALARY_DIFF_SLUGS:
-            continue  # trio rows legitimately differ wholesale
+            continue  # quartet rows legitimately differ wholesale
         other = scrape_rows.get((slug, row.get("team")))
         if other is None:
             continue  # presence differences are P2's finding, not a flag delta
@@ -351,7 +380,9 @@ def check_override_diff(db_with: dict, db_without: dict) -> CheckResult:
         )
     detail = []
     if only_in_diff:
-        detail.append(f"rows changed WITHOUT a stamped override: {sorted(only_in_diff)}")
+        detail.append(
+            f"rows changed WITHOUT a stamped override: {sorted(only_in_diff)}"
+        )
     if only_in_stamp:
         detail.append(
             "stamped override with NO row effect (moot override? retire it, or "
@@ -406,7 +437,9 @@ def check_g7_canary(db: dict) -> CheckResult:
         problems.append(f"payload has {len(rows)} rows but reader stamped {stamped}")
     if not problems:
         stamp_note = "unstamped" if stamped is None else f"stamp={stamped}"
-        return CheckResult(name, True, f"{len(rows)} rows == {len(set(slugs))} players ({stamp_note})")
+        return CheckResult(
+            name, True, f"{len(rows)} rows == {len(set(slugs))} players ({stamp_note})"
+        )
     return CheckResult(name, False, "; ".join(problems))
 
 
