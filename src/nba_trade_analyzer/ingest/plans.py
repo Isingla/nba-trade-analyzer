@@ -6,6 +6,9 @@ Phase 0 trace:
   * :func:`separate_dead_money` — the Lillard/Beal fix (Path 1d): a BBRef
     contract row duplicated across teams is dropped ONLY when a dead-money row
     explains it to the dollar; anything less certain is flagged, never guessed.
+    Extended to the SAME-TEAM blend (the Isaac waive-and-re-sign shape): a
+    single row whose cell is the exact sum of the team's own dead charge and
+    a plausible active remainder is decomposed in place.
   * :func:`plan_option_transitions` — the no-guess option differ (Path 3c/3d):
     a P/T marker that clears upstream is a HUMAN adjudication
     (exercised/declined/renegotiated), so the DB row is left alone and a
@@ -49,6 +52,7 @@ MIN_PLAUSIBLE_ACTIVE_SALARY = 1_000_000
 # Dead-money separation
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ContractSeasonAmounts:
     """One BBRef contract row, reduced to what separation needs."""
@@ -81,7 +85,9 @@ class DuplicateFlag:
 @dataclass
 class DeadMoneySeparation:
     kept: list[ContractSeasonAmounts] = field(default_factory=list)
-    dropped: list[tuple[str, str, str]] = field(default_factory=list)  # (slug, team, why)
+    dropped: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # (slug, team, why)
     flags: list[DuplicateFlag] = field(default_factory=list)
 
 
@@ -150,9 +156,64 @@ def _subtract_dead_blends(
     Guardrails — never subtract blindly:
       - callers gate this to the kept survivor of a duplicate group whose
         other row dead money explained (whole-row or season-level). A
-        single-row player is never touched: a normal active row coexisting
-        with old stretch charges is NOT a blend, and ``amount > charge``
-        alone cannot tell the two apart — only the duplicate fingerprint can;
+        single-row player is never touched by CROSS-team subtraction: a
+        normal active row coexisting with old stretch charges is NOT a
+        blend, and ``amount > charge`` alone cannot tell the two apart —
+        only the duplicate fingerprint can. (Single rows blended with the
+        SAME team's charge are a different shape with its own fingerprint —
+        see :func:`_subtract_same_team_blend`);
+      - the shared arithmetic guardrails of :func:`_subtract_charge_totals`.
+    """
+    if not dead_rows:
+        return kept
+    totals = _dead_charge_totals(dead_rows, kept.team, display_to_bbref)
+    return _subtract_charge_totals(kept, totals)
+
+
+def _subtract_same_team_blend(
+    row: ContractSeasonAmounts,
+    dead_rows: list[DeadMoneyRow],
+    display_to_bbref: dict[str, str],
+) -> ContractSeasonAmounts:
+    """Decompose a single row blended with its OWN team's dead charge.
+
+    The same disease as the dual-team blends, SAME-TEAM variant (isaacjo01:
+    ORL waived him 6/27 with $8,000,000 guaranteed, he re-signed ORL on a
+    vet minimum during the moratorium; BBRef's ORL cell prints the
+    undecomposed total 10,449,421 = 8,000,000 dead + 2,449,421 active).
+    Because both the charge and the new contract sit on ONE team, BBRef
+    emits ONE row and the duplicate-shaped machinery never sees it — the
+    fingerprint here is the dead-money row on the row's own team plus exact
+    arithmetic: cell - charge = a plausible active remainder.
+
+    Only the row's OWN team's charges are eligible. A charge on a DIFFERENT
+    team next to a single row is the old-stretch coexistence shape (active
+    row on the new team, stale charge on the former team, nothing blended)
+    and must never be subtracted — when BBRef blends across two teams it
+    prints two rows, which is the duplicate machinery's territory.
+    Arithmetic that doesn't produce a plausible remainder is refused by the
+    shared guardrails in :func:`_subtract_charge_totals` (original value
+    kept, WARNING naming the player).
+    """
+    if not dead_rows:
+        return row
+    totals: dict[str, int] = {}
+    for dead in dead_rows:
+        if display_to_bbref.get(dead.team, dead.team) != row.team:
+            continue
+        for season, amount in dead.amounts.items():
+            if amount > 0:
+                totals[season] = totals.get(season, 0) + amount
+    return _subtract_charge_totals(row, totals)
+
+
+def _subtract_charge_totals(
+    kept: ContractSeasonAmounts,
+    totals: dict[str, int],
+) -> ContractSeasonAmounts:
+    """Shared subtraction core: write ``cell - charge`` as the active salary.
+
+    Arithmetic guardrails (both blend shapes):
       - ``amount == charge`` is the pure-dead season and belongs to the
         exact-match classifiers, never here;
       - ``amount < charge`` cannot be a blend containing the charge — left
@@ -161,9 +222,6 @@ def _subtract_dead_blends(
       - a residual below ``MIN_PLAUSIBLE_ACTIVE_SALARY`` is refused loudly:
         original value kept, WARNING naming the player.
     """
-    if not dead_rows:
-        return kept
-    totals = _dead_charge_totals(dead_rows, kept.team, display_to_bbref)
     if not totals:
         return kept
 
@@ -290,7 +348,11 @@ def separate_dead_money(
     team comparison is apples-to-apples.
 
     Rules (Phase 2A spec + the season-level extension):
-      - a slug with one row passes through untouched;
+      - a slug with one row is checked for the SAME-TEAM blend (a fresh
+        dead-money row on the row's own team whose subtraction leaves a
+        plausible active remainder — the isaacjo01 waive-and-re-sign shape,
+        see :func:`_subtract_same_team_blend`) and otherwise passes through
+        untouched;
       - for a duplicated slug, a row is dropped iff a dead-money row on that
         SAME team matches it to the dollar (see :func:`_dead_row_explains`);
       - surviving 2-team identical-schedule pairs get the season-level split
@@ -332,11 +394,13 @@ def separate_dead_money(
 
     for slug in order:
         rows = by_slug[slug]
+        dead_rows = dead_by_slug.get(slug, [])
         if len(rows) == 1:
-            result.kept.append(rows[0])
+            result.kept.append(
+                _subtract_same_team_blend(rows[0], dead_rows, display_to_bbref)
+            )
             continue
 
-        dead_rows = dead_by_slug.get(slug, [])
         survivors: list[ContractSeasonAmounts] = []
         for row in rows:
             explained = False
@@ -418,6 +482,7 @@ def separate_dead_money(
 # ---------------------------------------------------------------------------
 # Option transitions (the non-guesser)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class DbOptionState:
@@ -521,15 +586,14 @@ def plan_option_transitions(
         if csv_code is not None:
             continue  # handled (same-code refresh or change-flag) above.
         state = "cleared" if slug in csv_codes else "row_absent"
-        plan.flags.append(
-            OptionTransitionFlag(slug, season, db.code, db.status, state)
-        )
+        plan.flags.append(OptionTransitionFlag(slug, season, db.code, db.status, state))
     return plan
 
 
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class GuardFailure:
@@ -678,6 +742,7 @@ def staleness_warnings(
 # ---------------------------------------------------------------------------
 # Override retirement
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ActiveOverride:
