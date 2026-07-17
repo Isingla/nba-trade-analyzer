@@ -470,3 +470,50 @@ def test_every_compared_player_season_gets_a_row_including_matches(tmp_path):
     )
     assert sorted(r.field for r in rows) == ["salary:2026-27", "salary:2027-28"]
     assert {r.verdict for r in rows} == {"match"}
+
+
+# ---------------------------------------------------------------------------
+# Pure-dead dropped slugs (separation gap fix 2026-07-18): a slug the
+# separation dropped entirely (BBRef printed the row; we ingested none) must
+# land in the dead-aware handling, never as per-row salary mismatches.
+# ---------------------------------------------------------------------------
+
+def test_fully_dropped_slug_with_waived_spotrac_row_lands_dead_aware(tmp_path):
+    # Spotrac lists the dropped player only via a WAIVED row -> the WAIVED
+    # branch compares it against v3_dead_money and NO salary:* rows exist.
+    body = "Lillard Damian WAIVED,22516603.0,0,0,0,0,MIL,PG,36,0,0,0\n"
+    spotrac = load_nba_salaries(_write(tmp_path, body))
+    rows, summary = verify_salaries(
+        ingested={},  # separation dropped the row; nothing ingested
+        bbref={},  # bbref side is post-separation kept rows — also absent
+        spotrac_rows=spotrac,
+        resolver=_resolver(),
+        player_names={"lillada01": "Damian Lillard"},
+        cap_hold_slugs=set(),
+        dead_amounts={"lillada01": {"2026-27": 22516603}},
+    )
+    fields = sorted(r.field for r in rows)
+    assert fields == ["dead_money:2026-27"]
+    assert rows[0].verdict == "match"
+    assert summary.mismatch == 0
+
+
+def test_fully_dropped_slug_with_plain_spotrac_row_hits_dead_money_pattern(tmp_path):
+    # Spotrac still lists the dropped player as a PLAIN active at exactly the
+    # dead charge -> carve-out #2 tags the season a dead_money_pattern MATCH,
+    # not a mismatch.
+    body = "Trae Young,10000000.0,0,0,0,0,SAC,PG,28,0,0,0\n"
+    spotrac = load_nba_salaries(_write(tmp_path, body))
+    rows, summary = verify_salaries(
+        ingested={},
+        bbref={},
+        spotrac_rows=spotrac,
+        resolver=_resolver(),
+        player_names={"youngtr01": "Trae Young"},
+        cap_hold_slugs=set(),
+        dead_amounts={"youngtr01": {"2026-27": 10000000}},
+    )
+    pattern_rows = [r for r in rows if "dead-money-pattern" in r.field or "dead_money_pattern" in r.field]
+    assert summary.dead_money_pattern == 1
+    assert summary.mismatch == 0
+    assert len(pattern_rows) == 1 and pattern_rows[0].verdict == "match"

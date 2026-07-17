@@ -47,6 +47,12 @@ STALENESS_MAX_AGE_DAYS = 7
 # (keep the original value + warning) instead of writing implausible money.
 MIN_PLAUSIBLE_ACTIVE_SALARY = 1_000_000
 
+# Per-season dollar slack for the PURE-DEAD single-row classifier ONLY (every
+# other equality check stays exact). Absorbs CSV rounding of an evenly
+# stretched charge: $804,095 over 3 seasons is 268,032 + 268,031 + 268,031 in
+# the dead-money CSV while BBRef prints 268,032 each season (Louzada/POR).
+PURE_DEAD_ROUNDING_TOLERANCE = 1
+
 
 # ---------------------------------------------------------------------------
 # Dead-money separation
@@ -91,7 +97,9 @@ class DeadMoneySeparation:
     flags: list[DuplicateFlag] = field(default_factory=list)
 
 
-def _dead_row_explains(contract: ContractSeasonAmounts, dead: DeadMoneyRow) -> bool:
+def _dead_row_explains(
+    contract: ContractSeasonAmounts, dead: DeadMoneyRow, tolerance: int = 0
+) -> bool:
     """True iff the dead-money schedule matches the contract row to the dollar.
 
     The contract row's schedule must EQUAL the dead-money schedule — same
@@ -101,10 +109,24 @@ def _dead_row_explains(contract: ContractSeasonAmounts, dead: DeadMoneyRow) -> b
     (:func:`_season_level_split`) before falling back to the flag bucket.
     Exactness at whichever grain is the point: these branches silently drop
     salary data, so they must never fire on a coincidence.
+
+    ``tolerance`` (default 0 = exact, the standard everywhere else) allows a
+    per-season dollar slack. Only the pure-dead single-row classifier passes
+    a non-zero value, to absorb CSV rounding of an evenly-stretched charge
+    (e.g. $804,095 / 3 = 268,031.67: the dead-money CSV prints
+    268,032 + 268,031 + 268,031 while BBRef prints 268,032 every season).
+    Season KEYS must still match exactly regardless of tolerance.
     """
     if not dead.amounts:
         return False
-    return contract.amounts == dead.amounts
+    if tolerance <= 0:
+        return contract.amounts == dead.amounts
+    if contract.amounts.keys() != dead.amounts.keys():
+        return False
+    return all(
+        abs(contract.amounts[season] - dead.amounts[season]) <= tolerance
+        for season in contract.amounts
+    )
 
 
 def _merged_dead_seasons(dead_rows: list[DeadMoneyRow]) -> dict[str, int] | None:
@@ -348,7 +370,16 @@ def separate_dead_money(
     team comparison is apples-to-apples.
 
     Rules (Phase 2A spec + the season-level extension):
-      - a slug with one row is checked for the SAME-TEAM blend (a fresh
+      - a slug with one row is FIRST checked for the pure-dead shape (every
+        season the row prints equals the own-team dead charge within
+        ``PURE_DEAD_ROUNDING_TOLERANCE``; the charge may extend BEYOND the
+        row's printed seasons but never cover fewer — the
+        waived-and-signed-nowhere class: Micic/Rubio/McGee/Louzada/Little,
+        gap fix 2026-07-18): with Spotrac corroboration that the player is
+        gone it is DROPPED (charge lives only in dead money — team totals
+        are unchanged because consumers add the dead-money bucket back);
+        equality without corroboration keeps the row and flags it; then
+      - a single row is checked for the SAME-TEAM blend (a fresh
         dead-money row on the row's own team whose subtraction leaves a
         plausible active remainder — the isaacjo01 waive-and-re-sign shape,
         see :func:`_subtract_same_team_blend`) and otherwise passes through
@@ -396,8 +427,76 @@ def separate_dead_money(
         rows = by_slug[slug]
         dead_rows = dead_by_slug.get(slug, [])
         if len(rows) == 1:
+            row = rows[0]
+            # PURE-DEAD single row (gap fix 2026-07-18): a player waived and
+            # signed NOWHERE gets ONE BBRef row — his stretch schedule on the
+            # waiving team — so the duplicate machinery never sees it, and the
+            # same-team subtractor's `amount <= charge` gate deliberately
+            # skips equality. Classify it here, BEFORE any subtraction
+            # attempt: every season the ROW prints must equal the row's OWN
+            # team's dead charge (the _dead_row_explains standard, reused via
+            # a schedule restricted to the row's seasons — not forked).
+            #
+            # Two data realities force the "restricted" part and the
+            # tolerance, both verified against live CSVs 2026-07-18:
+            #   * SUPERSET charges (Little/PHO): a 5-season stretch charge
+            #     where BBRef truncates its table at 3 seasons. Every visible
+            #     dollar is still fully explained, so the row drops. The
+            #     dangerous direction — charge covering FEWER seasons than
+            #     the row — still fails (a missing season breaks coverage).
+            #   * ±$1 CSV rounding (Louzada/POR): see
+            #     PURE_DEAD_ROUNDING_TOLERANCE.
+            #
+            # CORROBORATION GATE (never guess): equality alone cannot
+            # distinguish "waived, gone" from a re-signed minimum that
+            # coincidentally equals the charge. Drop ONLY when Spotrac
+            # corroborates the player is gone from this team — i.e. the
+            # caller's slug -> current-team map (built from NON-WAIVED
+            # Spotrac rows only) does not place him on this team. No
+            # Spotrac data at all (spotrac_teams is None) counts as no
+            # corroboration: keep the row and flag it for human review.
+            own_dead = [
+                dead
+                for dead in dead_rows
+                if display_to_bbref.get(dead.team, dead.team) == row.team
+            ]
+            merged_own = _merged_dead_seasons(own_dead) if own_dead else None
+            matching_dead = None
+            if (
+                merged_own
+                and row.amounts
+                and all(season in merged_own for season in row.amounts)
+            ):
+                restricted = replace(
+                    own_dead[0],
+                    amounts={season: merged_own[season] for season in row.amounts},
+                )
+                if _dead_row_explains(
+                    row, restricted, tolerance=PURE_DEAD_ROUNDING_TOLERANCE
+                ):
+                    matching_dead = restricted
+            if matching_dead is not None:
+                spotrac_says_active_here = (
+                    spotrac_teams is not None and spotrac_teams.get(slug) == row.team
+                )
+                corroborated = spotrac_teams is not None and not spotrac_says_active_here
+                if corroborated:
+                    result.dropped.append(
+                        (slug, row.team, f"pure-dead single row ({matching_dead.player_raw})")
+                    )
+                    continue
+                result.flags.append(
+                    DuplicateFlag(
+                        slug=slug,
+                        player_name=row.player_name,
+                        kept_team=row.team,
+                        other_teams=(),
+                    )
+                )
+                result.kept.append(row)
+                continue
             result.kept.append(
-                _subtract_same_team_blend(rows[0], dead_rows, display_to_bbref)
+                _subtract_same_team_blend(row, dead_rows, display_to_bbref)
             )
             continue
 
