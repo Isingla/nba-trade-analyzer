@@ -93,6 +93,36 @@ EXPECTED_SALARY_DIFF_SLUGS = frozenset(
 #   regression and must fail P2 as an unexpected slug.
 SCRAPE_SIDE_DIFF_SLUGS: frozenset[str] = frozenset()
 
+# PURE-DEAD SINGLE-ROW family (added 2026-07-18): players waived and signed
+# nowhere, whose ONE BBRef row equals their own team's dead-money charge for
+# every printed season. The DB ingest DROPS these rows (the single-row
+# pure-dead classifier in ingest/plans.py, Spotrac-corroborated — see the
+# ingest log's "pure-dead single row" entries); the scrape side still prints
+# them. A THIRD family, deliberately separate from both above:
+#   - not the quartet: nothing is decomposed — the whole row is charge, so
+#     the DB has NO row at all (the diff is presence, not amounts);
+#   - not the scrape-side-lie family: BBRef is not wrong, it just publishes
+#     dead charges as roster-shaped rows by design.
+# LIFECYCLE (the Looney pattern, direction-enforced in P2): each member is
+# valid only while BBRef still prints the row. Charges expire and pages heal
+# — rupertra01 aged out 2026-07-18 BEFORE this family existed, which is why
+# he is not in it. When a member stops appearing in the live diff, P2 FAILS
+# demanding its removal here; a carve-out must never outlive its cause.
+# These slugs also vanish from DB-side projections (projections are built
+# per salary row), so P1 carves the same set.
+PURE_DEAD_SINGLE_ROW_SLUGS = frozenset(
+    {
+        "anthoco01",  # Cole Anthony @ MEM
+        "littlna01",  # Nassir Little @ PHO (charge runs past BBRef's printed seasons)
+        "mcgeeja01",  # JaVale McGee @ DAL
+        "liddeej01",  # E.J. Liddell @ PHO
+        "micicva01",  # Vasilije Micic @ MIL
+        "diakima01",  # Mamadi Diakite @ MEM
+        "rubiori01",  # Ricky Rubio @ CLE
+        "louzama01",  # Didi Louzada @ POR (±$1 stretch-split rounding member)
+    }
+)
+
 # Cap-holds sentinel-debris allowance: {(team, season): max_abs_dollar_delta}.
 # EXPLICIT allowlist, deliberately EMPTY as of 2026-07-14 — the live probe
 # that day found all 111 sentinel rows STALE (absent from the current CSV),
@@ -236,14 +266,15 @@ def override_slugs(overrides: list[tuple[str, str, str, str]]) -> set[str]:
 
 
 def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
-    """Projections byte-identical OUTSIDE the quartet carve-out.
+    """Projections byte-identical OUTSIDE the carve-out families.
 
     The quartet's salary decomposition feeds their projections (2026-07-16
-    payload diff), so P1 excludes the SAME constant P2 forgives — and always
-    NAMES what the carve-out absorbed, so the exception is visible in every
-    run's output, never silent.
+    payload diff), and the pure-dead family's DROPPED rows build no DB-side
+    projection at all (presence drift) — so P1 excludes the SAME constants
+    P2 forgives, and always NAMES what each carve-out absorbed, so the
+    exceptions are visible in every run's output, never silent.
     """
-    name = "P1 projections byte-identical outside quartet"
+    name = "P1 projections byte-identical outside carve-outs"
     scrape_proj = scrape.get("projections", {})
     db_proj = db.get("projections", {})
     drifted = {
@@ -252,12 +283,17 @@ def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
         if canonical_json(scrape_proj.get(slug)) != canonical_json(db_proj.get(slug))
     }
     carved = sorted(drifted & EXPECTED_SALARY_DIFF_SLUGS)
-    unexpected = sorted(drifted - EXPECTED_SALARY_DIFF_SLUGS)
-    carved_note = (
-        f"quartet drift absorbed by carve-out: {carved}"
-        if carved
-        else "carve-out unused"
+    carved_pure_dead = sorted(drifted & PURE_DEAD_SINGLE_ROW_SLUGS)
+    unexpected = sorted(
+        drifted - EXPECTED_SALARY_DIFF_SLUGS - PURE_DEAD_SINGLE_ROW_SLUGS
     )
+    notes = []
+    if carved:
+        notes.append(f"quartet drift absorbed by carve-out: {carved}")
+    if carved_pure_dead:
+        # Dropped salary rows build no projection — presence drift, absorbed.
+        notes.append(f"pure-dead family absorbed: {carved_pure_dead}")
+    carved_note = "; ".join(notes) if notes else "carve-out unused"
     if not unexpected:
         return CheckResult(
             name,
@@ -273,7 +309,7 @@ def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
 
 
 def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
-    """Salary diff == quartet + the scrape-side allowlist, exactly.
+    """Salary diff == quartet + pure-dead family + scrape-side allowlist, exactly.
 
     diff_salary_slugs compares each slug's full ROW SET, so a structural
     count difference (looneke01: two scrape rows vs one DB row) is the same
@@ -283,8 +319,12 @@ def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
     means the DB-side fix regressed; a missing scrape-side member means the
     source HEALED and the allowlist entry must be removed.
     """
-    name = "P2 salary diff == known-fixed quartet + scrape-side allowlist"
-    expected = EXPECTED_SALARY_DIFF_SLUGS | SCRAPE_SIDE_DIFF_SLUGS
+    name = "P2 salary diff == quartet + pure-dead family + scrape-side allowlist"
+    expected = (
+        EXPECTED_SALARY_DIFF_SLUGS
+        | PURE_DEAD_SINGLE_ROW_SLUGS
+        | SCRAPE_SIDE_DIFF_SLUGS
+    )
     diff = diff_salary_slugs(scrape, db)
     unexpected = diff - expected
     missing = expected - diff
@@ -294,6 +334,7 @@ def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
             True,
             f"diff set exactly {sorted(diff)} "
             f"(quartet {sorted(EXPECTED_SALARY_DIFF_SLUGS)} + "
+            f"pure-dead {sorted(PURE_DEAD_SINGLE_ROW_SLUGS)} + "
             f"scrape-side {sorted(SCRAPE_SIDE_DIFF_SLUGS)})",
         )
     detail = []
@@ -303,6 +344,13 @@ def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
     if regressed:
         detail.append(
             f"expected quartet member(s) NOT in diff (fix regressed?): {sorted(regressed)}"
+        )
+    aged_out = missing & PURE_DEAD_SINGLE_ROW_SLUGS
+    if aged_out:
+        detail.append(
+            "pure-dead family member(s) NOT in diff — charge aged off BBRef "
+            "or the row healed; REMOVE from PURE_DEAD_SINGLE_ROW_SLUGS: "
+            f"{sorted(aged_out)}"
         )
     healed = missing & SCRAPE_SIDE_DIFF_SLUGS
     if healed:

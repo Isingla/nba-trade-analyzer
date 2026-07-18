@@ -85,6 +85,16 @@ LOONEY_RELAPSE_DB = [_row("looneke01", team="LAL", salary=10_449_421)]
 LOONEY_HEALED = [_row("looneke01", team="LAL", salary=2_449_421)]
 STABLE = [_row("stable01", team="GSW", salary=50_000_000)]
 
+# Pure-dead single rows (2026-07-18): the scrape still prints each waived
+# player's charge-shaped row; the DB drops it (ingest classifier), so the
+# diff is PRESENCE — scrape-only rows, no DB counterpart. DERIVED from the
+# family constant (the MIN-trio fixture lesson: fixtures never hand-copy a
+# membership list they exist to verify).
+PURE_DEAD_SCRAPE = [
+    _row(slug, team="MEM", salary=1_000_000)
+    for slug in sorted(parity.PURE_DEAD_SINGLE_ROW_SLUGS)
+]
+
 
 # ---------------------------------------------------------------------------
 # P1 — projections
@@ -132,6 +142,23 @@ def test_p1_quartet_only_drift_passes_and_names_the_carve_out():
     assert "isaacjo01" in r.detail
 
 
+def test_p1_pure_dead_presence_drift_passes_and_is_named():
+    # A dropped salary row builds no DB-side projection: scrape has the
+    # player, db does not — presence drift, absorbed by the pure-dead
+    # carve-out and NAMED in the pass line (never silent).
+    a = {
+        "rubiori01": {"seasons": {"2026-27": {"waa": 0.0}}},
+        "stable01": {"seasons": {"2026-27": {"waa": 1.0}}},
+    }
+    b = {"stable01": {"seasons": {"2026-27": {"waa": 1.0}}}}
+    r = check_projections_identical(
+        _payload([], projections=a), _payload([], projections=b)
+    )
+    assert r.passed
+    assert "pure-dead family absorbed" in r.detail
+    assert "rubiori01" in r.detail
+
+
 def test_p1_quartet_plus_extra_fails_naming_only_the_extra():
     a = {
         "lillada01": {"seasons": {"2026-27": {"waa": 2.0}}},
@@ -156,21 +183,65 @@ def test_p1_quartet_plus_extra_fails_naming_only_the_extra():
 # ---------------------------------------------------------------------------
 
 
-def test_p2_quartet_only_diff_passes_with_empty_scrape_side_allowlist():
-    # Post-heal green path: the healed Looney row is IDENTICAL on both sides
-    # and contributes no diff; the expected set is exactly the quartet
-    # (dual-team trio + same-team isaacjo01).
-    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED)
+def test_p2_quartet_plus_pure_dead_diff_passes():
+    # Green path: healed Looney identical on both sides contributes no diff;
+    # the expected set is the quartet (dual-team trio + same-team isaacjo01)
+    # PLUS the pure-dead family (scrape-only rows the DB drops).
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED + PURE_DEAD_SCRAPE)
     db = _payload(STABLE + QUARTET_DB + LOONEY_HEALED)
     assert parity.SCRAPE_SIDE_DIFF_SLUGS == frozenset()
-    assert diff_salary_slugs(scrape, db) == set(parity.EXPECTED_SALARY_DIFF_SLUGS)
-    assert check_salary_diff_players(scrape, db).passed
+    assert diff_salary_slugs(scrape, db) == set(
+        parity.EXPECTED_SALARY_DIFF_SLUGS | parity.PURE_DEAD_SINGLE_ROW_SLUGS
+    )
+    r = check_salary_diff_players(scrape, db)
+    assert r.passed
+    assert "pure-dead" in r.detail  # family visible in every PASS line
+
+
+def test_p2_pure_dead_family_membership_is_the_eight_ruled_slugs():
+    # Family membership pinned: exactly the 8 Spotrac-corroborated drops.
+    # rupertra01 aged out BEFORE the family existed and must never join it.
+    assert parity.PURE_DEAD_SINGLE_ROW_SLUGS == frozenset(
+        {
+            "anthoco01",
+            "littlna01",
+            "mcgeeja01",
+            "liddeej01",
+            "micicva01",
+            "diakima01",
+            "rubiori01",
+            "louzama01",
+        }
+    )
+    assert "rupertra01" not in parity.PURE_DEAD_SINGLE_ROW_SLUGS
+    # Disjoint from both sibling families — different mechanisms by design.
+    assert not (parity.PURE_DEAD_SINGLE_ROW_SLUGS & parity.EXPECTED_SALARY_DIFF_SLUGS)
+    assert not (parity.PURE_DEAD_SINGLE_ROW_SLUGS & parity.SCRAPE_SIDE_DIFF_SLUGS)
+
+
+def test_p2_aged_out_pure_dead_member_fails_demanding_removal():
+    # A member vanishing from the scrape (charge aged off BBRef / row healed)
+    # must FAIL with the removal demand — carve-outs never outlive their
+    # cause (the Looney lifecycle, now direction-enforced for this family).
+    scrape_missing_one = [
+        row for row in PURE_DEAD_SCRAPE if row["bbrefSlug"] != "rubiori01"
+    ]
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED + scrape_missing_one)
+    db = _payload(STABLE + QUARTET_DB + LOONEY_HEALED)
+    r = check_salary_diff_players(scrape, db)
+    assert not r.passed
+    assert "rubiori01" in r.detail
+    assert "REMOVE from PURE_DEAD_SINGLE_ROW_SLUGS" in r.detail
+    # The demand names ONLY the aged-out member, not the still-live seven.
+    assert "micicva01" not in r.detail.split("REMOVE")[1]
 
 
 def test_p2_looney_relapse_fails_as_new_unexpected_slug():
     # The old two-stint poison reappearing is no longer forgiven: with the
     # allowlist empty, a looneke01 diff is a NEW unexpected slug.
-    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_RELAPSE_SCRAPE)
+    scrape = _payload(
+        STABLE + QUARTET_SCRAPE + LOONEY_RELAPSE_SCRAPE + PURE_DEAD_SCRAPE
+    )
     db = _payload(STABLE + QUARTET_DB + LOONEY_RELAPSE_DB)
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
@@ -179,7 +250,7 @@ def test_p2_looney_relapse_fails_as_new_unexpected_slug():
 
 
 def test_p2_fifth_player_fails_with_offender_named():
-    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED)
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED + PURE_DEAD_SCRAPE)
     db = _payload(
         [_row("stable01", team="GSW", salary=51_000_000)] + QUARTET_DB + LOONEY_HEALED
     )
@@ -189,9 +260,10 @@ def test_p2_fifth_player_fails_with_offender_named():
 
 
 def test_p2_missing_quartet_member_fails_as_regression():
-    # Lillard identical on both sides -> the fix regressed (blend came back
-    # to the db side or the scrape got fixed silently) -> surface it.
-    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED)
+    # QUARTET BEHAVIOR UNCHANGED by the pure-dead family: Lillard identical
+    # on both sides -> the fix regressed (blend came back to the db side or
+    # the scrape got fixed silently) -> surface it with the same message.
+    scrape = _payload(STABLE + QUARTET_SCRAPE + LOONEY_HEALED + PURE_DEAD_SCRAPE)
     db = _payload(STABLE + [QUARTET_SCRAPE[0]] + QUARTET_DB[1:] + LOONEY_HEALED)
     r = check_salary_diff_players(scrape, db)
     assert not r.passed
@@ -423,8 +495,17 @@ def test_run_all_green_path_reports_all_pass():
         "lillada01": {"seasons": {"2026-27": {"waa": 2.4}}},
         "isaacjo01": {"seasons": {"2026-27": {"waa": 0.9}}},
     }
+    # Pure-dead members: scrape carries the row AND a projection; the DB
+    # dropped the row, so it has neither (presence drift, carved by P1).
+    scrape_projections.update(
+        {
+            slug: {"seasons": {"2026-27": {"waa": 0.0}}}
+            for slug in parity.PURE_DEAD_SINGLE_ROW_SLUGS
+        }
+    )
     scrape = _payload(
-        STABLE + QUARTET_SCRAPE + LOONEY_HEALED, projections=scrape_projections
+        STABLE + QUARTET_SCRAPE + LOONEY_HEALED + PURE_DEAD_SCRAPE,
+        projections=scrape_projections,
     )
     db_without = _payload(
         STABLE + QUARTET_DB + LOONEY_HEALED,
@@ -438,8 +519,8 @@ def test_run_all_green_path_reports_all_pass():
     )
     results = run_all(scrape, db_without, db_with)
     assert [r.name for r in results] == [
-        "P1 projections byte-identical outside quartet",
-        "P2 salary diff == known-fixed quartet + scrape-side allowlist",
+        "P1 projections byte-identical outside carve-outs",
+        "P2 salary diff == quartet + pure-dead family + scrape-side allowlist",
         "P2b cap-holds delta within documented allowlist",
         "P3 option-flag deltas outside quartet == 0",
         "P4 override diff == metadata stamp (both directions)",
