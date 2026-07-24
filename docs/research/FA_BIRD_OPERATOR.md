@@ -111,3 +111,46 @@ re-adjudication. Never fake precision.
 - Disagreement protocol: scraper claim vs your adjudication
   disagree -> flagged, both readings in source_note, never silent
   overwrite.
+
+## Amendment 2026-07-20 — pre-fill rows and Spotrac mapping
+
+- Pre-fill rows (confidence='estimate') MAY leave rights_class,
+  rubric_ref, adjudicated_at, adjudicated_by NULL. The DB constraint
+  verified_requires_adjudication enforces that confidence='verified'
+  requires all four. No row may carry adjudication fields it did not
+  earn.
+- Write path unchanged: ALL SQL by Ishaan's hands. Scraper tasks
+  produce a SQL file for review; they never hold DB credentials.
+- Spotrac label → fa_type mapping (pre-fill only):
+    "UFA"            → ufa
+    "RFA"            → rfa
+    "Player Option"  → pending_option
+    "Team Option"    → pending_option
+    "Club Option"    → pending_option
+  Any other label, or any player Spotrac lists ambiguously → OMIT
+  from the pre-fill file entirely; goes straight to the hand-
+  adjudication queue. Post-deadline option labels are Spotrac
+  staleness claims like any other — the pending_option value records
+  the claim; adjudication resolves it.
+- Spotrac cap-hold figures NEVER land in hold_amount (no derivable
+  hold_basis). They go in source_note prose only:
+  "Spotrac lists hold $X — unverified, basis unknown."
+- Compound Spotrac labels ("UFA / <class>", "RFA / <class>") map on
+  the FA-type component before the separator; the class suffix is a
+  rights_class CLAIM, preserved in row comments only, never
+  prefilled. Ruling 2026-07-20, applied to fa_prefill_2026-07-20.sql.
+- Retirement convention (ruling 2026-07-20): a free agent's
+  retirement is a STATUS FACT, not a rights event. RESEARCH §4
+  lists no hold removal on retirement; the hold persists until the
+  team renounces. Convention: fa_type and renounced unchanged, the
+  dated retirement fact (with source) prepends source_note,
+  confidence = flagged until an actual cap event (renounce ->
+  standard tombstone; new contract -> §4 replacement). No new
+  columns or enum values; retirement lives in source_note until a
+  cap event occurs.
+- hold_basis vocabulary (ruling 2026-07-20): the canonical token
+  list is the DB constraint v3_fa_bird_status_hold_basis_valid
+  (rookie_300, rookie_250, rookie_scale_amount, rfa_greatest_of,
+  minimum, two_way, bird_190, bird_150, early_130, non_120,
+  clamped_max, clamped_min). Never coin new tokens; a formula row
+  with no token means the constraint needs a reviewed ALTER first.
