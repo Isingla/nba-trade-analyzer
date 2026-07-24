@@ -141,3 +141,14 @@ create policy "Public read access" on public.v3_fa_bird_status for select using 
 
 grant select on table public.v3_fa_bird_status to anon, authenticated;
 grant all on table public.v3_fa_bird_status to service_role;
+
+-- ============================================================
+-- STALENESS NOTE 2026-07-20: this draft no longer matches the
+-- live table. Two hand-applied deviations:
+--   1. on delete CASCADE → RESTRICT (applied at creation).
+--   2. 2026-07-20 ALTER: rights_class, rubric_ref, adjudicated_at,
+--      adjudicated_by are now NULLABLE, plus CHECK constraint
+--      verified_requires_adjudication (confidence='verified'
+--      requires all four adjudication fields NOT NULL).
+-- The live database is authoritative; this file is historical.
+-- ============================================================
