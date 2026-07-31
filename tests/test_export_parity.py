@@ -65,12 +65,16 @@ QUARTET_SCRAPE = [  # blended shapes on the scrape side (by design)
     # Same-team blend (2026-07-17): BBRef prints Isaac's ORL cell as the
     # undecomposed waive-and-re-sign total 8,000,000 dead + 2,449,421 vet-min.
     _row("isaacjo01", team="ORL", salary=10_449_421),
+    # KCP (2026-07-31): waived-via-buyout MEM 2026-07-25 — BBRef prints the
+    # blended 17,744,971 dead + 3,876,529 active = 21,621,500 in his MEM cell.
+    _row("caldwke01", team="MEM", salary=21_621_500),
 ]
 QUARTET_DB = [  # decomposed actives on the db side
     _row("lillada01", team="POR", salary=13_398_800),
     _row("bealbr01", team="LAC", salary=5_621_700),
     _row("prospol01", team="MEM", salary=2_497_812),
     _row("isaacjo01", team="ORL", salary=2_449_421),
+    _row("caldwke01", team="MEM", salary=3_876_529),
 ]
 # looneke01 HEALED 2026-07-17 (BBRef corrected its two-stint SUM poison; the
 # allowlist entry is removed). These fixtures now model the RELAPSE shape —
@@ -510,12 +514,12 @@ def test_run_all_green_path_reports_all_pass():
     db_without = _payload(
         STABLE + QUARTET_DB + LOONEY_HEALED,
         projections=db_projections,
-        source_note=_stamp(6, "overrides overlay DISABLED (--no-overrides)"),
+        source_note=_stamp(7, "overrides overlay DISABLED (--no-overrides)"),
     )
     db_with = _payload(
         STABLE + QUARTET_DB + LOONEY_HEALED,
         projections=db_projections,
-        source_note=_stamp(6, "0 overrides applied"),
+        source_note=_stamp(7, "0 overrides applied"),
     )
     results = run_all(scrape, db_without, db_with)
     assert [r.name for r in results] == [

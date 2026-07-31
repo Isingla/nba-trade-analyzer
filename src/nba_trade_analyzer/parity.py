@@ -5,13 +5,13 @@ Runs the export three times — ``--source scrape``, ``--source db
 snapshot), normalizes the JSON payloads, and asserts the cutover contract:
 
   P1  projections byte-identical (normalized) between scrape and db modes,
-      OUTSIDE the quartet carve-out (their salary decomposition feeds
+      OUTSIDE the carve-out set (their salary decomposition feeds
       projections; absorbed drift is always named in the output)
-  P2  salary-side diff == EXACTLY the known-fixed quartet + the scrape-side
+  P2  salary-side diff == EXACTLY the known-fixed carve-out set + the scrape-side
       allowlist (SCRAPE_SIDE_DIFF_SLUGS, per-entry receipts; healed entries
       FAIL with a remove-me message) + documented cap-holds debris allowlist
       (currently EMPTY — see ALLOWED_CAP_HOLD_DEBRIS)
-  P3  option-flag deltas outside the quartet == zero (G4(b) stored flags)
+  P3  option-flag deltas outside the carve-out set == zero (G4(b) stored flags)
   P4  overrides-on vs overrides-off diff == the payload's applied-override
       metadata stamp, set-equal in BOTH directions
   P5  season-window canary: no season OUTSIDE the salary window
@@ -70,7 +70,13 @@ from nba_trade_analyzer.export import salary_season_keys
 #     and the entry stays until BBRef changes how it publishes. Different
 #     constants for a reason.
 EXPECTED_SALARY_DIFF_SLUGS = frozenset(
-    {"lillada01", "bealbr01", "prospol01", "isaacjo01"}
+    # caldwke01: KCP waived-via-buyout MEM 2026-07-25; scrape carries
+    # blended 21,621,500, DB separates 17,744,971 dead (single-source:
+    # Spotrac-derived CSV; Spotrac breakdown paywalled 2026-07-31)
+    # + 3,876,529 active. Verified Ishaan 2026-07-31 (BBRef+Spotrac
+    # transactions). MEM stretch decision open until 8/31 — revisit
+    # if a stretch reshapes the dead schedule.
+    {"lillada01", "bealbr01", "prospol01", "isaacjo01", "caldwke01"}
 )
 
 # Scrape-side-broken players: the DB is not the diverging side, so these are
@@ -268,7 +274,7 @@ def override_slugs(overrides: list[tuple[str, str, str, str]]) -> set[str]:
 def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
     """Projections byte-identical OUTSIDE the carve-out families.
 
-    The quartet's salary decomposition feeds their projections (2026-07-16
+    The carve-out set's salary decomposition feeds their projections (2026-07-16
     payload diff), and the pure-dead family's DROPPED rows build no DB-side
     projection at all (presence drift) — so P1 excludes the SAME constants
     P2 forgives, and always NAMES what each carve-out absorbed, so the
@@ -309,13 +315,13 @@ def check_projections_identical(scrape: dict, db: dict) -> CheckResult:
 
 
 def check_salary_diff_players(scrape: dict, db: dict) -> CheckResult:
-    """Salary diff == quartet + pure-dead family + scrape-side allowlist, exactly.
+    """Salary diff == carve-out set + pure-dead family + scrape-side allowlist, exactly.
 
     diff_salary_slugs compares each slug's full ROW SET, so a structural
     count difference (looneke01: two scrape rows vs one DB row) is the same
     kind of diff as an amount difference — the allowlist forgives the slug,
     whatever shape its divergence takes. Missing members fail in both
-    directions, with direction-specific messages: a missing quartet member
+    directions, with direction-specific messages: a missing carve-out member
     means the DB-side fix regressed; a missing scrape-side member means the
     source HEALED and the allowlist entry must be removed.
     """
