@@ -7,8 +7,11 @@ import pandas as pd
 import pytest
 
 from nba_trade_analyzer.data.cache import JsonCache
+from nba_trade_analyzer.data.crosswalk import crosswalk_from_dict
 from nba_trade_analyzer.data.epm import (
     EXPECTED_COLUMNS,
+    clear_epm_unmatched,
+    epm_unmatched_report,
     fetch_epm_data,
     get_player_epm,
     normalize_name,
@@ -193,3 +196,79 @@ def test_get_player_epm_matches_initials_without_periods(tmp_path):
     row = get_player_epm(df, "PJ Washington")
     assert row is not None
     assert row["player_name"] == "P.J. Washington"
+
+
+# ---------------------------------------------------------------------------
+# Slug-first join + loud misses (2026-08-14 P0 batch).
+#
+# The old join was exact-match on normalized name only: "Ron Holland" (BBRef
+# salary frame) silently missed "Ronald Holland II" (D&T) and the player was
+# demoted to replacement with no trace. The join now goes crosswalk/slug
+# first, name as fallback, folds Cyrillic ё, and every miss is loud: a
+# warning log plus an entry in the unmatched-player report.
+# ---------------------------------------------------------------------------
+
+def _frame(*names: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"player_name": n, "player_name_normalized": normalize_name(n), "epm": 1.0}
+            for n in names
+        ]
+    )
+
+
+def _crosswalk(slug: str, nba_name: str):
+    return crosswalk_from_dict(
+        {
+            "schema_version": 1,
+            "season": "2025-26",
+            "entries": [
+                {
+                    "nba_id": 1,
+                    "nba_name": nba_name,
+                    "bbref_slug": slug,
+                    "bbref_name": nba_name,
+                }
+            ],
+        }
+    )
+
+
+def test_normalize_name_folds_cyrillic_yo():
+    # The snapshot has stored "Egor Dёmin" with U+0451 (Cyrillic ё); NFKD folds
+    # it to Cyrillic е, not Latin e, so it needs an explicit fold.
+    assert normalize_name("Egor Dёmin") == "egor demin"
+    assert normalize_name("Egor Dëmin") == "egor demin"
+
+
+def test_get_player_epm_resolves_ron_holland_name_drift():
+    df = _frame("Ronald Holland II")
+    row = get_player_epm(df, "Ron Holland")
+    assert row is not None
+    assert row["player_name"] == "Ronald Holland II"
+
+
+def test_get_player_epm_joins_by_slug_before_name():
+    df = _frame("Bam Adebayo")
+    cw = _crosswalk("adebaba01", "Bam Adebayo")
+    # The caller-side name is garbage; the slug alone must resolve the row.
+    row = get_player_epm(df, "Totally Wrong Name", slug="adebaba01", crosswalk=cw)
+    assert row is not None
+    assert row["player_name"] == "Bam Adebayo"
+
+
+def test_get_player_epm_miss_is_loud_and_reported(caplog):
+    import logging
+
+    clear_epm_unmatched()
+    df = _frame("Bam Adebayo")
+    cw = _crosswalk("adebaba01", "Bam Adebayo")
+    with caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.epm"):
+        row = get_player_epm(
+            df, "Nobody Realman", slug="nobodno01", crosswalk=cw, record_miss=True
+        )
+    assert row is None
+    assert any("Nobody Realman" in r.message for r in caplog.records)
+    report = epm_unmatched_report()
+    assert any(e["name"] == "Nobody Realman" and e["slug"] == "nobodno01" for e in report)
+    clear_epm_unmatched()

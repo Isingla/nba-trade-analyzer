@@ -8,12 +8,16 @@ taxonomy (epm/darko/aging_epm/aging_darko/replacement), and the fixed
 
 from __future__ import annotations
 
+import logging
+import os
+
 import pandas as pd
 
 from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkEntry
 from nba_trade_analyzer.data.darko import normalize_name as darko_normalize
 from nba_trade_analyzer.data.epm import normalize_name as epm_normalize
 from nba_trade_analyzer.export import (
+    _epm_cache_vintage,
     build_export,
     compute_waa,
     map_source,
@@ -430,3 +434,114 @@ def test_cap_thresholds_is_additive_to_the_wire_shape():
         "certified",
         "source",
     }
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-14 P0 batch: slug-first EPM identity, loud demotions, EPM vintage.
+# ---------------------------------------------------------------------------
+
+def _one_player_export(*, crosswalk, epm_rows, stats_rows, name="Ron Holland",
+                       slug="hollaro01"):
+    salary_df = _salary_df(
+        [
+            {
+                "player_name": name,
+                "bbref_slug": slug,
+                "team": "DET",
+                "salary": 9_070_000,
+                "years_remaining": 2,
+                "is_rookie_scale": True,
+                "has_player_option": False,
+                "has_team_option": True,
+                "yearly_salaries": [9_070_000, 11_000_000],
+            }
+        ]
+    )
+    return build_export(
+        salary_df=salary_df,
+        epm_df=_epm_df(epm_rows),
+        darko_df=_darko_df([]),
+        stats_df=_stats_df(stats_rows),
+        crosswalk=crosswalk,
+    )
+
+
+def test_slug_first_join_survives_source_name_drift():
+    # The salary frame's name matches nothing in EPM, but the crosswalk knows
+    # the slug's canonical NBA name — the slug join must win before the name
+    # fallback gets a chance to silently demote the player.
+    export = _one_player_export(
+        name="R. Q. Holland-Smythe",  # hopeless as a name key
+        crosswalk=_crosswalk([(1631222, "Ronald Holland II", "hollaro01")]),
+        epm_rows=[{"player_name": "Ronald Holland II", "team": "DET", "epm": -0.59}],
+        stats_rows=[
+            {
+                "nba_player_id": 1631222,
+                "player_name": "Ronald Holland II",
+                "team": "DET",
+                "age": 21,
+                "GP": 70,
+                "MPG": 20.0,
+                "NET_RATING": 0.0,
+            }
+        ],
+    )
+    season = export.projections["hollaro01"].seasons[season_keys()[0]]
+    assert season.source == "epm"
+    assert season.impact == -0.59
+
+
+def test_null_age_demotion_is_loud(caplog):
+    # No stats row and no EPM row → age unknown → replacement demotion. The
+    # demotion survives (by design, for now) but must name the player and the
+    # reason out loud — never a silent zeroed shell.
+    with caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.export"):
+        export = _one_player_export(
+            crosswalk=_crosswalk([]),
+            epm_rows=[],
+            stats_rows=[],
+        )
+    season = export.projections["hollaro01"].seasons[season_keys()[0]]
+    assert season.source == "replacement"
+    assert any(
+        "Ron Holland" in r.message and "age" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_epm_cache_vintage_reads_the_file_date(tmp_path):
+    cache_file = tmp_path / "epm_dunksandthrees.json"
+    cache_file.write_text("{}", encoding="utf-8")
+    fixed = 1_754_664_000  # arbitrary known epoch
+    os.utime(cache_file, (fixed, fixed))
+    vintage = _epm_cache_vintage(cache_dir=tmp_path)
+    assert vintage is not None
+    assert vintage.startswith("2025") or vintage.startswith("2026")
+    # The date is READ from the file, never invented: byte-equal expectation.
+    from datetime import datetime, timezone
+
+    assert vintage == datetime.fromtimestamp(fixed, tz=timezone.utc).isoformat()
+
+
+def test_epm_cache_vintage_missing_file_is_none(tmp_path):
+    assert _epm_cache_vintage(cache_dir=tmp_path) is None
+
+
+def test_metadata_carries_epm_vintage_field():
+    export = _one_player_export(
+        crosswalk=_crosswalk([]),
+        epm_rows=[{"player_name": "Ron Holland", "team": "DET", "epm": -0.59}],
+        stats_rows=[
+            {
+                "nba_player_id": 1631222,
+                "player_name": "Ron Holland",
+                "team": "DET",
+                "age": 21,
+                "GP": 70,
+                "MPG": 20.0,
+                "NET_RATING": 0.0,
+            }
+        ],
+    )
+    dumped = export.metadata.model_dump(by_alias=True)
+    assert "epmVintage" in dumped

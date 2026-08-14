@@ -24,13 +24,14 @@ EXPANDED_TPE_CUSHION = 8_527_000
 # never go in the yaml).
 #
 # Out-years (2027-28 onward) are PROJECTED, certified=False: the cap grows at
-# the league's ~5.5%/yr guidance (NBA guidance / Bobby Marks: 2027-28 cap
-# ≈ $174M; 164,961,000 x 1.055 = 174,033,855 ✓), and every other line is the
-# certified 2026-27 value scaled by the SAME factor — i.e. by
-# projectedCap[season] / cap[2026-27]. Tax/apron lines are CBA functions of
-# the cap, so deriving them from the projected cap keeps the whole set
-# ratio-consistent instead of inventing a separate per-line growth rate.
-CAP_THRESHOLD_PROJECTED_GROWTH = 0.055  # ~5.5%/yr league cap-growth guidance
+# 8.0%/yr — past-5-season certified cap growth avg (NBA PR), ruled 2026-08-14
+# (supersedes the ~5.5%/yr league-guidance figure; 164,961,000 x 1.08 =
+# 178,157,880). Every other line is the certified 2026-27 value scaled by the
+# SAME factor — i.e. by projectedCap[season] / cap[2026-27]. Tax/apron lines
+# are CBA functions of the cap, so deriving them from the projected cap keeps
+# the whole set ratio-consistent instead of inventing a separate per-line
+# growth rate.
+CAP_THRESHOLD_PROJECTED_GROWTH = 0.08  # past-5-season certified cap growth avg (NBA PR), ruled 2026-08-14
 
 _CERTIFIED_LEVELS_2025_26: dict[str, int] = {
     "salary_cap": SALARY_CAP,
@@ -57,8 +58,9 @@ def _projected_levels(years_past_2026_27: int) -> dict[str, int]:
 
 
 _PROJECTED_SOURCE = (
-    "Projected: certified 2026-27 levels x 1.055^n "
-    "(~5.5%/yr league cap-growth guidance; thresholds scale with the cap)"
+    "Projected: certified 2026-27 levels x 1.08^n "
+    "(past-5-season certified cap growth avg (NBA PR), ruled 2026-08-14; "
+    "thresholds scale with the cap)"
 )
 
 # season key -> {five threshold levels..., "certified": bool, "source": str}.

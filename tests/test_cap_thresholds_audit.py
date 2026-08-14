@@ -167,3 +167,11 @@ def test_projections_never_enter_the_reference_yaml():
                 f"projected value {season[key]} ({season_key}.{key}) found in "
                 "the reference YAML — projections must stay out of it"
             )
+
+
+def test_projected_growth_is_8_percent_ruled_2026_08_14():
+    # Past-5-season certified cap growth avg (NBA PR), ruled 2026-08-14 —
+    # supersedes the ~5.5%/yr league-guidance figure. Hand-worked pin:
+    # 164,961,000 x 1.08 = 178,157,880.
+    assert CAP_THRESHOLD_PROJECTED_GROWTH == 0.08
+    assert CAP_THRESHOLDS_BY_SEASON["2027-28"]["salary_cap"] == 178_157_880
