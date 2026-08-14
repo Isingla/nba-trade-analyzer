@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "season": "2025-26",
+  "season": "2026-27",
   "entries": [
     {
       "nba_id": 1630173,
@@ -255,6 +255,12 @@
       "bbref_name": "Chris Boucher"
     },
     {
+      "nba_id": 1631123,
+      "nba_name": "Jamaree Bouyea",
+      "bbref_slug": "bouyeja01",
+      "bbref_name": "Jamaree Bouyea"
+    },
+    {
       "nba_id": 1628396,
       "nba_name": "Tony Bradley",
       "bbref_slug": "bradlto01",
@@ -351,6 +357,12 @@
       "bbref_name": "Matas Buzelis"
     },
     {
+      "nba_id": 1631288,
+      "nba_name": "Jamal Cain",
+      "bbref_slug": "cainja01",
+      "bbref_name": "Jamal Cain"
+    },
+    {
       "nba_id": 203484,
       "nba_name": "Kentavious Caldwell-Pope",
       "bbref_slug": "caldwke01",
@@ -367,6 +379,12 @@
       "nba_name": "Clint Capela",
       "bbref_slug": "capelca01",
       "bbref_name": "Clint Capela"
+    },
+    {
+      "nba_id": 1642382,
+      "nba_name": "Branden Carlson",
+      "bbref_slug": "carlsbr01",
+      "bbref_name": "Branden Carlson"
     },
     {
       "nba_id": 1642267,
@@ -427,6 +445,12 @@
       "nba_name": "Max Christie",
       "bbref_slug": "chrisma02",
       "bbref_name": "Max Christie"
+    },
+    {
+      "nba_id": 1630619,
+      "nba_name": "Moussa Cisse",
+      "bbref_slug": "cissemo01",
+      "bbref_name": "Moussa Cisse"
     },
     {
       "nba_id": 1631321,
@@ -531,6 +555,12 @@
       "bbref_name": "Cedric Coward"
     },
     {
+      "nba_id": 1642384,
+      "nba_name": "Isaiah Crawford",
+      "bbref_slug": "crawfis01",
+      "bbref_name": "Isaiah Crawford"
+    },
+    {
       "nba_id": 1630595,
       "nba_name": "Cade Cunningham",
       "bbref_slug": "cunnica01",
@@ -577,6 +607,12 @@
       "nba_name": "JD Davison",
       "bbref_slug": "davisjd01",
       "bbref_name": "JD Davison"
+    },
+    {
+      "nba_id": 1642856,
+      "nba_name": "Egor Dëmin",
+      "bbref_slug": "demineg01",
+      "bbref_name": "Egor Dёmin"
     },
     {
       "nba_id": 201942,
@@ -969,6 +1005,12 @@
       "bbref_name": "Dylan Harper"
     },
     {
+      "nba_id": 1631199,
+      "nba_name": "Ron Harper Jr.",
+      "bbref_slug": "harpero02",
+      "bbref_name": "Ron Harper Jr."
+    },
+    {
       "nba_id": 203914,
       "nba_name": "Gary Harris",
       "bbref_slug": "harriga01",
@@ -1041,6 +1083,12 @@
       "bbref_name": "Tyler Herro"
     },
     {
+      "nba_id": 1626209,
+      "nba_name": "Mario Hezonja",
+      "bbref_slug": "hezonma01",
+      "bbref_name": "Mario Hezonja"
+    },
+    {
       "nba_id": 1627741,
       "nba_name": "Buddy Hield",
       "bbref_slug": "hieldbu01",
@@ -1063,6 +1111,12 @@
       "nba_name": "Jrue Holiday",
       "bbref_slug": "holidjr01",
       "bbref_name": "Jrue Holiday"
+    },
+    {
+      "nba_id": 1641842,
+      "nba_name": "Ronald Holland II",
+      "bbref_slug": "hollaro01",
+      "bbref_name": "Ron Holland"
     },
     {
       "nba_id": 1641747,
@@ -1141,6 +1195,12 @@
       "nba_name": "Brandon Ingram",
       "bbref_slug": "ingrabr01",
       "bbref_name": "Brandon Ingram"
+    },
+    {
+      "nba_id": 1631127,
+      "nba_name": "Harrison Ingram",
+      "bbref_slug": "ingraha01",
+      "bbref_name": "Harrison Ingram"
     },
     {
       "nba_id": 202681,
@@ -1353,6 +1413,12 @@
       "bbref_name": "Ryan Kalkbrenner"
     },
     {
+      "nba_id": 1642530,
+      "nba_name": "Yuki Kawamura",
+      "bbref_slug": "kawamyu01",
+      "bbref_name": "Yuki Kawamura"
+    },
+    {
       "nba_id": 1628379,
       "nba_name": "Luke Kennard",
       "bbref_slug": "kennalu01",
@@ -1545,6 +1611,12 @@
       "bbref_name": "Kyle Lowry"
     },
     {
+      "nba_id": 1626168,
+      "nba_name": "Trey Lyles",
+      "bbref_slug": "lylestr01",
+      "bbref_name": "Trey Lyles"
+    },
+    {
       "nba_id": 1642863,
       "nba_name": "Khaman Maluach",
       "bbref_slug": "maluakh01",
@@ -1579,6 +1651,12 @@
       "nba_name": "Naji Marshall",
       "bbref_slug": "marshna01",
       "bbref_name": "Naji Marshall"
+    },
+    {
+      "nba_id": 1642918,
+      "nba_name": "Alijah Martin",
+      "bbref_slug": "martial01",
+      "bbref_name": "Alijah Martin"
     },
     {
       "nba_id": 1628997,
@@ -1839,10 +1917,22 @@
       "bbref_name": "Larry Nance Jr."
     },
     {
+      "nba_id": 1631250,
+      "nba_name": "Pete Nance",
+      "bbref_slug": "nancepe01",
+      "bbref_name": "Pete Nance"
+    },
+    {
       "nba_id": 1629614,
       "nba_name": "Andrew Nembhard",
       "bbref_slug": "nembhan01",
       "bbref_name": "Andrew Nembhard"
+    },
+    {
+      "nba_id": 1642948,
+      "nba_name": "Ryan Nembhard",
+      "bbref_slug": "nembhry01",
+      "bbref_name": "Ryan Nembhard"
     },
     {
       "nba_id": 1630174,
@@ -1947,6 +2037,12 @@
       "bbref_name": "Noah Penda"
     },
     {
+      "nba_id": 1643007,
+      "nba_name": "Taelon Peter",
+      "bbref_slug": "peterta01",
+      "bbref_name": "Taelon Peter"
+    },
+    {
       "nba_id": 1641763,
       "nba_name": "Julian Phillips",
       "bbref_slug": "phillju01",
@@ -1963,6 +2059,12 @@
       "nba_name": "Scotty Pippen Jr.",
       "bbref_slug": "pippesc02",
       "bbref_name": "Scotty Pippen Jr."
+    },
+    {
+      "nba_id": 1631342,
+      "nba_name": "Daeqwon Plowden",
+      "bbref_slug": "plowdda01",
+      "bbref_name": "Daeqwon Plowden"
     },
     {
       "nba_id": 203486,
@@ -2373,6 +2475,12 @@
       "bbref_name": "Nick Smith Jr."
     },
     {
+      "nba_id": 1642449,
+      "nba_name": "Tolu Smith",
+      "bbref_slug": "smithto05",
+      "bbref_name": "Tolu Smith"
+    },
+    {
       "nba_id": 1641890,
       "nba_name": "Tyler Smith",
       "bbref_slug": "smithty02",
@@ -2545,6 +2653,12 @@
       "nba_name": "Gary Trent Jr.",
       "bbref_slug": "trentga02",
       "bbref_name": "Gary Trent Jr."
+    },
+    {
+      "nba_id": 1631131,
+      "nba_name": "Oscar Tshiebwe",
+      "bbref_slug": "tshieos01",
+      "bbref_name": "Oscar Tshiebwe"
     },
     {
       "nba_id": 1626167,
