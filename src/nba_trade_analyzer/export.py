@@ -52,6 +52,8 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,8 +61,12 @@ from pydantic.alias_generators import to_camel
 
 from nba_trade_analyzer.data.cap_holds import load_cap_holds
 from nba_trade_analyzer.data.crosswalk import Crosswalk, load_crosswalk
-from nba_trade_analyzer.data.darko import fetch_darko_data
+from nba_trade_analyzer.data.darko import fetch_darko_data, get_player_darko
+from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.data.epm import (
+    clear_epm_unmatched,
+    epm_cache_file,
+    epm_unmatched_report,
     fetch_epm_data,
     get_player_epm,
     normalize_name,
@@ -127,7 +133,8 @@ _CAP_THRESHOLDS_NOTE = (
     "League-wide TEAM-SALARY threshold levels per season (cap, floor, luxury "
     "tax, first apron, second apron). certified=True seasons are NBA-announced "
     "figures; certified=False seasons are projections (certified 2026-27 "
-    "levels grown ~5.5%/yr with the cap) and must be labeled as estimates."
+    "levels grown 8.0%/yr with the cap — past-5-season certified cap growth "
+    "avg (NBA PR), ruled 2026-08-14) and must be labeled as estimates."
 )
 
 _DEAD_MONEY_NOTE = (
@@ -194,6 +201,10 @@ class DataballrExportMetadata(_CamelModel):
     generated_from: list[str]
     waa_formula: str
     source_counts: dict[str, int]
+    # ISO timestamp of the EPM cache file this export read from — the actual
+    # vintage of every est. EPM on the page. None when no cache file exists
+    # (e.g. injected test frames). Read from the file, never invented.
+    epm_vintage: str | None = None
 
 
 class DataballrCapHolds(_CamelModel):
@@ -558,7 +569,9 @@ def _mpg_from_stats(stats_row: dict | None) -> float:
 
 
 def _fill_age_mpg_from_epm(
-    epm_df: pd.DataFrame, player_name: str, age: int | None, mpg: float
+    epm_row: pd.Series | None,
+    age: int | None,
+    mpg: float,
 ) -> tuple[int | None, float]:
     """Backfill age/MPG from EPM when nba_api has no current-season stats row.
 
@@ -571,7 +584,6 @@ def _fill_age_mpg_from_epm(
     """
     if age is not None and mpg > 0.0:
         return age, mpg
-    epm_row = get_player_epm(epm_df, player_name)
     if epm_row is None:
         return age, mpg
     if age is None:
@@ -638,6 +650,7 @@ def _project_player(
     *,
     gp_history: list[float] | None = None,
     mpg_history: list[float] | None = None,
+    engine_name: str | None = None,
 ) -> dict[str, DataballrSeasonProjection]:
     """Project a fixed 5-season window for one player.
 
@@ -653,10 +666,19 @@ def _project_player(
     mpg_history = mpg_history or []
 
     if age is None:
+        logger.warning(
+            "projection demoted to replacement: %s (%s) — unknown age "
+            "(no stats row and no EPM backfill); all seasons zeroed",
+            player_name,
+            team,
+        )
         return _replacement_seasons(mpg, keys, gp_history=gp_history, age=age)
 
+    # The engine joins EPM/DARKO by name. When the slug-first lookup already
+    # resolved this player's canonical source name, hand the engine THAT name
+    # so its join hits the same row (payload keeps the salary-frame name).
     player = Player(
-        name=player_name,
+        name=engine_name or player_name,
         team=team,
         age=age,
         stats={"MPG": mpg, "GP": 0.0, "NET_RATING": 0.0},
@@ -670,6 +692,13 @@ def _project_player(
     )
 
     if multi.primary_metric_source not in ("epm", "darko"):
+        logger.warning(
+            "projection demoted to replacement: %s (%s) — no usable EPM/DARKO "
+            "signal (engine fell through to %s); all seasons zeroed",
+            player_name,
+            team,
+            multi.primary_metric_source,
+        )
         return _replacement_seasons(mpg, keys, gp_history=gp_history, age=age)
 
     # The aging chain anchors on DARKO whenever any projected year used it
@@ -745,6 +774,20 @@ def _fetch_minutes_history(
     return history
 
 
+def _epm_cache_vintage(cache_dir: Path | None = None) -> str | None:
+    """The EPM cache file's own modification time, as a UTC ISO timestamp.
+
+    This is the true vintage of every impact number in the export. Read from
+    the file on disk (``epm_dunksandthrees.json``), never invented — a missing
+    file yields ``None`` and the snapshot metadata says so.
+    """
+    cache = JsonCache(cache_dir) if cache_dir is not None else None
+    path = epm_cache_file(cache)
+    if not path.exists():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
 def build_export(
     *,
     salary_df: pd.DataFrame | None = None,
@@ -771,6 +814,7 @@ def build_export(
     """
     fetch_live = stats_df is None
     salary_df = fetch_all_salaries() if salary_df is None else salary_df
+    epm_was_fetched = epm_df is None
     epm_df = fetch_epm_data() if epm_df is None else epm_df
     darko_df = fetch_darko_data() if darko_df is None else darko_df
     stats_df = fetch_player_stats() if stats_df is None else stats_df
@@ -793,6 +837,8 @@ def build_export(
 
     keys = season_keys()
     by_id, by_name = _stats_index(stats_df)
+    # Fresh unmatched-player report per export run.
+    clear_epm_unmatched()
 
     salaries: list[DataballrSalaryRow] = []
     projections: dict[str, DataballrPlayerProjection] = {}
@@ -849,7 +895,37 @@ def build_export(
         stats_row = _stats_for(player_name, nba_id, by_id, by_name)
         age = _age_from_stats(stats_row)
         mpg = _mpg_from_stats(stats_row)
-        age, mpg = _fill_age_mpg_from_epm(epm_df, player_name, age, mpg)
+
+        # Resolve the player's EPM identity ONCE, slug-first, with the miss
+        # recorded (this is the one lookup the unmatched report counts). The
+        # resolved row feeds the age/MPG backfill AND — because the engine
+        # joins by name — its exact source name becomes the engine identity.
+        # An unresolved player keeps the salary-frame name; the engine will
+        # miss the same way, and the miss is already on the report.
+        epm_identity = get_player_epm(
+            epm_df, player_name, slug=slug, crosswalk=crosswalk, record_miss=True
+        )
+        age, mpg = _fill_age_mpg_from_epm(epm_identity, age, mpg)
+
+        engine_name = None
+        if epm_identity is not None:
+            engine_name = str(epm_identity["player_name"])
+            if (
+                engine_name != player_name
+                and get_player_darko(darko_df, player_name) is not None
+                and get_player_darko(darko_df, engine_name) is None
+            ):
+                # The EPM identity wins (it anchors year 1), but never
+                # silently: this player's salary-frame name matched DARKO and
+                # the canonical EPM name does not, so the year-2 DARKO forward
+                # look will miss and fall back to the aging curve.
+                logger.warning(
+                    "engine identity %r (EPM canonical) loses the DARKO match "
+                    "that %r had — year-2 forward look falls back to the "
+                    "aging curve for this player",
+                    engine_name,
+                    player_name,
+                )
 
         hist = minutes_history.get(nba_id) if nba_id is not None else None
         gp_history = list(hist["gp"]) if hist else []
@@ -866,6 +942,7 @@ def build_export(
             keys,
             gp_history=gp_history,
             mpg_history=mpg_history,
+            engine_name=engine_name,
         )
         for season in seasons.values():
             source_counts[season.source] = source_counts.get(season.source, 0) + 1
@@ -875,6 +952,21 @@ def build_export(
             nba_id=nba_id,
             age=age,
             seasons=seasons,
+        )
+
+    # Unmatched-player report: the export's identity join is the only recorded
+    # lookup, so each player appears at most once. "No EPM row" is the precise
+    # claim — some of these still price via DARKO; the rest fall to
+    # replacement (each demotion is separately warned above).
+    unmatched = epm_unmatched_report()
+    if unmatched:
+        logger.warning(
+            "EPM join report: no EPM row matched for %d player(s): %s",
+            len(unmatched),
+            "; ".join(
+                f"{e['name']} (slug={e['slug'] or '-'})"
+                for e in sorted(unmatched, key=lambda e: (e["name"], e["slug"] or ""))
+            ),
         )
 
     metadata = DataballrExportMetadata(
@@ -888,6 +980,9 @@ def build_export(
         generated_from=list(_GENERATED_FROM),
         waa_formula=_WAA_FORMULA,
         source_counts=dict(sorted(source_counts.items())),
+        # Only a fetched frame came from the cache file; an injected frame's
+        # vintage is unknowable and must not borrow the file's date.
+        epm_vintage=_epm_cache_vintage() if epm_was_fetched else None,
     )
 
     # Per-season tax/apron levels for the export window. Loud failure if the

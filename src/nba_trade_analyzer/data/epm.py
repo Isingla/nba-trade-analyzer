@@ -19,6 +19,7 @@ code combines EPM with GP/MPG from ``nba_api`` for the wins_added calc.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import unicodedata
@@ -29,6 +30,8 @@ import pandas as pd
 from pathlib import Path
 
 from nba_trade_analyzer.data.cache import JsonCache
+
+logger = logging.getLogger(__name__)
 
 # Current-season EPM is free on the public page (scraped from the embedded
 # payload). PAST seasons are Premium-gated on the web page (top-5 only, rest
@@ -112,6 +115,11 @@ def normalize_name(name: str) -> str:
     Same transform is applied to both the stored EPM rows and the query, so
     typing "Michael Porter" matches the canonical "Michael Porter Jr.".
     """
+    # Fold Cyrillic ё/Ё to Latin e BEFORE NFKD: NFKD decomposes ё to Cyrillic
+    # е + diaeresis, so the generic de-accent pass alone leaves a Cyrillic
+    # letter that never matches its Latin twin ("Egor Dёmin" from a mixed-
+    # alphabet source vs "Egor Demin" everywhere else).
+    name = name.replace("\u0451", "e").replace("\u0401", "E")
     nfkd = unicodedata.normalize("NFKD", name)
     ascii_only = "".join(c for c in nfkd if not unicodedata.combining(c))
     s = ascii_only.casefold().strip()
@@ -130,6 +138,10 @@ NAME_ALIASES: dict[str, str] = {
     "Nicolas Claxton": "Nic Claxton",
     "Alexandre Sarr": "Alex Sarr",
     "SGA": "Shai Gilgeous-Alexander",
+    # BBRef's salary frame says "Ron Holland"; D&T says "Ronald Holland II".
+    # Suffix stripping handles the II, but Ron != Ronald without this entry —
+    # the exact silent miss that shipped him as a replacement-level shell.
+    "Ron Holland": "Ronald Holland II",
 }
 
 _NORMALIZED_ALIASES: dict[str, str] = {
@@ -278,16 +290,82 @@ def fetch_epm_data(
     return df
 
 
-def get_player_epm(df: pd.DataFrame, player_name: str) -> pd.Series | None:
-    """Look up a player by name. Forgiving of diacritics, case, periods,
-    generational suffixes, and a small set of known colloquial nicknames
-    (see ``NAME_ALIASES``).
+# Every EPM lookup that misses is recorded here — the unmatched-player
+# report. A miss used to be a silent ``None`` that demoted the player to
+# replacement level with no trace (Ron Holland, 2026-08 audit); now it is a
+# warning log plus a report entry, printed by the export.
+_UNMATCHED: list[dict[str, str | None]] = []
+
+
+def epm_unmatched_report() -> list[dict[str, str | None]]:
+    """Every discarded lookup since the last clear: ``{name, slug, reason}``."""
+    return list(_UNMATCHED)
+
+
+def clear_epm_unmatched() -> None:
+    _UNMATCHED.clear()
+
+
+def _record_miss(player_name: str, slug: str | None, reason: str) -> None:
+    logger.warning(
+        "EPM lookup miss for %r (slug=%s): %s — player will price without EPM",
+        player_name,
+        slug or "-",
+        reason,
+    )
+    _UNMATCHED.append({"name": player_name, "slug": slug, "reason": reason})
+
+
+def get_player_epm(
+    df: pd.DataFrame,
+    player_name: str,
+    *,
+    slug: str | None = None,
+    crosswalk=None,
+    record_miss: bool = False,
+) -> pd.Series | None:
+    """Look up a player's EPM row.
+
+    Join order (2026-08-14 P0 batch):
+
+    1. **Crosswalk/slug first** — when ``slug`` and ``crosswalk`` are given,
+       the crosswalk's canonical ``nba_name`` for that slug is tried before
+       anything else. Deterministic, immune to source-name drift.
+    2. **Normalized name fallback** — diacritic/case/period/suffix-forgiving,
+       Cyrillic ё folded, plus the ``NAME_ALIASES`` nickname table.
+
+    ``record_miss=True`` makes a total miss LOUD: a warning log and an entry
+    in ``epm_unmatched_report()``. The export's identity join sets it; ad-hoc
+    lookups (CLI queries, grading loops) leave it off so a user typo or a
+    routine DARKO-fallback player doesn't flood stderr or grow the report.
     """
     if df.empty:
+        if record_miss:
+            _record_miss(player_name, slug, "EPM frame is empty")
         return None
+
+    entry = None
+    if slug is not None and crosswalk is not None:
+        entry = crosswalk.entry_for_slug(slug)
+        if entry is not None:
+            match = df[df["player_name_normalized"] == normalize_name(entry.nba_name)]
+            if not match.empty:
+                return match.iloc[0]
+
     key = normalize_name(player_name)
     key = _NORMALIZED_ALIASES.get(key, key)
     match = df[df["player_name_normalized"] == key]
     if match.empty:
+        if record_miss:
+            if entry is not None:
+                reason = (
+                    f"crosswalk name {entry.nba_name!r} and salary name "
+                    "matched no EPM row"
+                )
+            elif slug is not None and crosswalk is not None:
+                reason = "no crosswalk entry and no name match"
+            else:
+                reason = "no name match"
+            _record_miss(player_name, slug, reason)
         return None
     return match.iloc[0]
