@@ -126,6 +126,7 @@ PURE_DEAD_SINGLE_ROW_SLUGS = frozenset(
         "diakima01",  # Mamadi Diakite @ MEM
         "rubiori01",  # Ricky Rubio @ CLE
         "louzama01",  # Didi Louzada @ POR (±$1 stretch-split rounding member)
+        "thompkl01",  # Klay Thompson @ DAL (buyout 2026-08-21; full $17.46M charge pending posted give-back terms)
     }
 )
 
