@@ -224,15 +224,43 @@ def gate_zero_centering(rows: list[dict]) -> None:
 
 
 def gate_points_per_win_refit() -> None:
-    # Spec §4 requires refitting pointsPerWin on the 90-team-season dataset
-    # (expect 36.7 ±0.3). That dataset is not committed anywhere in this
-    # repo, so the gate cannot run here — skipped, not silently dropped.
-    report(
-        "SPEC GATE pointsPerWin refit",
-        None,
-        "90-team-season standings dataset not present in the repo; the "
-        "36.7 refit cannot be reproduced from committed data",
+    """Spec §4: refit pointsPerWin on the committed 90-team-season dataset.
+
+    Through-origin fit of total season point differential ((PS/G−PA/G)×82)
+    on wins above .500 (W−41). Expect 36.7 ±0.3 (DELTA-08-17 §3).
+    Checksums first: wins must sum to 1,230 per season (transcription guard)
+    — a checksum failure is a FAIL, never a silent fit on bad data.
+    """
+    import csv
+
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "src", "nba_trade_analyzer", "data",
+        "standings_90_seasons.csv",
     )
+    if not os.path.exists(path):
+        report("SPEC GATE pointsPerWin refit", False,
+               f"dataset missing at {path}")
+        return
+    rows = list(csv.DictReader(open(path)))
+    seasons: dict[str, int] = {}
+    for r in rows:
+        seasons[r["season"]] = seasons.get(r["season"], 0) + int(r["wins"])
+    bad = {s: w for s, w in seasons.items() if w != 1230}
+    if len(rows) != 90 or bad:
+        report("SPEC GATE pointsPerWin refit", False,
+               f"checksum failed: {len(rows)} rows, wins sums {seasons}")
+        return
+    num = den = 0.0
+    for r in rows:
+        x = int(r["wins"]) - 41
+        y = (float(r["ps_g"]) - float(r["pa_g"])) * 82
+        num += x * y
+        den += x * x
+    slope = num / den
+    ok = approx(slope, 36.7, 0.3)
+    report("SPEC GATE pointsPerWin refit", ok,
+           f"through-origin slope {slope:.2f} pts/win on 90 seasons "
+           f"(expect 36.7 ±0.3); wins sums verified 1,230 ×3")
 
 
 # ----- join audit (informational; hard-fails only on the named four) -------
