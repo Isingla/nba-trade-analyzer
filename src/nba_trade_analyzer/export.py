@@ -19,13 +19,10 @@ Two databallr-specific transforms live here (and nowhere else), so the
 valuation engine stays untouched:
 
 1. **WAA** — databallr's average-impact team-quality metric. Unlike the
-   engine's replacement-relative WAR, WAA has no replacement offset and is
-   scaled by ``WAA_IMPACT_WEIGHT``::
+   engine's replacement-relative WAR, WAA has no replacement offset
+   (clean chain, 2026-08-24)::
 
-       waa = tanh_compress(
-           impact * projected_minutes / FULL_SEASON_MINUTES
-           * (EPM_TO_WINS_FACTOR * WAA_IMPACT_WEIGHT)
-       )
+       waa = impact * (projected_minutes * pace/48) / 100 / pointsPerWin
 
    ``projected_minutes`` comes from the two-model minutes projection (issue
    2.2): ``projected_games * projected_mpg``, where games is a recency-weighted
@@ -76,13 +73,11 @@ from nba_trade_analyzer.data.players import fetch_player_stats
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
 from nba_trade_analyzer.engine.constants import (
     CAP_THRESHOLDS_BY_SEASON,
-    EPM_TO_WINS_FACTOR,
-    FULL_SEASON_MINUTES,
     MAX_PROJECTION_YEARS,
-    MAX_WINS_ADDED,
     PROJECTED_GAMES_NO_HISTORY,
     SALARY_CAP,
 )
+from .engine.clean_engine import CLEAN_CONSTANTS, pace_for_season
 from nba_trade_analyzer.engine.minutes import project_games, project_mpg, recency_weighted_mpg
 from nba_trade_analyzer.engine.valuation import evaluate_player_multiyear
 from nba_trade_analyzer.models.player import Player
@@ -99,14 +94,11 @@ _HISTORY_SEASONS = ("2022-23", "2023-24", "2024-25")
 # data.salaries._DEFAULT_SEASON every July.
 _FIRST_SEASON_START = 2026
 
-# databallr's average-impact weighting on the EPM->wins factor. WAA answers
-# "how much team quality" (centered on average), not "how much surplus over
-# replacement", so it drops the replacement offset and scales down.
-WAA_IMPACT_WEIGHT = 0.40
+
 
 _WAA_FORMULA = (
-    "impact * projected_minutes / FULL_SEASON_MINUTES "
-    "* (EPM_TO_WINS_FACTOR * 0.40), tanh compressed; no replacement-level offset. "
+    "impact * (projected_minutes * pace/48) / 100 / pointsPerWin; "
+    "no replacement-level offset, no compression (clean chain 2026-08-24). "
     "projected_minutes = projected_games * projected_mpg (issue 2.2 minutes models)"
 )
 
@@ -341,10 +333,6 @@ def salary_season_keys() -> list[str]:
     ]
 
 
-def _compress(raw_wins: float) -> float:
-    return MAX_WINS_ADDED * math.tanh(raw_wins / MAX_WINS_ADDED)
-
-
 # ---------------------------------------------------------------------------
 # Dead money (Phase 2 Day 2) — one builder, two sources.
 # ---------------------------------------------------------------------------
@@ -492,17 +480,12 @@ def _load_dead_money_charges(crosswalk: Crosswalk) -> list[DeadMoneyCharge]:
 def compute_waa(impact: float, minutes: float) -> float:
     """databallr WAA for one projected season from total projected minutes.
 
-    Minutes now come from the two-model minutes projection (games x mpg, issue
-    2.2) instead of a flat-72 assumption, so WAA and the TS WAR/surplus path
-    are priced on the SAME availability-adjusted minutes.
+    Clean chain (spec + gauntlet gate 6 definition): impact vs league
+    average, actual-possessions exposure, no compression. Pace resolves to
+    the latest measured season (99.4) for unplayed projection years.
     """
-    raw_wins = (
-        impact
-        * minutes
-        / FULL_SEASON_MINUTES
-        * (EPM_TO_WINS_FACTOR * WAA_IMPACT_WEIGHT)
-    )
-    return _compress(raw_wins)
+    pace = pace_for_season("2026-27")
+    return impact * (minutes * pace / 48.0) / 100.0 / CLEAN_CONSTANTS.points_per_win
 
 
 def map_source(year_source: str, anchor_source: str) -> str:
