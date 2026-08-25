@@ -810,10 +810,12 @@ def export(
 ) -> None:
     """Export the databallr cap-data snapshot (salaries + projections) as JSON.
 
-    Fetches salaries, EPM, DARKO, nba_api stats, and the crosswalk (each cached
-    24h; salaries fall back to the committed CSV offline), builds the Control
-    Runway / Trade Analyzer payload, and writes it as JSON. Progress goes to
-    stderr so stdout stays a clean JSON document for the databallr sync script.
+    EPM: read from the season API-actuals cache (refreshed by the nightly
+    ingest; export fails loud if missing or >48h stale). Salaries/DARKO/stats:
+    fetched, cached 24h (salaries fall back to the committed CSV offline).
+    Builds the Control Runway / Trade Analyzer payload and writes it as JSON.
+    Progress goes to stderr so stdout stays a clean JSON document for the
+    databallr sync script.
 
     ``--source db`` swaps ONLY the salary frame, NG marks, and cap-hold totals
     for fresh-filtered reads of the v3_* tables (last-successful-run

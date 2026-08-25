@@ -60,6 +60,18 @@ def epm_cache_file(cache: JsonCache | None = None) -> Path:
     cache = cache or JsonCache()
     return cache._path(_CACHE_KEY)  # noqa: SLF001 — same-package, single source of truth
 
+
+def api_cache_file(season: int, cache: JsonCache | None = None) -> Path:
+    """Path of the season's Premium-API ACTUALS cache — the export's source.
+
+    One helper owns the ``{key}_api_{season}`` -> file mapping (the same key
+    ``fetch_epm_data(season=...)`` writes), so the export's reader, the
+    ingest's refresher/vintage stamp, and the tests can never drift onto
+    different filenames.
+    """
+    cache = cache or JsonCache()
+    return cache._path(f"{_CACHE_KEY}_api_{season}")  # noqa: SLF001 — single source of truth
+
 EXPECTED_COLUMNS: tuple[str, ...] = (
     "player_name",
     "player_name_normalized",

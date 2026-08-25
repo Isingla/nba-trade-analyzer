@@ -11,13 +11,20 @@ from __future__ import annotations
 import logging
 import os
 
-import pandas as pd
+import json
 
+import pandas as pd
+import pytest
+
+from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.data.crosswalk import Crosswalk, CrosswalkEntry
+from nba_trade_analyzer.data.epm import api_cache_file
 from nba_trade_analyzer.data.darko import normalize_name as darko_normalize
 from nba_trade_analyzer.data.epm import normalize_name as epm_normalize
 from nba_trade_analyzer.export import (
+    API_ACTUALS_SEASON,
     _epm_cache_vintage,
+    default_epm_frame,
     build_export,
     compute_waa,
     map_source,
@@ -509,15 +516,22 @@ def test_null_age_demotion_is_loud(caplog):
     )
 
 
-def test_epm_cache_vintage_reads_the_file_date(tmp_path):
-    cache_file = tmp_path / "epm_dunksandthrees.json"
-    cache_file.write_text("{}", encoding="utf-8")
+def test_epm_cache_vintage_reads_the_api_cache_file_date(tmp_path):
+    # The vintage must date the CURRENT-SEASON API ACTUALS cache — the file
+    # the export reads — never the demoted scrape cache (review finding 1).
+    from nba_trade_analyzer.data.cache import JsonCache as _JC
+    from nba_trade_analyzer.data.epm import api_cache_file as _acf
+    from nba_trade_analyzer.export import API_ACTUALS_SEASON as _SEASON
+
+    # A scrape cache sitting beside it must NOT be the vintage source.
+    (tmp_path / "epm_dunksandthrees.json").write_text("{}", encoding="utf-8")
+    api_file = _acf(_SEASON, _JC(tmp_path))
+    api_file.write_text("{}", encoding="utf-8")
     fixed = 1_754_664_000  # arbitrary known epoch
-    os.utime(cache_file, (fixed, fixed))
+    os.utime(api_file, (fixed, fixed))
     vintage = _epm_cache_vintage(cache_dir=tmp_path)
     assert vintage is not None
-    assert vintage.startswith("2025") or vintage.startswith("2026")
-    # The date is READ from the file, never invented: byte-equal expectation.
+    # The date is READ from the API file, never invented: byte-equal.
     from datetime import datetime, timezone
 
     assert vintage == datetime.fromtimestamp(fixed, tz=timezone.utc).isoformat()
@@ -545,3 +559,292 @@ def test_metadata_carries_epm_vintage_field():
     )
     dumped = export.metadata.model_dump(by_alias=True)
     assert "epmVintage" in dumped
+
+
+# ---------------------------------------------------------------------------
+# EPM source flip (feat/epm-source-flip): the export's EPM input is the D&T
+# Premium API cache (season ACTUALS) with a ONE-season fallback for players
+# missing from the current cache (ruled 2026-08-25). The scrape's Expected
+# values feed nothing. All core guards are HERMETIC (committed inline
+# fixtures, tmp cache dirs, no personal-cache dependence).
+# ---------------------------------------------------------------------------
+
+
+
+def _api_row(pid: int, name: str, epm: float, mpg: float = 30.0, age: int = 25):
+    return {
+        "player_id": pid,
+        "player_name": name,
+        "player_name_normalized": epm_normalize(name),
+        "team": "TST",
+        "epm": epm,
+        "epm_off": epm / 2,
+        "epm_def": epm / 2,
+        "mpg": mpg,
+        "gp": 60,
+        "mp": mpg * 60,
+        "position": "G",
+        "age": age,
+    }
+
+
+def _seed_api_cache(tmp_path, season: int, rows: list[dict]) -> None:
+    # Compose the filename through the SAME helper the production code uses
+    # (JsonCache path + api cache key) — never a hardcoded name or home dir.
+    path = api_cache_file(season, JsonCache(tmp_path))
+    path.write_text(json.dumps({"expires_at": 9e12, "value": rows}))
+
+
+def test_api_actuals_season_derives_from_projection_window():
+    # The actuals season is the completed season the projection window starts
+    # from — end-year 2026 (2025-26) while _FIRST_SEASON_START is 2026. A
+    # rollover bumps both together; a hardcoded 2026 would freeze this.
+    from nba_trade_analyzer.export import _FIRST_SEASON_START
+
+    assert API_ACTUALS_SEASON == _FIRST_SEASON_START
+
+
+def test_default_epm_frame_reads_current_and_falls_back_one_season(tmp_path):
+    # Haliburton-class: absent from the current cache (didn't play), present
+    # in the prior cache — served the PRIOR actuals. Wemby-class: present in
+    # current — served current, prior row ignored.
+    _seed_api_cache(
+        tmp_path,
+        API_ACTUALS_SEASON,
+        [_api_row(1641705, "Victor Wembanyama", 8.74)],
+    )
+    _seed_api_cache(
+        tmp_path,
+        API_ACTUALS_SEASON - 1,
+        [
+            _api_row(1641705, "Victor Wembanyama", 6.10),
+            _api_row(1630169, "Tyrese Haliburton", 4.85, mpg=33.6),
+        ],
+    )
+    frame, prior_ids = default_epm_frame(cache_dir=tmp_path)
+    wemby = frame[frame["player_id"] == 1641705]
+    hali = frame[frame["player_id"] == 1630169]
+    assert float(wemby.iloc[0]["epm"]) == 8.74  # current wins
+    assert float(hali.iloc[0]["epm"]) == 4.85  # prior-season fallback
+    assert prior_ids == {1630169}
+
+
+def test_fallback_never_reaches_two_seasons_back(tmp_path):
+    # A player in NEITHER cache stays absent — never invented, never pulled
+    # from any older season (Lyles-class stays a dash). The two-seasons-back
+    # cache IS seeded, with a player found nowhere else, so an implementation
+    # that walks deeper than one season MUST fail this test.
+    _seed_api_cache(tmp_path, API_ACTUALS_SEASON, [_api_row(1, "Current Guy", 1.0)])
+    _seed_api_cache(tmp_path, API_ACTUALS_SEASON - 1, [_api_row(2, "Prior Guy", 2.0)])
+    _seed_api_cache(
+        tmp_path, API_ACTUALS_SEASON - 2, [_api_row(3, "Two Back Ghost", 3.0)]
+    )
+    frame, _ = default_epm_frame(cache_dir=tmp_path)
+    assert set(frame["player_id"]) == {1, 2}
+    assert 3 not in set(frame["player_id"])
+
+
+def test_fallback_rows_carry_basis_in_export_payload(tmp_path, monkeypatch):
+    # The exported projection tags WHICH actuals priced each player: current
+    # rows carry the current basis; fallback rows say so explicitly; a player
+    # with no row anywhere carries none.
+    import nba_trade_analyzer.export as export_mod
+
+    _seed_api_cache(
+        tmp_path, API_ACTUALS_SEASON, [_api_row(101, "Current Star", 3.0)]
+    )
+    _seed_api_cache(
+        tmp_path, API_ACTUALS_SEASON - 1, [_api_row(202, "Injured Star", 2.5, age=27)]
+    )
+    monkeypatch.setattr(
+        export_mod, "default_epm_frame", lambda: default_epm_frame(cache_dir=tmp_path)
+    )
+    salary_df = _salary_df(
+        [
+            {
+                "player_name": "Current Star",
+                "bbref_slug": "currsta01",
+                "team": "TST",
+                "salary": 10_000_000,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": [10_000_000, 11_000_000],
+            },
+            {
+                "player_name": "Injured Star",
+                "bbref_slug": "injusta01",
+                "team": "TST",
+                "salary": 40_000_000,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": [40_000_000, 41_000_000],
+            },
+            {
+                "player_name": "Nowhere Man",
+                "bbref_slug": "nowhema01",
+                "team": "TST",
+                "salary": 2_000_000,
+                "years_remaining": 1,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": [2_000_000],
+            },
+        ]
+    )
+    export = build_export(
+        salary_df=salary_df,
+        darko_df=_darko_df([]),
+        stats_df=_stats_df([]),
+        crosswalk=_crosswalk(
+            [
+                (101, "Current Star", "currsta01"),
+                (202, "Injured Star", "injusta01"),
+            ]
+        ),
+    )
+    assert export.projections["currsta01"].epm_basis == "2025-26 actuals"
+    assert (
+        export.projections["injusta01"].epm_basis
+        == "2024-25 actuals (no 2025-26 season)"
+    )
+    # Fallback actually priced him: an Injured Star with age from the prior
+    # row must NOT be a zeroed replacement shell.
+    first = export.projections["injusta01"].seasons[season_keys()[0]]
+    assert first.source != "replacement"
+    assert export.projections["nowhema01"].epm_basis is None
+
+
+def test_build_export_default_path_routes_through_default_epm_frame(monkeypatch):
+    # THE hermetic source-flip guard: with no injected epm_df, build_export
+    # must take its frame from default_epm_frame (the API loader path). A
+    # revert to the scrape fetch cannot pass this — the sentinel player only
+    # exists in the patched frame.
+    import nba_trade_analyzer.export as export_mod
+
+    sentinel = pd.DataFrame([_api_row(999, "Sentinel Actual", 5.0)])
+    monkeypatch.setattr(
+        export_mod, "default_epm_frame", lambda: (sentinel, set())
+    )
+    monkeypatch.setattr(
+        export_mod, "fetch_darko_data", lambda: _darko_df([])
+    )
+    monkeypatch.setattr(export_mod, "fetch_player_stats", lambda: _stats_df([]))
+    monkeypatch.setattr(
+        export_mod,
+        "fetch_all_salaries",
+        lambda: _salary_df(
+            [
+                {
+                    "player_name": "Sentinel Actual",
+                    "bbref_slug": "sentise01",
+                    "team": "TST",
+                    "salary": 5_000_000,
+                    "years_remaining": 1,
+                    "is_rookie_scale": False,
+                    "has_player_option": False,
+                    "has_team_option": False,
+                    "yearly_salaries": [5_000_000],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(export_mod, "load_crosswalk", lambda: _crosswalk([(999, "Sentinel Actual", "sentise01")]))
+    monkeypatch.setattr(export_mod, "_fetch_minutes_history", lambda: {})
+    export = build_export()
+    assert export.projections["sentise01"].seasons[season_keys()[0]].impact == 5.0
+
+
+def test_missing_current_cache_fails_loud_with_fix_command(tmp_path):
+    # The export is a pure cache reader: a missing current-season cache is an
+    # actionable error naming the file and the command that fixes it.
+    with pytest.raises(FileNotFoundError) as exc:
+        default_epm_frame(cache_dir=tmp_path)
+    msg = str(exc.value)
+    assert f"epm_dunksandthrees_api_{API_ACTUALS_SEASON}.json" in msg
+    assert "ingest" in msg
+
+
+def test_stale_current_cache_fails_loud_past_48h(tmp_path):
+    _seed_api_cache(tmp_path, API_ACTUALS_SEASON, [_api_row(1, "Old Guy", 1.0)])
+    path = api_cache_file(API_ACTUALS_SEASON, JsonCache(tmp_path))
+    old = 1_600_000_000  # 2020 epoch — far past any 48h window
+    os.utime(path, (old, old))
+    with pytest.raises(RuntimeError) as exc:
+        default_epm_frame(cache_dir=tmp_path)
+    msg = str(exc.value)
+    assert "48" in msg and "ingest" in msg
+
+
+def test_missing_prior_cache_is_tolerated(tmp_path):
+    # Only the CURRENT cache is mandatory; a missing prior-season cache just
+    # means no fallback pool (first season of API history).
+    _seed_api_cache(tmp_path, API_ACTUALS_SEASON, [_api_row(1, "Only Guy", 1.0)])
+    frame, prior_ids = default_epm_frame(cache_dir=tmp_path)
+    assert list(frame["player_id"]) == [1]
+    assert prior_ids == set()
+
+
+def _live_cache_fresh() -> bool:
+    path = api_cache_file(API_ACTUALS_SEASON)
+    if not path.exists():
+        return False
+    import time
+
+    return (time.time() - path.stat().st_mtime) / 3600 <= 48
+
+
+@pytest.mark.skipif(
+    not _live_cache_fresh(),
+    reason="local API cache absent or past the 48h freshness gate",
+)
+def test_live_cache_wemby_pin_and_lyles_absence():
+    # Bonus live-cache pin (skip-gated): Wembanyama's 2026 API ACTUAL is
+    # 8.7437 @ 29.14 mpg — the scrape's Expected 7.80 @ 41.2 cannot pass.
+    # Positive control for the absence claim: the frame is full-population
+    # (>400 rows) AND carries Wemby, so Lyles' absence means absence, not a
+    # truncated or wrong file.
+    frame, _ = default_epm_frame()
+    assert len(frame) > 400
+    wemby = frame[frame["player_id"] == 1641705]
+    assert len(wemby) == 1
+    assert float(wemby.iloc[0]["epm"]) == pytest.approx(8.7437, abs=0.01)
+    assert float(wemby.iloc[0]["mpg"]) == pytest.approx(29.14, abs=0.1)
+    current_only_ids = set(
+        pd.DataFrame(
+            __import__("nba_trade_analyzer.engine.clean_engine", fromlist=["load_epm_api_cache"]).load_epm_api_cache(season=API_ACTUALS_SEASON)
+        )["player_id"]
+    )
+    # Trey Lyles: legitimately no CURRENT-season row (fallback may still
+    # serve his prior season — the ruled behavior; absence here means absent
+    # from the current actuals, never invented into them).
+    assert 1626168 not in current_only_ids
+
+
+def test_fallback_rows_age_incremented_by_one(tmp_path):
+    # Ruled 2026-08-25 (closing fix): a fallback row's age is his PRIOR-season
+    # age; every downstream consumer (aging curve, minutes model, exported
+    # age) must see it corrected by exactly +1. Current-season rows untouched.
+    _seed_api_cache(
+        tmp_path,
+        API_ACTUALS_SEASON,
+        [_api_row(11, "Current Kid", 2.0, age=23)],
+    )
+    _seed_api_cache(
+        tmp_path,
+        API_ACTUALS_SEASON - 1,
+        [
+            _api_row(11, "Current Kid", 1.5, age=22),  # ignored: current wins
+            _api_row(22, "Fallback Vet", 3.0, age=32),  # prior-cache age
+        ],
+    )
+    frame, prior_ids = default_epm_frame(cache_dir=tmp_path)
+    assert prior_ids == {22}
+    current = frame[frame["player_id"] == 11].iloc[0]
+    fallback = frame[frame["player_id"] == 22].iloc[0]
+    assert int(current["age"]) == 23  # untouched
+    assert int(fallback["age"]) == 33  # 32 + 1, corrected at the merge point
