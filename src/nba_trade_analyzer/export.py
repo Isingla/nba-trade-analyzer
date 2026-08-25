@@ -45,6 +45,7 @@ years.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -61,10 +62,9 @@ from nba_trade_analyzer.data.crosswalk import Crosswalk, load_crosswalk
 from nba_trade_analyzer.data.darko import fetch_darko_data, get_player_darko
 from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.data.epm import (
+    api_cache_file,
     clear_epm_unmatched,
-    epm_cache_file,
     epm_unmatched_report,
-    fetch_epm_data,
     get_player_epm,
     normalize_name,
 )
@@ -77,7 +77,7 @@ from nba_trade_analyzer.engine.constants import (
     PROJECTED_GAMES_NO_HISTORY,
     SALARY_CAP,
 )
-from .engine.clean_engine import CLEAN_CONSTANTS, pace_for_season
+from .engine.clean_engine import CLEAN_CONSTANTS, load_epm_api_cache, pace_for_season
 from nba_trade_analyzer.engine.minutes import project_games, project_mpg, recency_weighted_mpg
 from nba_trade_analyzer.engine.valuation import evaluate_player_multiyear
 from nba_trade_analyzer.models.player import Player
@@ -93,6 +93,19 @@ _HISTORY_SEASONS = ("2022-23", "2023-24", "2024-25")
 # old ours_missing-2030-31 coverage gap). Must roll together with
 # data.salaries._DEFAULT_SEASON every July.
 _FIRST_SEASON_START = 2026
+
+# The completed-actuals season the export prices from: the season ENDING the
+# year the projection window starts (end-year 2026 = 2025-26 actuals).
+# Derived, never hardcoded — a rollover bumps both together.
+API_ACTUALS_SEASON = _FIRST_SEASON_START
+
+# The export is a pure cache reader (ruled 2026-08-25: the nightly ingest
+# owns fetching). A current cache older than this is refused, loudly.
+EPM_CACHE_MAX_AGE_HOURS = 48.0
+
+
+def _season_label(end_year: int) -> str:
+    return f"{end_year - 1}-{end_year % 100:02d}"
 
 
 
@@ -180,6 +193,10 @@ class DataballrPlayerProjection(_CamelModel):
     nba_id: int | None
     age: int | None
     seasons: dict[str, DataballrSeasonProjection]
+    # Which ACTUALS priced this player's EPM (ruled 2026-08-25): the current
+    # season's, or — when he has no current row — the prior season's, said
+    # explicitly so the site can tag it. None = no EPM row anywhere.
+    epm_basis: str | None = None
 
 
 class DataballrExportMetadata(_CamelModel):
@@ -758,17 +775,124 @@ def _fetch_minutes_history(
 
 
 def _epm_cache_vintage(cache_dir: Path | None = None) -> str | None:
-    """The EPM cache file's own modification time, as a UTC ISO timestamp.
+    """The API actuals cache file's modification time, as a UTC ISO timestamp.
 
-    This is the true vintage of every impact number in the export. Read from
-    the file on disk (``epm_dunksandthrees.json``), never invented — a missing
-    file yields ``None`` and the snapshot metadata says so.
+    This is the true vintage of every impact number in the export: the
+    CURRENT-season Premium-API cache (``epm_dunksandthrees_api_{season}``) —
+    the file the export actually reads, never the demoted scrape cache. A
+    missing file yields ``None`` and the snapshot metadata says so.
     """
     cache = JsonCache(cache_dir) if cache_dir is not None else None
-    path = epm_cache_file(cache)
+    path = api_cache_file(API_ACTUALS_SEASON, cache)
     if not path.exists():
         return None
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+# Every column the export pipeline reads off the EPM frame — validated at
+# load so a wrong-shaped file fails naming itself, not as a KeyError deep in
+# the build loop (review finding 6).
+_CONSUMED_EPM_COLUMNS = (
+    "player_id",
+    "player_name",
+    "player_name_normalized",
+    "epm",
+    "mpg",
+    "gp",
+    "mp",
+    "age",
+)
+
+
+def default_epm_frame(
+    cache_dir: Path | None = None,
+) -> tuple[pd.DataFrame, set[int]]:
+    """The export's EPM frame: current-season API ACTUALS, with the ruled
+    one-season fallback (2026-08-25).
+
+    - CURRENT cache (``API_ACTUALS_SEASON``) is mandatory: missing or older
+      than ``EPM_CACHE_MAX_AGE_HOURS`` fails loud with the file and the fix
+      (the export is a pure reader; the nightly ingest owns fetching).
+    - PRIOR season: players absent from the current cache are served their
+      prior-season actuals — never further back. Their ids are returned so
+      the payload can carry an explicit ``epmBasis``.
+    - A player in neither cache stays absent: missing stays missing (dash),
+      never invented, and the scrape's Expected values feed nothing.
+
+    Reuses clean_engine.load_epm_api_cache (the _api_-only path and gp/mp
+    actuals assertion) rather than re-parsing.
+    """
+    jc = JsonCache(cache_dir) if cache_dir is not None else JsonCache()
+    current_path = api_cache_file(API_ACTUALS_SEASON, jc)
+    fix = (
+        "the nightly ingest owns this cache — run `uv run nba-trade-analyzer "
+        "ingest` (or a manual fetch_epm_data(season="
+        f"{API_ACTUALS_SEASON})) to (re)write it"
+    )
+    if not current_path.exists():
+        raise FileNotFoundError(
+            f"EPM API cache missing: {current_path}. The export is a pure "
+            f"cache reader and never fetches; {fix}."
+        )
+    age_hours = (
+        datetime.now(timezone.utc)
+        - datetime.fromtimestamp(current_path.stat().st_mtime, tz=timezone.utc)
+    ).total_seconds() / 3600
+    if age_hours > EPM_CACHE_MAX_AGE_HOURS:
+        raise RuntimeError(
+            f"EPM API cache is stale: {current_path} is {age_hours:.0f}h old "
+            f"(limit {EPM_CACHE_MAX_AGE_HOURS:.0f}h); {fix}."
+        )
+
+    current = load_epm_api_cache(season=API_ACTUALS_SEASON, cache_dir=cache_dir)
+    missing_current = [
+        c for c in _CONSUMED_EPM_COLUMNS if any(c not in r for r in current)
+    ]
+    if missing_current:
+        raise ValueError(
+            f"EPM API cache {current_path} lacks column(s) {missing_current} "
+            "that the export consumes — wrong-shaped file, refusing to price "
+            "from it."
+        )
+    try:
+        prior = load_epm_api_cache(
+            season=API_ACTUALS_SEASON - 1, cache_dir=cache_dir
+        )
+    except FileNotFoundError:
+        # First season of API history: no fallback pool, current-only.
+        prior = []
+    except (ValueError, json.JSONDecodeError) as exc:
+        # The prior cache is OPTIONAL: a malformed/truncated file (non-atomic
+        # cache writes make this a real state) must not kill the export —
+        # degrade to current-only, loudly, naming the file.
+        logger.warning(
+            "prior-season EPM cache %s is unreadable (%s) — fallback pool "
+            "disabled this run, pricing current-season rows only",
+            api_cache_file(API_ACTUALS_SEASON - 1, jc),
+            exc,
+        )
+        prior = []
+
+    current_ids = {int(r["player_id"]) for r in current}
+    fallback_rows = [r for r in prior if int(r["player_id"]) not in current_ids]
+    prior_ids = {int(r["player_id"]) for r in fallback_rows}
+    # Age correction on fallback rows (ruled 2026-08-25): a prior-season row
+    # carries the player's PRIOR-season age, which would feed the aging curve
+    # and minutes model a year young. Increment by exactly 1 at the merge
+    # point — the single seam every downstream consumer reads through.
+    fallback_rows = [
+        {**r, "age": int(r["age"]) + 1} if r.get("age") is not None else r
+        for r in fallback_rows
+    ]
+    frame = pd.DataFrame(current + fallback_rows)
+
+    missing = [c for c in _CONSUMED_EPM_COLUMNS if c not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"EPM API cache {current_path} lacks column(s) {missing} that the "
+            "export consumes — wrong-shaped file, refusing to price from it."
+        )
+    return frame, prior_ids
 
 
 def build_export(
@@ -798,7 +922,15 @@ def build_export(
     fetch_live = stats_df is None
     salary_df = fetch_all_salaries() if salary_df is None else salary_df
     epm_was_fetched = epm_df is None
-    epm_df = fetch_epm_data() if epm_df is None else epm_df
+    # SOURCE FLIP (feat/epm-source-flip, ruled 2026-08-18) + one-season
+    # fallback (ruled 2026-08-25): the export's EPM input is the D&T Premium
+    # API cache — season ACTUALS, gp/mp-asserted by clean_engine's loader —
+    # with players absent from the current season served their PRIOR-season
+    # actuals (tagged via epmBasis). The scrape path served Expected
+    # (modeled) values and feeds nothing.
+    epm_prior_ids: set[int] = set()
+    if epm_df is None:
+        epm_df, epm_prior_ids = default_epm_frame()
     darko_df = fetch_darko_data() if darko_df is None else darko_df
     stats_df = fetch_player_stats() if stats_df is None else stats_df
     crosswalk = load_crosswalk() if crosswalk is None else crosswalk
@@ -890,6 +1022,29 @@ def build_export(
         )
         age, mpg = _fill_age_mpg_from_epm(epm_identity, age, mpg)
 
+        # Which actuals priced him (ruled 2026-08-25). Fallback applications
+        # are logged separately from the unmatched report so genuine join
+        # bugs ("no row anywhere") stay visible instead of drowning in
+        # legitimate injured/rookie absences.
+        epm_basis: str | None = None
+        if epm_identity is not None:
+            # .get: injected test frames may omit player_id; a row without
+            # one can never be a fallback row (prior ids are always real).
+            row_pid = epm_identity.get("player_id")
+            if row_pid is not None and pd.notna(row_pid) and int(row_pid) in epm_prior_ids:
+                epm_basis = (
+                    f"{_season_label(API_ACTUALS_SEASON - 1)} actuals "
+                    f"(no {_season_label(API_ACTUALS_SEASON)} season)"
+                )
+                logger.info(
+                    "EPM fallback applied (prior season): %s priced off "
+                    "%s",
+                    player_name,
+                    epm_basis,
+                )
+            else:
+                epm_basis = f"{_season_label(API_ACTUALS_SEASON)} actuals"
+
         engine_name = None
         if epm_identity is not None:
             engine_name = str(epm_identity["player_name"])
@@ -935,6 +1090,7 @@ def build_export(
             nba_id=nba_id,
             age=age,
             seasons=seasons,
+            epm_basis=epm_basis,
         )
 
     # Unmatched-player report: the export's identity join is the only recorded
@@ -943,8 +1099,17 @@ def build_export(
     # replacement (each demotion is separately warned above).
     unmatched = epm_unmatched_report()
     if unmatched:
+        # The claim must match what was actually searched: on the default
+        # path, say whether a prior-season fallback pool even existed (an
+        # operator debugging a miss must not rule out a missing prior cache
+        # the report never consulted). Injected frames get the generic label.
+        if epm_was_fetched and not api_cache_file(API_ACTUALS_SEASON - 1).exists():
+            searched = "current season only; NO prior-season cache was available"
+        else:
+            searched = "current or prior season"
         logger.warning(
-            "EPM join report: no EPM row matched for %d player(s): %s",
+            "EPM join report: no row in the searched actuals (" + searched + ") for "
+            "%d player(s) — legitimate absences or join bugs, check names: %s",
             len(unmatched),
             "; ".join(
                 f"{e['name']} (slug={e['slug'] or '-'})"

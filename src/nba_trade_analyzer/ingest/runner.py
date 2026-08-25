@@ -24,7 +24,7 @@ from nba_trade_analyzer.data.dead_money import (
     DeadMoneyRow,
     load_dead_money,
 )
-from nba_trade_analyzer.data.epm import epm_cache_file
+from nba_trade_analyzer.data.epm import api_cache_file, fetch_epm_data
 from nba_trade_analyzer.data.guarantees import NonGuaranteeResolver
 from nba_trade_analyzer.data.nba_salaries_csv import (
     load_nba_salaries,
@@ -33,7 +33,7 @@ from nba_trade_analyzer.data.nba_salaries_csv import (
 from nba_trade_analyzer.data.options_csv import load_options
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
 from nba_trade_analyzer.engine.constants import CAP_THRESHOLDS_BY_SEASON
-from nba_trade_analyzer.export import salary_season_keys
+from nba_trade_analyzer.export import API_ACTUALS_SEASON, salary_season_keys
 from nba_trade_analyzer.ingest.db import IngestDb, PlayerRec
 from nba_trade_analyzer.ingest.names import NameResolver
 from nba_trade_analyzer.ingest.plans import (
@@ -211,14 +211,33 @@ def _run(
     for w in warnings:
         logger.warning("staleness: %s", w)
 
-    # ---- EPM vintage stamp (approved 2026-07-07) ----------------------------
-    # EPM refreshes only on a manual pull and nothing else alerts on it aging
-    # out. Stamp the cache's vintage into every run; the stat is guarded —
-    # a missing/unreadable cache reads as "unknown" and must never fail the
-    # ingest.
+    # ---- EPM API cache refresh (ruled 2026-08-25) ---------------------------
+    # The nightly ingest OWNS fetching the season actuals; the export is a
+    # pure cache reader that fails loud past 48h. fetch_epm_data's 24h TTL
+    # makes this a no-op while the cache is fresh and a refetch once it
+    # expires. A fetch failure warns loudly but never fails the DB ingest —
+    # the export's own staleness gate is the enforcement point.
+    try:
+        fetch_epm_data(season=API_ACTUALS_SEASON)
+        logger.info(
+            "EPM API cache refreshed/verified (season=%s)", API_ACTUALS_SEASON
+        )
+    except Exception:  # noqa: BLE001 — loud, non-fatal; export gates at 48h
+        logger.warning(
+            "EPM API cache refresh FAILED (season=%s) — the export will "
+            "refuse the cache once it ages past 48h",
+            API_ACTUALS_SEASON,
+            exc_info=True,
+        )
+
+    # ---- EPM vintage stamp (approved 2026-07-07; retargeted 2026-08-25) -----
+    # Stamp the vintage of the file the export actually reads — the
+    # CURRENT-SEASON API ACTUALS cache, not the demoted scrape cache. The
+    # stat is guarded — a missing/unreadable cache reads as "unknown" and
+    # must never fail the ingest.
     try:
         epm_mtime: datetime | None = datetime.fromtimestamp(
-            epm_cache_file().stat().st_mtime, tz=timezone.utc
+            api_cache_file(API_ACTUALS_SEASON).stat().st_mtime, tz=timezone.utc
         )
     except Exception:  # noqa: BLE001 — any stat failure = unknown vintage
         epm_mtime = None
