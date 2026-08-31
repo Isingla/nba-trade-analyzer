@@ -229,6 +229,60 @@ def _subtract_same_team_blend(
     return _subtract_charge_totals(row, totals)
 
 
+def _own_team_charge_overlap(
+    row: ContractSeasonAmounts,
+    dead_rows: list[DeadMoneyRow],
+    display_to_bbref: dict[str, str],
+) -> dict[str, int] | None:
+    """Seasons where the row's OWN team holds a positive dead charge that the
+    row also prints. None when there is no overlap OR when two same-team dead
+    rows disagree on a season's amount (ambiguous — never guess, matching
+    :func:`_merged_dead_seasons`)."""
+    own = [
+        dead
+        for dead in dead_rows
+        if display_to_bbref.get(dead.team, dead.team) == row.team
+    ]
+    merged = _merged_dead_seasons(own) if own else None
+    if merged is None:
+        return None
+    overlap = {
+        season: amount
+        for season, amount in merged.items()
+        if amount > 0 and season in row.amounts
+    }
+    return overlap or None
+
+
+def _log_fossil_drop(
+    row: ContractSeasonAmounts,
+    overlap: dict[str, int],
+    result: DeadMoneySeparation,
+) -> None:
+    """INFO-log and record one fossil drop (the dead-money separation's own
+    log register): player, team, season, amount per overlapping season."""
+    for season in sorted(overlap):
+        logger.info(
+            "dead-money separation: FOSSIL salary row dropped — %s (%s) "
+            "%s %s: row %d beside dead charge %d (the dead-money row is "
+            "this team's truth; Spotrac places the player elsewhere)",
+            row.player_name,
+            row.slug,
+            row.team,
+            season,
+            row.amounts[season],
+            overlap[season],
+        )
+    result.dropped.append(
+        (
+            row.slug,
+            row.team,
+            f"fossil pre-waive row (dead charge on {row.team} for "
+            f"{', '.join(sorted(overlap))})",
+        )
+    )
+
+
 def _subtract_charge_totals(
     kept: ContractSeasonAmounts,
     totals: dict[str, int],
@@ -495,6 +549,38 @@ def separate_dead_money(
                 )
                 result.kept.append(row)
                 continue
+            # FOSSIL single row (2026-08-31, verified on BBRef by hand): a
+            # NON-exact own-team charge overlap on a player Spotrac
+            # AFFIRMATIVELY places at a different team is the 08-25 Klay
+            # shape — BBRef still shows only the waiving team's table (the
+            # FULL pre-waive salary) and the new team's table hasn't landed.
+            # The old fallthrough fed this to the same-team blend, which
+            # minted a phantom "active" (17,460,317 − 7,660,317 = a
+            # 9,800,000 that never existed): that subtractor's fingerprint
+            # is waive-and-RE-SIGN (Isaac — Spotrac ON the team), not
+            # waived-and-left. Ordering is load-bearing: the pure-dead
+            # exact classifier above keeps its reason string and no-flag
+            # semantics; Spotrac ABSENCE (None/no row) stays with the
+            # cautious machinery (the Louzada adjudication) — only
+            # affirmative elsewhere-placement drops. Flagged for review:
+            # a player whose every salary row vanished should be seen.
+            spotrac_team = None if spotrac_teams is None else spotrac_teams.get(slug)
+            overlap = _own_team_charge_overlap(row, dead_rows, display_to_bbref)
+            if (
+                overlap is not None
+                and spotrac_team is not None
+                and spotrac_team != row.team
+            ):
+                _log_fossil_drop(row, overlap, result)
+                result.flags.append(
+                    DuplicateFlag(
+                        slug=slug,
+                        player_name=row.player_name,
+                        kept_team="",
+                        other_teams=(row.team,),
+                    )
+                )
+                continue
             result.kept.append(
                 _subtract_same_team_blend(row, dead_rows, display_to_bbref)
             )
@@ -543,6 +629,63 @@ def separate_dead_money(
                     )
                 )
                 continue
+
+        # FOSSIL rows (2026-08-31, verified on BBRef by hand): when a waived
+        # player signs elsewhere, BBRef keeps the old team's PRE-WAIVE table
+        # beside the new team's (Klay: DAL 17,460,317 fossil beside MIA
+        # 5,600,000; KCP: legacy MEM 20,194,392 beside the PHI minimum). The
+        # dead-money frame is already the old team's truth, so the row drops.
+        #
+        # ORDERING IS LOAD-BEARING: this runs AFTER the exact matcher and the
+        # season-level split, because the identical-schedule blended-duplicate
+        # shape (Lillard/Beal) also has "a charge at one row's team" — but
+        # there BOTH rows print the blended totals and the SPLIT is the truth;
+        # a fossil drop there would strand pure-dead seasons on the survivor
+        # as phantom salary. Divergent-schedule groups reach here.
+        #
+        # GATES (all must hold; anything less falls to tier-3's flag —
+        # never guess):
+        #   * the row's own team holds a positive charge overlapping the
+        #     row's printed seasons, with no same-team charge conflicts;
+        #   * Spotrac AFFIRMATIVELY places the player on the team of a
+        #     SPECIFIC surviving sibling row (a third-team opinion or
+        #     absence corroborates nothing — old behavior + flag);
+        #   * that corroborated survivor's own team holds NO overlapping
+        #     charge itself (both-teams-dead is ambiguous — old behavior).
+        if len(survivors) > 1 and spotrac_teams is not None:
+            spotrac_team = spotrac_teams.get(slug)
+            corroborated = [r for r in survivors if r.team == spotrac_team]
+            if len(corroborated) == 1 and (
+                _own_team_charge_overlap(
+                    corroborated[0], dead_rows, display_to_bbref
+                )
+                is None
+            ):
+                fossils = [
+                    (r, _own_team_charge_overlap(r, dead_rows, display_to_bbref))
+                    for r in survivors
+                    if r is not corroborated[0]
+                ]
+                if all(overlap is not None for _, overlap in fossils):
+                    for row, overlap in fossils:
+                        _log_fossil_drop(row, overlap or {}, result)
+                    kept = _subtract_dead_blends(
+                        corroborated[0], dead_rows, display_to_bbref
+                    )
+                    result.kept.append(kept)
+                    # The duplicate stays VISIBLE (the DuplicateFlag
+                    # invariant: resolution changes which row is kept,
+                    # never whether the duplicate is surfaced).
+                    result.flags.append(
+                        DuplicateFlag(
+                            slug=slug,
+                            player_name=kept.player_name,
+                            kept_team=kept.team,
+                            other_teams=tuple(r.team for r, _ in fossils),
+                            resolved_by_spotrac=True,
+                        )
+                    )
+                    continue
 
         # Tier 3: unexplained duplicate. Spotrac tie-break chooses WHICH BBRef
         # row is current; anything short of exactly-one match keeps file-first.
