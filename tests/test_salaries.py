@@ -15,6 +15,8 @@ from nba_trade_analyzer.data.salaries import (
     build_contract,
     fetch_all_salaries,
     get_player_salary,
+    _parse_team_contract_amounts,
+    attach_raw_amounts,
 )
 
 # A trimmed contracts table mirroring the live Basketball Reference markup:
@@ -614,3 +616,147 @@ def test_build_contract_roundtrips_from_get_player_salary(tmp_path):
     contract = build_contract(get_player_salary(df, "Joel Embiid"))
     assert contract.salary == 55_224_526
     assert contract.has_player_option is True
+
+
+# ---------------------------------------------------------------------------
+# Per-team raw amounts for multi-stint players (fix/per-team-raw-salary-
+# amounts). BBRef's LEAGUE table prints a combined season total in every
+# stint row; the per-TEAM /contracts/{TEAM}.html pages carry the real
+# per-team figures. Fixtures below are REAL row HTML captured from the live
+# team pages 2026-08-31 (Klay DAL+MIA, verified: 17,460,317 + 5,600,000 =
+# the league cell 23,060,317).
+# ---------------------------------------------------------------------------
+
+# The REAL header row (captured from the live MIA page 2026-08-31, trimmed
+# to the load-bearing cells): season labels on data-stat y1.., which the
+# parser maps FAIL-LOUD through _season_to_year_stat — a header-less table
+# raises rather than silently assuming y1 = current season (the rollover
+# bug class). The fixtures exercise the REAL mapping path, not a fallback.
+_TEAM_PAGE_THEAD = (
+    '<thead><tr>'
+    '<th data-stat="player" scope="col">Player</th>'
+    '<th data-stat="age_today" scope="col">Age</th>'
+    '<th data-stat="y1" scope="col">2026-27</th>'
+    '<th data-stat="y2" scope="col">2027-28</th>'
+    '<th data-stat="y3" scope="col">2028-29</th>'
+    '</tr></thead>'
+)
+
+_TEAM_PAGE_TMPL = (
+    '<html><body><table id="contracts">' + _TEAM_PAGE_THEAD + '<tbody>'
+    '{rows}'
+    '</tbody></table></body></html>'
+)
+
+# Verbatim (whitespace-collapsed) rows from the live pages. Note the DAL row's
+# `partial_table` class and <em> wrapper — the waived section's markup — and
+# the player living in a TH whose csk IS the slug.
+_DAL_KLAY_TR = (
+    '<tr class="partial_table"><th class="left" csk="thompkl01" data-stat="player" '
+    'scope="row"><em><a href="/players/t/thompkl01.html">Klay Thompson</a></em></th>'
+    '<td class="center" data-stat="age_today">36</td>'
+    '<td class="right" csk="17460317" data-stat="y1">$17,460,317</td>'
+    '<td class="right iz" data-stat="y2"></td></tr>'
+)
+_MIA_KLAY_TR = (
+    '<tr><th class="left" csk="thompkl01" data-stat="player" scope="row">'
+    '<a href="/players/t/thompkl01.html">Klay Thompson</a></th>'
+    '<td class="center" data-stat="age_today">36</td>'
+    '<td class="right" csk="5600000" data-stat="y1">$5,600,000</td>'
+    '<td class="right salary-pl" csk="5880000" data-stat="y2">$5,880,000</td></tr>'
+)
+
+
+def test_parse_team_page_reads_raw_amounts_including_waived_section():
+    dal = _parse_team_contract_amounts(
+        _TEAM_PAGE_TMPL.format(rows=_DAL_KLAY_TR), {"thompkl01"}, season="2026-27"
+    )
+    mia = _parse_team_contract_amounts(
+        _TEAM_PAGE_TMPL.format(rows=_MIA_KLAY_TR), {"thompkl01"}, season="2026-27"
+    )
+    assert dal == {"thompkl01": {"2026-27": 17_460_317}}
+    assert mia == {"thompkl01": {"2026-27": 5_600_000, "2027-28": 5_880_000}}
+
+
+def test_team_page_without_season_headers_fails_loud():
+    import pytest as _pytest
+
+    headerless = (
+        '<html><body><table id="contracts"><thead></thead><tbody>'
+        + _MIA_KLAY_TR
+        + '</tbody></table></body></html>'
+    )
+    with _pytest.raises(RuntimeError):
+        _parse_team_contract_amounts(headerless, {"thompkl01"}, season="2026-27")
+
+    no_tbody = (
+        '<html><body><table id="contracts">' + _TEAM_PAGE_THEAD + '</table></body></html>'
+    )
+    with _pytest.raises(RuntimeError):
+        _parse_team_contract_amounts(no_tbody, {"thompkl01"}, season="2026-27")
+
+
+def test_attach_raw_amounts_enforces_sum_invariant(caplog):
+    import logging
+
+    import pandas as pd
+
+    # Production-shaped league rows: IDENTICAL blended cells on both stints
+    # (the live cache's exact Klay values).
+    df = pd.DataFrame(
+        [
+            {
+                "player_name": "Klay Thompson", "bbref_slug": "thompkl01",
+                "team": "DAL", "salary": 23_060_317, "years_remaining": 2,
+                "is_rookie_scale": False, "has_player_option": False,
+                "has_team_option": False, "yearly_salaries": "23060317|5880000",
+            },
+            {
+                "player_name": "Klay Thompson", "bbref_slug": "thompkl01",
+                "team": "MIA", "salary": 23_060_317, "years_remaining": 2,
+                "is_rookie_scale": False, "has_player_option": True,
+                "has_team_option": False, "yearly_salaries": "23060317|5880000",
+            },
+        ]
+    )
+    raw = {
+        "thompkl01": {
+            "DAL": {"2026-27": 17_460_317},
+            "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        }
+    }
+    out = attach_raw_amounts(df, raw, season="2026-27")
+    got = {r["team"]: r.get("raw_amounts") for _, r in out.iterrows()}
+    assert got["DAL"] == {"2026-27": 17_460_317}
+    assert got["MIA"] == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+
+    # SKEWED raw (vintage drift): the sum no longer matches the league cell —
+    # fall back to today's behavior for that player (no raw attached), loudly.
+    skewed = {
+        "thompkl01": {
+            "DAL": {"2026-27": 16_000_000},
+            "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.salaries"):
+        out2 = attach_raw_amounts(df, skewed, season="2026-27")
+    assert all(r.get("raw_amounts") is None for _, r in out2.iterrows())
+    assert any("invariant" in r.message.lower() for r in caplog.records)
+
+
+def test_contract_rows_thread_raw_amounts_into_separation_input():
+    from nba_trade_analyzer.ingest.runner import _contract_rows
+
+    rec = {
+        "player_name": "Klay Thompson", "bbref_slug": "thompkl01",
+        "team": "MIA", "salary": 23_060_317, "years_remaining": 2,
+        "is_rookie_scale": False, "has_player_option": True,
+        "has_team_option": False, "yearly_salaries": "23060317|5880000",
+        "raw_amounts": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+    }
+    rows = _contract_rows([rec], ["2026-27", "2027-28"])
+    assert rows[0].raw_amounts == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+    # Absence stays None — the pre-raw machinery applies.
+    rec2 = dict(rec)
+    rec2.pop("raw_amounts")
+    assert _contract_rows([rec2], ["2026-27"])[0].raw_amounts is None

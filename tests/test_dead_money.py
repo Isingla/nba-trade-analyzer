@@ -599,15 +599,31 @@ def test_pure_dead_single_row_with_spotrac_corroboration_is_dropped():
 
 
 def test_same_team_cell_below_charge_is_not_separated():
-    # The surviving half of the old guardian test, UNCHANGED behavior:
-    # cell < charge cannot contain the charge (source-side heal shape) —
-    # untouched and silent, even with Spotrac corroboration data present.
+    # RE-PINNED 2026-08-31 (Fix B ruling): with spotrac ACTIVE data loaded
+    # and the player ABSENT from it while present as dead money, a single
+    # row is pure dead regardless of cell-vs-charge arithmetic — the old
+    # KEEP pin modeled a pre-ruling caution. The cell-below-charge KEEP
+    # behavior survives where it belongs: a player Spotrac places ON the
+    # team (real Isaac), or no Spotrac data at all.
     contracts = [_contract("isaacjo01", "ORL", {"2026-27": 5000000})]
     result = separate_dead_money(
         contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF, spotrac_teams={}
     )
-    assert result.kept[0].amounts == {"2026-27": 5000000}
-    assert result.dropped == [] and result.flags == []
+    assert result.kept == []
+    assert any("pure-dead" in why or "pure dead" in why for _, _, why in result.dropped)
+
+    # Spotrac-active on the team: kept, same-team arithmetic untouched.
+    result_active = separate_dead_money(
+        contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF,
+        spotrac_teams={"isaacjo01": "ORL"},
+    )
+    assert result_active.kept[0].amounts == {"2026-27": 5000000}
+
+    # No Spotrac data: the old caution holds — keep.
+    result_none = separate_dead_money(
+        contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF, spotrac_teams=None
+    )
+    assert result_none.kept[0].amounts == {"2026-27": 5000000}
 
 
 def test_pure_dead_equality_without_corroboration_is_kept_and_flagged():
@@ -686,33 +702,34 @@ def test_pure_dead_superset_charge_still_explains_row():
 
 
 def test_charge_covering_fewer_seasons_than_row_is_not_pure_dead():
-    # The dangerous direction stays forbidden: a one-season charge must never
-    # erase a multi-season row, even when the covered season matches exactly.
-    # (Falls through to the same-team subtractor, which handles it as the
-    # Isaac-class season-wise blend.)
-    dead = DeadMoneyRow(
-        player_raw="Someone WAIVED",
-        player_name="Someone",
-        team="POR",
-        amounts={"2026-27": 268032},
-    )
+    # The EXACT pure-dead classifier still refuses a charge covering fewer
+    # seasons than the row (its reason string must not appear). RE-PINNED
+    # 2026-08-31: with spotrac actives loaded and the player absent, Fix B
+    # drops the row as stretched pure dead instead — and with no spotrac
+    # data the old keep-caution holds.
     contracts = [
         _contract("someoso01", "POR", {"2026-27": 268032, "2027-28": 5000000})
     ]
+    dead = DeadMoneyRow(
+        "Someone WAIVED", "Someone", "POR", {"2026-27": 268032}
+    )
     result = separate_dead_money(
         contracts, {"someoso01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
     )
-    assert result.dropped == []
-    assert len(result.kept) == 1
-    # 2027-28 (uncharged season) must survive untouched.
-    assert result.kept[0].amounts["2027-28"] == 5000000
+    assert not any(why.startswith("pure-dead single row") for _, _, why in result.dropped)
+    assert any("stretched pure-dead" in why for _, _, why in result.dropped)
+
+    result_none = separate_dead_money(
+        contracts, {"someoso01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams=None
+    )
+    assert result_none.kept[0].amounts["2027-28"] == 5000000
 
 
 def test_partial_equality_is_not_a_pure_dead_candidate():
-    # T4: one season matches the charge, another does not — whole-schedule
-    # equality fails, so the row falls through to the EXISTING paths
-    # unchanged (here: the same-team subtractor refuses the implausible
-    # residual and keeps the original values).
+    # The EXACT classifier must not fire on partial equality (its reason is
+    # absent). RE-PINNED 2026-08-31: spotrac-absent + dead-present is Fix
+    # B's stretched-pure-dead — dropped with ITS reason; spotrac_teams=None
+    # keeps the old refuse-and-keep caution.
     schedule = {"2026-27": 268032, "2027-28": 999999}
     dead = DeadMoneyRow(
         player_raw="Didi Louzada WAIVED",
@@ -724,8 +741,13 @@ def test_partial_equality_is_not_a_pure_dead_candidate():
     result = separate_dead_money(
         contracts, {"louzadi01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
     )
-    assert result.kept[0].amounts == schedule
-    assert result.dropped == []
+    assert not any(why.startswith("pure-dead single row") for _, _, why in result.dropped)
+    assert any("stretched pure-dead" in why for _, _, why in result.dropped)
+
+    result_none = separate_dead_money(
+        contracts, {"louzadi01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams=None
+    )
+    assert result_none.kept[0].amounts == schedule
 
 
 def test_single_row_cross_team_charge_is_never_subtracted():
@@ -1065,10 +1087,12 @@ def test_exact_pure_dead_keeps_its_reason_when_signed_elsewhere():
     assert any("pure-dead single row" in why for _, _, why in result.dropped)
 
 
-def test_spotrac_absence_is_not_fossil_corroboration_direct():
-    # Direct pin for the Louzada adjudication: slug ABSENT from the spotrac
-    # dict + a non-exact own-team charge overlap = KEEP the row (the
-    # cautious machinery), never a fossil drop on mere absence.
+def test_spotrac_absence_with_dead_money_is_stretched_pure_dead():
+    # RE-PINNED 2026-08-31 (Fix B ruling): absent from Spotrac ACTIVES while
+    # present in dead money = pure dead — the row drops (with Fix B's
+    # reason, not the fossil's). The prior KEEP pin encoded the pre-ruling
+    # Louzada caution, which now applies only when Spotrac data is absent
+    # entirely (spotrac_teams=None, asserted below).
     contracts = [
         ContractSeasonAmounts(
             slug="absent01", player_name="Absent Guy", team="DAL",
@@ -1081,8 +1105,13 @@ def test_spotrac_absence_is_not_fossil_corroboration_direct():
     result = separate_dead_money(
         contracts, {"absent01": [dead]}, _FOSSIL_DISPLAY, spotrac_teams={}
     )
-    assert len(result.kept) == 1
-    assert not any("fossil" in why for _, _, why in result.dropped)
+    assert result.kept == []
+    assert any("stretched pure-dead" in why for _, _, why in result.dropped)
+
+    result_none = separate_dead_money(
+        contracts, {"absent01": [dead]}, _FOSSIL_DISPLAY, spotrac_teams=None
+    )
+    assert len(result_none.kept) == 1
 
 
 def test_fossil_row_printing_seasons_beyond_the_charge_drops_whole():
@@ -1183,3 +1212,172 @@ def test_single_fossil_row_drops_entirely_no_phantom_blend():
     )
     assert result.kept == []
     assert any(team == "DAL" for _, team, _ in result.dropped)
+
+
+# ---------------------------------------------------------------------------
+# Per-team RAW amounts (fix/per-team-raw-salary-amounts): fixtures are
+# PRODUCTION-SHAPED — identical blended league cells on every stint row
+# (today's real cache values) plus the real team-page figures fetched
+# 2026-08-31. Raw is authoritative for multi-stint rows; the old blend
+# arithmetic becomes a cross-check that flags disagreement, never overrides.
+# ---------------------------------------------------------------------------
+
+
+def _blended(slug, name, team, amounts, raw=None):
+    return ContractSeasonAmounts(
+        slug=slug, player_name=name, team=team, amounts=dict(amounts),
+        raw_amounts=dict(raw) if raw is not None else None,
+    )
+
+
+KLAY_LEAGUE = {"2026-27": 23_060_317, "2027-28": 5_880_000}  # both rows, verbatim cache
+KLAY_RAW_DAL = {"2026-27": 17_460_317}  # /contracts/DAL.html 2026-08-31
+KLAY_RAW_MIA = {"2026-27": 5_600_000, "2027-28": 5_880_000}  # /contracts/MIA.html
+
+
+def test_klay_production_shape_raw_replaces_no_subtraction():
+    # THE ruled pin: MIA 5,600,000 / 5,880,000, DAL dropped with its own raw
+    # amount. Subtraction can NOT produce this (23,060,317 − 7,660,317 =
+    # 15,400,000 — the give-back buyout means the dead charge is only a
+    # fraction of the pre-waive salary).
+    contracts = [
+        _blended("thompkl01", "Klay Thompson", "DAL", KLAY_LEAGUE, KLAY_RAW_DAL),
+        _blended("thompkl01", "Klay Thompson", "MIA", KLAY_LEAGUE, KLAY_RAW_MIA),
+    ]
+    dead = DeadMoneyRow(
+        "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
+    )
+    result = separate_dead_money(
+        contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"thompkl01": "MIA"},
+    )
+    assert len(result.kept) == 1
+    kept = result.kept[0]
+    assert kept.team == "MIA"
+    assert kept.amounts == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+    assert any(t == "DAL" and "17460317" in why for _, t, why in result.dropped)
+
+
+def test_lillard_production_shape_raw_wins_and_blend_cross_checks():
+    # Identical blended schedules (the split's own founding shape) WITH raw:
+    # POR = the POR page's 13,398,800 / 14,104,000, NOTHING in 28-29/29-30
+    # (the 1,205,550-class artifacts die). The blend arithmetic agrees here,
+    # so no disagreement flag.
+    league = {
+        "2026-27": 35_915_403, "2027-28": 36_620_603,
+        "2028-29": 22_516_603, "2029-30": 22_516_603,
+    }
+    raw_mil = {s: 22_516_603 for s in league}
+    raw_por = {"2026-27": 13_398_800, "2027-28": 14_104_000}
+    contracts = [
+        _blended("lillada01", "Damian Lillard", "MIL", league, raw_mil),
+        _blended("lillada01", "Damian Lillard", "POR", league, raw_por),
+    ]
+    dead = DeadMoneyRow(
+        "Lillard Damian WAIVED", "Lillard Damian", "MIL",
+        {s: 22_516_603 for s in league},
+    )
+    result = separate_dead_money(
+        contracts, {"lillada01": [dead]}, DISPLAY_TO_BBREF,
+        spotrac_teams={"lillada01": "POR"},
+    )
+    assert len(result.kept) == 1
+    kept = result.kept[0]
+    assert kept.team == "POR"
+    assert kept.amounts == {"2026-27": 13_398_800, "2027-28": 14_104_000}
+
+
+def test_kcp_production_shape():
+    # League prints the SUM 20,194,392 in both rows; the team pages decompose
+    # it as MEM 17,744,971 (the dead-adjusted figure) + PHI 2,449,421.
+    league = {"2026-27": 20_194_392}
+    contracts = [
+        _blended("caldwke01", "Kentavious Caldwell-Pope", "MEM", league,
+                 {"2026-27": 17_744_971}),
+        _blended("caldwke01", "Kentavious Caldwell-Pope", "PHI", league,
+                 {"2026-27": 2_449_421}),
+    ]
+    dead = DeadMoneyRow(
+        "Kentavious Caldwell-Pope WAIVED", "Kentavious Caldwell-Pope",
+        "MEM", {"2026-27": 17_744_971},
+    )
+    result = separate_dead_money(
+        contracts, {"caldwke01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"caldwke01": "PHI"},
+    )
+    assert len(result.kept) == 1
+    assert result.kept[0].team == "PHI"
+    assert result.kept[0].amounts == {"2026-27": 2_449_421}
+
+
+def test_beal_production_shape_matches_lac_page():
+    # The LAC page figure (6,424,800 / 6,746,040) EQUALS the blend arithmetic
+    # here — raw and cross-check agree; outcome pinned to the page.
+    league = {
+        "2026-27": 25_807_810, "2027-28": 26_129_050,
+        "2028-29": 19_383_010, "2029-30": 19_383_010,
+    }
+    raw_pho = {s: 19_383_010 for s in league}
+    raw_lac = {"2026-27": 6_424_800, "2027-28": 6_746_040}
+    contracts = [
+        _blended("bealbr01", "Bradley Beal", "PHO", league, raw_pho),
+        _blended("bealbr01", "Bradley Beal", "LAC", league, raw_lac),
+    ]
+    dead = DeadMoneyRow(
+        "Bradley Beal", "Bradley Beal", "PHX", {s: 19_383_010 for s in league}
+    )
+    result = separate_dead_money(
+        contracts, {"bealbr01": [dead]}, DISPLAY_TO_BBREF,
+        spotrac_teams={"bealbr01": "LAC"},
+    )
+    kept = result.kept[0]
+    assert kept.team == "LAC"
+    assert kept.amounts == {"2026-27": 6_424_800, "2027-28": 6_746_040}
+
+
+def test_raw_absent_falls_back_to_todays_behavior():
+    # The invariant-failure path upstream attaches NO raw — separation must
+    # behave exactly as today (fossil rule + blend machinery), never worse.
+    contracts = [
+        _blended("thompkl01", "Klay Thompson", "DAL", KLAY_LEAGUE, None),
+        _blended("thompkl01", "Klay Thompson", "MIA", KLAY_LEAGUE, None),
+    ]
+    dead = DeadMoneyRow(
+        "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
+    )
+    result = separate_dead_money(
+        contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"thompkl01": "MIA"},
+    )
+    # Today's (pre-raw) machinery: identical schedules, split fails (no
+    # season equals the charge), fossil pass keeps MIA and the blend
+    # subtractor recovers what it can. The point pinned here is the SHAPE:
+    # one kept row on MIA, DAL recorded, no crash — not the (known-wrong)
+    # subtraction dollars, which raw exists to replace.
+    assert len(result.kept) == 1
+    assert result.kept[0].team == "MIA"
+
+
+def test_whitmore_stretched_pure_dead_single_row_drops_to_zero(caplog):
+    import logging
+
+    # Fix B: single CLE row 5,458,310 (the cache's real cell); his stretch
+    # charge spreads the money, so no season EQUALS the row and the exact
+    # pure-dead classifier misses. He is absent from Spotrac's ACTIVE
+    # salaries while present in dead money — active = 0, row drops, logged.
+    contracts = [
+        _blended("whitmca01", "Cam Whitmore", "CLE", {"2026-27": 5_458_310}, None),
+    ]
+    dead = DeadMoneyRow(
+        "Cam Whitmore WAIVED", "Cam Whitmore", "CLE",
+        {"2026-27": 1_091_662, "2027-28": 1_091_662, "2028-29": 1_091_662},
+    )
+    with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.ingest.plans"):
+        result = separate_dead_money(
+            contracts, {"whitmca01": [dead]}, _FOSSIL_DISPLAY,
+            spotrac_teams={"someoneelse01": "LAL"},
+        )
+    assert result.kept == []
+    assert any(t == "CLE" for _, t, why in result.dropped)
+    assert any("stretched" in r.message.lower() or "pure dead" in r.message.lower()
+               for r in caplog.records)

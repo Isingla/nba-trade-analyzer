@@ -67,6 +67,11 @@ class ContractSeasonAmounts:
     player_name: str
     team: str  # BBRef salary code (BRK/CHO/PHO style)
     amounts: dict[str, int]  # season -> dollars (>0 only)
+    # Per-team RAW amounts from BBRef's /contracts/{TEAM}.html page, attached
+    # by the ingest for multi-stint slugs only (invariant-verified: the
+    # per-team sum equals the blended league cell). None = single-stint or
+    # invariant failure — the pre-raw machinery applies unchanged.
+    raw_amounts: dict[str, int] | None = None
     is_rookie_scale: bool = False
     has_player_option: bool = False
     has_team_option: bool = False
@@ -264,23 +269,56 @@ def _log_fossil_drop(
     for season in sorted(overlap):
         logger.info(
             "dead-money separation: FOSSIL salary row dropped — %s (%s) "
-            "%s %s: row %d beside dead charge %d (the dead-money row is "
-            "this team's truth; Spotrac places the player elsewhere)",
+            "%s %s: dropped amount %d (league row prints %s; the dead-money "
+            "row is this team's truth and Spotrac places the player "
+            "elsewhere)",
             row.player_name,
             row.slug,
             row.team,
             season,
-            row.amounts[season],
             overlap[season],
+            row.amounts.get(season, "—"),
         )
     result.dropped.append(
         (
             row.slug,
             row.team,
-            f"fossil pre-waive row (dead charge on {row.team} for "
-            f"{', '.join(sorted(overlap))})",
+            "fossil pre-waive row ("
+            + ", ".join(f"{s}: {overlap[s]}" for s in sorted(overlap))
+            + f"; dead charge on {row.team})",
         )
     )
+
+
+def _resolve_kept_amounts(
+    kept: ContractSeasonAmounts,
+    arithmetic: ContractSeasonAmounts,
+) -> ContractSeasonAmounts:
+    """PRECEDENCE, stated: the team page's RAW figure is authoritative for a
+    multi-stint kept row; the split/blend arithmetic result is a CROSS-CHECK
+    that logs a disagreement when it differs — it never overrides.
+
+    Why: subtracting a Spotrac dead-money figure from a BBRef blended cell
+    is structurally unsound — right only when the blend is exactly
+    dead + active AND the two sources agree to the dollar (Klay's give-back
+    buyout broke the first assumption for $15.4M; Lillard's $1,205,550
+    cross-source disagreement broke the second). The team page is BBRef
+    answering the per-team question directly.
+    """
+    if kept.raw_amounts is None:
+        return arithmetic
+    if arithmetic.amounts != kept.raw_amounts:
+        logger.warning(
+            "raw-vs-blend DISAGREEMENT for %s (%s) on %s: blend arithmetic "
+            "%s vs team-page raw %s — raw is authoritative; arithmetic kept "
+            "as cross-check only",
+            kept.player_name,
+            kept.slug,
+            kept.team,
+            arithmetic.amounts,
+            kept.raw_amounts,
+        )
+    return replace(arithmetic, amounts=dict(kept.raw_amounts))
 
 
 def _subtract_charge_totals(
@@ -549,6 +587,62 @@ def separate_dead_money(
                 )
                 result.kept.append(row)
                 continue
+            # STRETCHED PURE-DEAD single row (Fix B, ruled 2026-08-31): a
+            # stretch spreads the charge across more seasons, so no season
+            # EQUALS the row's cell and the exact classifier above misses
+            # (Whitmore: CLE row 5,458,310 vs a multi-season stretched
+            # schedule). The signal is categorical, not arithmetic: the
+            # player appears in the dead-money frame for this team AND is
+            # absent from Spotrac's ACTIVE salaries (the spotrac_teams map
+            # is built from non-waived rows only — absence there while
+            # present as dead money means no active contract anywhere).
+            # Active = 0: drop the row, log it. Louzada/Micic (exact
+            # matches) resolved above with their reasons intact; Isaac
+            # (dead + Spotrac-ACTIVE on the same team) has a spotrac entry
+            # and falls through to the same-team blend, untouched.
+            # Arithmetic evidence required (review finding: an UNRELATED
+            # own-team charge on non-overlapping seasons must not delete an
+            # active contract, and conflicting same-team charges are
+            # ambiguous): the charge must OVERLAP the row's printed seasons
+            # — _own_team_charge_overlap also refuses on conflicts.
+            stretch_overlap = _own_team_charge_overlap(
+                row, dead_rows, display_to_bbref
+            )
+            if (
+                stretch_overlap is not None
+                and spotrac_teams is not None
+                and slug not in spotrac_teams
+            ):
+                logger.info(
+                    "dead-money separation: STRETCHED PURE-DEAD single row "
+                    "dropped — %s (%s) %s: row %s beside a dead-money "
+                    "schedule, player absent from Spotrac active salaries; "
+                    "active = 0",
+                    row.player_name,
+                    row.slug,
+                    row.team,
+                    row.amounts,
+                )
+                result.dropped.append(
+                    (
+                        slug,
+                        row.team,
+                        "stretched pure-dead single row (absent from active "
+                        "salaries; dead-money schedule is the team's truth)",
+                    )
+                )
+                # Review visibility (finding): every sibling path that
+                # removes a player's LAST row flags; this one must too.
+                result.flags.append(
+                    DuplicateFlag(
+                        slug=slug,
+                        player_name=row.player_name,
+                        kept_team="",
+                        other_teams=(row.team,),
+                    )
+                )
+                continue
+
             # FOSSIL single row (2026-08-31, verified on BBRef by hand): a
             # NON-exact own-team charge overlap on a player Spotrac
             # AFFIRMATIVELY places at a different team is the 08-25 Klay
@@ -618,8 +712,17 @@ def separate_dead_money(
             split = _season_level_split(survivors, dead_rows, display_to_bbref)
             if split is not None:
                 kept, dropped_row = split
-                kept = _subtract_dead_blends(kept, dead_rows, display_to_bbref)
-                result.kept.append(kept)
+                # The split REBUILDS the kept row (raw_amounts lost) — rebind
+                # from the original survivor so raw authority and its
+                # cross-check reach the founding Lillard/Beal path too
+                # (review finding: without this, raw never applied here).
+                original = next(
+                    (r for r in survivors if r.team == kept.team), None
+                )
+                if original is not None and original.raw_amounts is not None:
+                    kept = replace(kept, raw_amounts=dict(original.raw_amounts))
+                arithmetic = _subtract_dead_blends(kept, dead_rows, display_to_bbref)
+                result.kept.append(_resolve_kept_amounts(kept, arithmetic))
                 result.dropped.append(
                     (
                         slug,
@@ -668,10 +771,18 @@ def separate_dead_money(
                 ]
                 if all(overlap is not None for _, overlap in fossils):
                     for row, overlap in fossils:
-                        _log_fossil_drop(row, overlap or {}, result)
-                    kept = _subtract_dead_blends(
+                        # A fossil with raw amounts drops ITS OWN figure —
+                        # the log names the real pre-waive dollars, not the
+                        # blended league cell.
+                        _log_fossil_drop(
+                            row,
+                            dict(row.raw_amounts) if row.raw_amounts else (overlap or {}),
+                            result,
+                        )
+                    arithmetic = _subtract_dead_blends(
                         corroborated[0], dead_rows, display_to_bbref
                     )
+                    kept = _resolve_kept_amounts(corroborated[0], arithmetic)
                     result.kept.append(kept)
                     # The duplicate stays VISIBLE (the DuplicateFlag
                     # invariant: resolution changes which row is kept,
@@ -691,13 +802,23 @@ def separate_dead_money(
         # row is current; anything short of exactly-one match keeps file-first.
         kept_row = survivors[0]
         if len(survivors) == 1:
-            # Exactly one survivor means the whole-row matcher dropped the
-            # other team's row(s) as dead money — the blend fingerprint holds,
-            # so decompose any blended overlap cells on the survivor. Tier-3
-            # (multi-survivor) rows are deliberately excluded: dead money
-            # explained nothing there, and subtracting other-team charges
-            # from an ambiguous duplicate would be a guess.
-            kept_row = _subtract_dead_blends(kept_row, dead_rows, display_to_bbref)
+            kept_row = _resolve_kept_amounts(
+                kept_row, _subtract_dead_blends(kept_row, dead_rows, display_to_bbref)
+            )
+        if len(survivors) > 1 and kept_row.raw_amounts is not None:
+            # Tier-3 with an invariant-VERIFIED per-team figure attached
+            # (review finding: the clean midseason-trade class — no dead
+            # money anywhere — was still shipping the blended league cell,
+            # an 8x overcount for KCP-shaped minimums). No arithmetic exists
+            # here to cross-check; raw is BBRef answering the per-team
+            # question directly.
+            kept_row = _resolve_kept_amounts(kept_row, kept_row)
+        # (Exactly-one-survivor decomposition now runs through
+        # _resolve_kept_amounts above: the blend arithmetic computes as
+        # before and raw, when attached, is authoritative over it. Tier-3
+        # multi-survivor rows stay excluded — dead money explained nothing
+        # there, and subtracting other-team charges from an ambiguous
+        # duplicate would be a guess.)
         resolved_by_spotrac = False
         if len(survivors) > 1 and spotrac_teams is not None:
             opinion = spotrac_teams.get(slug)

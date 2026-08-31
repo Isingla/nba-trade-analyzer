@@ -32,6 +32,7 @@ from nba_trade_analyzer.data.nba_salaries_csv import (
 )
 from nba_trade_analyzer.data.options_csv import load_options
 from nba_trade_analyzer.data.salaries import build_contract, fetch_all_salaries
+from nba_trade_analyzer.data.salaries import attach_raw_amounts, fetch_multi_stint_raw_amounts
 from nba_trade_analyzer.engine.constants import CAP_THRESHOLDS_BY_SEASON
 from nba_trade_analyzer.export import API_ACTUALS_SEASON, salary_season_keys
 from nba_trade_analyzer.ingest.db import IngestDb, PlayerRec
@@ -98,6 +99,11 @@ def _contract_rows(salary_records: list[dict], seasons: list[str]) -> list[Contr
                 player_name=str(rec.get("player_name") or "").strip(),
                 team=str(rec.get("team") or "").strip(),
                 amounts=amounts,
+                raw_amounts=(
+                    dict(rec["raw_amounts"])
+                    if isinstance(rec.get("raw_amounts"), dict)
+                    else None
+                ),
                 is_rookie_scale=bool(rec.get("is_rookie_scale", False)),
                 has_player_option=bool(rec.get("has_player_option", False)),
                 has_team_option=bool(rec.get("has_team_option", False)),
@@ -176,6 +182,19 @@ def _run(
     # BBRef scrape, STRICT — no committed-CSV fallback on the ingest path
     # (Phase 0: the silent fallback shipped months-stale data).
     salary_df = fetch_all_salaries(strict=True)
+    # Per-team RAW amounts for multi-stint slugs (fix/per-team-raw-salary-
+    # amounts). The two reads sit behind INDEPENDENT 24h caches, so vintages
+    # CAN differ by up to a TTL; the sum invariant inside attach_raw_amounts
+    # is the real guard — any skew that changes a blended cell fails the sum
+    # and that player falls back to today's behavior, loudly. Residual
+    # (documented, accepted): a re-split that PRESERVES the blend total
+    # (both team figures move, sum unchanged) passes the invariant with
+    # stale splits until the raw cache turns over. A fetch failure degrades
+    # per-team (warn + no raw for the affected players; incomplete sweeps
+    # are not cached, so the next run retries).
+    salary_df = attach_raw_amounts(
+        salary_df, fetch_multi_stint_raw_amounts(salary_df)
+    )
     salary_records = salary_df.to_dict(orient="records")
 
     dead_rows = load_dead_money(root / "nba_dead_money.csv")
