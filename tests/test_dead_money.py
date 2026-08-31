@@ -820,3 +820,366 @@ def test_rolled_prosper_decomposes_2026_27():
     )
     assert [c.team for c in result.kept] == ["MEM"]
     assert result.kept[0].amounts == {"2026-27": 2497812}
+
+
+# ---------------------------------------------------------------------------
+# Fossil salary rows (fix/ingest-fossil-salary-rows, figures verified on
+# BBRef by hand 2026-08-31): when a waived player signs ELSEWHERE, BBRef
+# keeps the old team's pre-waive contract table beside the new team's. The
+# old-team row is a FOSSIL — the dead-money frame is already that team's
+# truth — and must drop before any summing/blending. Gated on Spotrac
+# corroboration that the player is NOT active at the charge team, so the
+# same-team waive-and-re-sign blend (Isaac) is untouched.
+# ---------------------------------------------------------------------------
+
+_FOSSIL_DISPLAY = {"PHX": "PHO", "DAL": "DAL", "MEM": "MEM"}
+
+
+def test_klay_two_table_fossil_drops_dal_keeps_mia():
+    # Klay Thompson: waived by DAL 08-21 (dead $7,660,317), signed MIA.
+    # BBRef prints BOTH tables; the stored 2026-27 salary came out as
+    # 23,060,317 = 17,460,317 (DAL pre-waive fossil) + 5,600,000 (MIA truth).
+    contracts = [
+        ContractSeasonAmounts(
+            slug="thompkl01",
+            player_name="Klay Thompson",
+            team="DAL",
+            amounts={"2026-27": 17_460_317},
+        ),
+        ContractSeasonAmounts(
+            slug="thompkl01",
+            player_name="Klay Thompson",
+            team="MIA",
+            amounts={"2026-27": 5_600_000, "2027-28": 5_880_000},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Klay Thompson WAIVED",
+        player_name="Klay Thompson",
+        team="DAL",
+        amounts={"2026-27": 7_660_317},
+    )
+    result = separate_dead_money(
+        contracts,
+        {"thompkl01": [dead]},
+        _FOSSIL_DISPLAY,
+        spotrac_teams={"thompkl01": "MIA"},
+    )
+    assert len(result.kept) == 1
+    kept = result.kept[0]
+    assert kept.team == "MIA"
+    assert kept.amounts == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+    assert any(team == "DAL" for _, team, _ in result.dropped)
+    # No DAL salary row survives anywhere.
+    assert all(k.team != "DAL" for k in result.kept)
+
+
+def test_kcp_legacy_mem_row_is_a_fossil_beside_the_phi_minimum():
+    # Caldwell-Pope: legacy MEM table ($20,194,392) beside the real PHI
+    # minimum ($2,449,421); MEM dead money $17,744,971. The MEM charge does
+    # NOT equal the MEM row (so the exact-match dropper never fired) — the
+    # fossil rule is what removes it.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="caldwke01",
+            player_name="Kentavious Caldwell-Pope",
+            team="MEM",
+            amounts={"2026-27": 20_194_392},
+        ),
+        ContractSeasonAmounts(
+            slug="caldwke01",
+            player_name="Kentavious Caldwell-Pope",
+            team="PHI",
+            amounts={"2026-27": 2_449_421},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Kentavious Caldwell-Pope WAIVED",
+        player_name="Kentavious Caldwell-Pope",
+        team="MEM",
+        amounts={"2026-27": 17_744_971},
+    )
+    result = separate_dead_money(
+        contracts,
+        {"caldwke01": [dead]},
+        _FOSSIL_DISPLAY,
+        spotrac_teams={"caldwke01": "PHI"},
+    )
+    assert len(result.kept) == 1
+    assert result.kept[0].team == "PHI"
+    assert result.kept[0].amounts == {"2026-27": 2_449_421}
+    assert all(k.team != "MEM" for k in result.kept)
+
+
+def test_beal_real_shape_with_spotrac_is_byte_identical():
+    # MUST-NOT-BREAK pin, on the FILE'S OWN real Beal fixtures and WITH
+    # spotrac_teams passed (production always passes a dict — runner). The
+    # first fossil implementation regressed exactly this: it fired on the
+    # identical-schedule blended duplicate, pre-empted the season-level
+    # split, and stranded pure-dead seasons on the kept row as phantom
+    # salary (+$58.1M). The split's outcome must be byte-identical with the
+    # fossil pass armed.
+    contracts = [
+        _contract("bealbr01", "PHO", dict(BEAL_SCHEDULE)),
+        _contract("bealbr01", "LAC", dict(BEAL_SCHEDULE)),
+    ]
+    result = separate_dead_money(
+        contracts,
+        {"bealbr01": [BEAL_DEAD]},
+        DISPLAY_TO_BBREF,
+        spotrac_teams={"bealbr01": "LAC"},
+    )
+    assert len(result.kept) == 1
+    kept = result.kept[0]
+    assert kept.team == "LAC"
+    assert kept.amounts == {"2025-26": 24737010, "2026-27": 5621700}
+    assert result.flags == []
+
+
+def test_lillard_real_shape_with_spotrac_is_byte_identical():
+    # Same pin for the module's founding case: identical blended schedules,
+    # MIL stretch charge, Spotrac=POR. The fossil pass must yield to the
+    # season-level split — a fossil drop here kept 2028-29/2029-30 at
+    # 22,516,603 each (+$45.0M phantom) in the first implementation.
+    contracts = [
+        _contract("lillada01", "MIL", dict(LILLARD_SCHEDULE)),
+        _contract("lillada01", "POR", dict(LILLARD_SCHEDULE)),
+    ]
+    result = separate_dead_money(
+        contracts,
+        {"lillada01": [LILLARD_DEAD]},
+        DISPLAY_TO_BBREF,
+        spotrac_teams={"lillada01": "POR"},
+    )
+    kept = result.kept[0]
+    assert kept.team == "POR"
+    assert kept.amounts == {
+        "2025-26": 36620603,
+        "2026-27": 13398800,
+        "2027-28": 14104000,
+    }
+
+
+def test_third_team_spotrac_is_not_fossil_corroboration():
+    # Spotrac placing the player at a team on NEITHER row corroborates
+    # nothing: old tier-3 behavior (keep file-first, flag) must hold — the
+    # fossil pass requires Spotrac to endorse a SPECIFIC surviving row.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="thirdte01", player_name="Third Team", team="DAL",
+            amounts={"2026-27": 17_460_317},
+        ),
+        ContractSeasonAmounts(
+            slug="thirdte01", player_name="Third Team", team="MIA",
+            amounts={"2026-27": 5_600_000},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Third Team WAIVED", player_name="Third Team",
+        team="DAL", amounts={"2026-27": 7_660_317},
+    )
+    result = separate_dead_money(
+        contracts, {"thirdte01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"thirdte01": "LAL"},
+    )
+    assert len(result.kept) == 1
+    assert result.kept[0].team == "DAL"  # file-first, unchanged
+    assert len(result.flags) == 1  # surfaced for human review
+    assert not any("fossil" in why for _, _, why in result.dropped)
+
+
+def test_both_teams_holding_dead_is_still_ambiguous():
+    # Charges on BOTH rows' teams: the corroborated survivor's own team
+    # holds an overlapping charge, so the fossil gate refuses and the old
+    # tier-3 flag surfaces the ambiguity — never a silent resolution that
+    # keeps a team's own dead amount as active salary.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="bothde01", player_name="Both Dead", team="MIL",
+            amounts={"2026-27": 10_000_000},
+        ),
+        ContractSeasonAmounts(
+            slug="bothde01", player_name="Both Dead", team="POR",
+            amounts={"2026-27": 9_000_000},
+        ),
+    ]
+    dead_mil = DeadMoneyRow("Both Dead WAIVED", "Both Dead", "MIL", {"2026-27": 4_000_000})
+    dead_por = DeadMoneyRow("Both Dead WAIVED", "Both Dead", "POR", {"2026-27": 3_000_000})
+    result = separate_dead_money(
+        contracts, {"bothde01": [dead_mil, dead_por]}, DISPLAY_TO_BBREF,
+        spotrac_teams={"bothde01": "POR"},
+    )
+    assert len(result.kept) == 1
+    assert len(result.flags) == 1
+    assert not any("fossil" in why for _, _, why in result.dropped)
+
+
+def test_three_row_group_with_uncharged_third_is_not_fossil_resolved():
+    # MIL charged, POR corroborated, BOS neither: not every non-corroborated
+    # row is a fossil, so the pass refuses (all-or-nothing) and tier-3
+    # keeps its flag — partial fossil resolution would be a guess about BOS.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="threer01", player_name="Three Rows", team="MIL",
+            amounts={"2026-27": 10_000_000},
+        ),
+        ContractSeasonAmounts(
+            slug="threer01", player_name="Three Rows", team="POR",
+            amounts={"2026-27": 9_000_000},
+        ),
+        ContractSeasonAmounts(
+            slug="threer01", player_name="Three Rows", team="BOS",
+            amounts={"2026-27": 8_000_000},
+        ),
+    ]
+    dead = DeadMoneyRow("Three Rows WAIVED", "Three Rows", "MIL", {"2026-27": 4_000_000})
+    result = separate_dead_money(
+        contracts, {"threer01": [dead]}, DISPLAY_TO_BBREF,
+        spotrac_teams={"threer01": "POR"},
+    )
+    assert len(result.kept) == 1
+    assert len(result.flags) == 1
+    assert not any("fossil" in why for _, _, why in result.dropped)
+
+
+def test_exact_pure_dead_keeps_its_reason_when_signed_elsewhere():
+    # Ordering pin: a single row EXACTLY equal to its own team's charge with
+    # Spotrac elsewhere is the pure-dead classifier's case — its reason
+    # string and flag-free drop must survive the fossil pass (which runs
+    # after it and only on NON-exact overlaps).
+    contracts = [
+        ContractSeasonAmounts(
+            slug="puredx01", player_name="Pure Dead", team="DAL",
+            amounts={"2026-27": 7_660_317},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        "Pure Dead WAIVED", "Pure Dead", "DAL", {"2026-27": 7_660_317}
+    )
+    result = separate_dead_money(
+        contracts, {"puredx01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"puredx01": "MIA"},
+    )
+    assert result.kept == []
+    assert result.flags == []
+    assert any("pure-dead single row" in why for _, _, why in result.dropped)
+
+
+def test_spotrac_absence_is_not_fossil_corroboration_direct():
+    # Direct pin for the Louzada adjudication: slug ABSENT from the spotrac
+    # dict + a non-exact own-team charge overlap = KEEP the row (the
+    # cautious machinery), never a fossil drop on mere absence.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="absent01", player_name="Absent Guy", team="DAL",
+            amounts={"2026-27": 17_460_317},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        "Absent Guy WAIVED", "Absent Guy", "DAL", {"2026-27": 7_660_317}
+    )
+    result = separate_dead_money(
+        contracts, {"absent01": [dead]}, _FOSSIL_DISPLAY, spotrac_teams={}
+    )
+    assert len(result.kept) == 1
+    assert not any("fossil" in why for _, _, why in result.dropped)
+
+
+def test_fossil_row_printing_seasons_beyond_the_charge_drops_whole():
+    # A fossil DAL row printing 2026-27 AND 2027-28 while the charge covers
+    # only 2026-27: one overlapping season is enough — the whole pre-waive
+    # table is the fossil, not just the charged season.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="widefo01", player_name="Wide Fossil", team="DAL",
+            amounts={"2026-27": 17_460_317, "2027-28": 18_000_000},
+        ),
+        ContractSeasonAmounts(
+            slug="widefo01", player_name="Wide Fossil", team="MIA",
+            amounts={"2026-27": 5_600_000},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        "Wide Fossil WAIVED", "Wide Fossil", "DAL", {"2026-27": 7_660_317}
+    )
+    result = separate_dead_money(
+        contracts, {"widefo01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"widefo01": "MIA"},
+    )
+    assert len(result.kept) == 1
+    assert result.kept[0].team == "MIA"
+    assert all(k.team != "DAL" for k in result.kept)
+
+
+def test_fossil_drop_is_logged_at_info(caplog):
+    import logging
+
+    contracts = [
+        ContractSeasonAmounts(
+            slug="thompkl01", player_name="Klay Thompson", team="DAL",
+            amounts={"2026-27": 17_460_317},
+        ),
+        ContractSeasonAmounts(
+            slug="thompkl01", player_name="Klay Thompson", team="MIA",
+            amounts={"2026-27": 5_600_000},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Klay Thompson WAIVED", player_name="Klay Thompson",
+        team="DAL", amounts={"2026-27": 7_660_317},
+    )
+    with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.ingest.plans"):
+        separate_dead_money(
+            contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+            spotrac_teams={"thompkl01": "MIA"},
+        )
+    hits = [r for r in caplog.records if "fossil" in r.message.lower()]
+    assert hits, "fossil drop must log at INFO"
+    joined = " ".join(r.getMessage() for r in hits)
+    assert "Klay Thompson" in joined and "DAL" in joined and "17460317" in joined
+
+
+def test_same_team_resign_is_never_a_fossil():
+    # Isaac shape: waived and RE-SIGNED at the same team — Spotrac places
+    # him ON the charge team, so the row is not a fossil and the same-team
+    # blend decomposition still fires (10,449,421 − 8,000,000 = 2,449,421).
+    contracts = [
+        ContractSeasonAmounts(
+            slug="isaacjo01", player_name="Jonathan Isaac", team="ORL",
+            amounts={"2026-27": 10_449_421},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Jonathan Isaac WAIVED", player_name="Jonathan Isaac",
+        team="ORL", amounts={"2026-27": 8_000_000},
+    )
+    result = separate_dead_money(
+        contracts, {"isaacjo01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"isaacjo01": "ORL"},
+    )
+    assert len(result.kept) == 1
+    assert result.kept[0].amounts == {"2026-27": 2_449_421}
+
+
+def test_single_fossil_row_drops_entirely_no_phantom_blend():
+    # The 08-25 Klay state: BBRef had ONLY the DAL table (MIA not yet
+    # printed), and the same-team blend minted a $9,800,000 "active" phantom
+    # (17,460,317 − 7,660,317). A waived team's row is the FULL pre-waive
+    # salary, not dead+active — with Spotrac placing him elsewhere the row
+    # is a fossil and drops entirely, leaving no salary row.
+    contracts = [
+        ContractSeasonAmounts(
+            slug="thompkl01", player_name="Klay Thompson", team="DAL",
+            amounts={"2026-27": 17_460_317},
+        ),
+    ]
+    dead = DeadMoneyRow(
+        player_raw="Klay Thompson WAIVED", player_name="Klay Thompson",
+        team="DAL", amounts={"2026-27": 7_660_317},
+    )
+    result = separate_dead_money(
+        contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+        spotrac_teams={"thompkl01": "MIA"},
+    )
+    assert result.kept == []
+    assert any(team == "DAL" for _, team, _ in result.dropped)
