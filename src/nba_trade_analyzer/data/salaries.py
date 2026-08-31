@@ -28,8 +28,10 @@ falls back to a committed CSV snapshot so the project works offline.
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -40,6 +42,8 @@ from bs4 import BeautifulSoup, Tag
 from nba_trade_analyzer.data.cache import JsonCache
 from nba_trade_analyzer.data.epm import NAME_ALIASES, normalize_name
 from nba_trade_analyzer.models.player import Contract
+
+logger = logging.getLogger(__name__)
 
 _CONTRACTS_URL = "https://www.basketball-reference.com/contracts/players.html"
 _TABLE_ID = "player-contracts"
@@ -471,6 +475,251 @@ def fetch_all_salaries(
     df = _dedupe_salary_frame(df)
     cache.set(cache_key, df.to_dict(orient="records"), ttl_hours=_CACHE_TTL_HOURS)
     return df
+
+
+_TEAM_CONTRACTS_URL = "https://www.basketball-reference.com/contracts/{team}.html"
+# Politeness gap between team-page requests (bounded fan-out: only teams
+# involved in multi-stint slugs, ~5-15 pages).
+_TEAM_FETCH_SLEEP_S = 3.0
+
+
+def _parse_team_contract_amounts(
+    html: str, slugs: set[str], season: str = _DEFAULT_SEASON
+) -> dict[str, dict[str, int]]:
+    """Read a TEAM contracts page's raw per-season amounts for ``slugs``.
+
+    The league table prints a COMBINED season total in every stint row for a
+    multi-team player; the team pages carry the real per-team figures
+    (verified live 2026-08-31: Klay DAL 17,460,317 + MIA 5,600,000 = the
+    league cell 23,060,317). Team-page quirks handled here, from the real
+    markup: the player cell is a ``<th data-stat="player">`` whose ``csk``
+    IS the slug, and waived players ride a ``partial_table`` section with
+    the same cell shapes.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", id="contracts")
+    if table is None:
+        raise RuntimeError(
+            "team contracts table (id='contracts') not found — the page "
+            "format may have changed."
+        )
+    thead = table.find("thead")
+    if thead is None or not thead.find_all(attrs={"data-stat": True}):
+        # FAIL LOUD (review finding): a silent y1-equals-current fallback is
+        # the exact bug _season_to_year_stat exists to prevent — after a
+        # season rollover it maps money one season off with no error. A
+        # header-less page is a parse failure: warn-and-skip upstream.
+        raise RuntimeError(
+            "team contracts table has no data-stat header row — cannot map "
+            "y1..y6 to seasons; the page format may have changed."
+        )
+    current_idx = _YEAR_STATS.index(_season_to_year_stat(table, season))
+    season_start = int(season[:4])
+    out: dict[str, dict[str, int]] = {}
+    body = table.find("tbody")
+    if body is None:
+        raise RuntimeError(
+            "team contracts table has no tbody — truncated or restructured "
+            "page; treating as a parse failure."
+        )
+    for tr in body.find_all("tr"):
+        if "thead" in (tr.get("class") or []):
+            continue
+        player_cell = tr.find("th", {"data-stat": "player"}) or tr.find(
+            "td", {"data-stat": "player"}
+        )
+        if player_cell is None:
+            continue
+        slug = str(player_cell.get("csk") or "") or _extract_slug(player_cell)
+        if slug not in slugs:
+            continue
+        amounts: dict[str, int] = {}
+        for offset, stat in enumerate(_YEAR_STATS[current_idx:]):
+            cell = tr.find("td", {"data-stat": stat})
+            value = _cell_salary(cell)
+            if value is not None and value > 0:
+                year = season_start + offset
+                amounts[f"{year}-{(year + 1) % 100:02d}"] = int(value)
+        if amounts:
+            # First row wins per slug (the league dedupe's keep-first rule);
+            # a second same-team stint row would be byte-identical anyway.
+            out.setdefault(slug, amounts)
+    return out
+
+
+def fetch_multi_stint_raw_amounts(
+    salary_df: pd.DataFrame,
+    season: str = _DEFAULT_SEASON,
+    cache: JsonCache | None = None,
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Fetch per-team RAW amounts for every multi-stint slug in the frame.
+
+    Returns ``{slug: {team: {season: dollars}}}``. Bounded fan-out: only the
+    teams involved in multi-stint slugs are fetched, one polite request per
+    team, cached under ``salaries_teamraw_{season}`` with the league cache's
+    TTL. Vintage skew between this cache and the league cache is caught at
+    ATTACH time by the sum invariant (:func:`attach_raw_amounts`) — a raw
+    set fetched against yesterday's league cells fails today's sums and
+    falls back, never silently mixes.
+
+    A failed team fetch/parse logs a WARNING and simply yields no raw data
+    for that team's slugs — the ingest then behaves exactly as today for
+    those players (never worse than now).
+    """
+    cache = cache or JsonCache()
+    cache_key = f"salaries_teamraw_{season}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and all(
+        isinstance(v, dict) for v in cached.values()
+    ):
+        return cached
+
+    if salary_df.empty or "bbref_slug" not in salary_df.columns:
+        return {}
+    by_slug: dict[str, set[str]] = {}
+    for _, row in salary_df.iterrows():
+        slug = str(row.get("bbref_slug") or "")
+        team = str(row.get("team") or "")
+        if slug and team:
+            by_slug.setdefault(slug, set()).add(team)
+    multi = {slug: teams for slug, teams in by_slug.items() if len(teams) > 1}
+    if not multi:
+        # NOT cached (review finding): a slug-less fallback frame passing
+        # through here would poison the cache with {} for a full TTL while
+        # real multi-stint slugs exist.
+        return {}
+
+    teams_needed = sorted({t for teams in multi.values() for t in teams})
+    slugs_needed = set(multi)
+    per_team: dict[str, dict[str, dict[str, int]]] = {}
+    fetched_ok: set[str] = set()
+    for i, team in enumerate(teams_needed):
+        try:
+            if i > 0:
+                time.sleep(_TEAM_FETCH_SLEEP_S)
+            resp = httpx.get(
+                _TEAM_CONTRACTS_URL.format(team=team),
+                headers=_HEADERS,
+                follow_redirects=True,
+                timeout=_HTTP_TIMEOUT,
+            )
+            resp.raise_for_status()
+            parsed = _parse_team_contract_amounts(resp.text, slugs_needed, season)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            logger.warning(
+                "team contracts fetch failed for %s (%s) — affected "
+                "multi-stint players keep today's blended behavior",
+                team,
+                exc,
+            )
+            continue
+        for slug, amounts in parsed.items():
+            if team in multi.get(slug, set()):
+                per_team.setdefault(slug, {})[team] = amounts
+        fetched_ok.add(team)
+
+    # Cache ONLY a complete, successful sweep (review finding: caching a
+    # transient all-teams failure — a rate-limit night — silently served {}
+    # for 24h; the loud degrade became silent after the first run). A
+    # partial result is used this run but NOT cached, so the next run
+    # retries the failed teams.
+    if fetched_ok == set(teams_needed):
+        cache.set(cache_key, per_team, ttl_hours=_CACHE_TTL_HOURS)
+    else:
+        logger.warning(
+            "team contracts sweep incomplete (%d/%d teams) — result used "
+            "this run but NOT cached, so the next run retries",
+            len(fetched_ok),
+            len(teams_needed),
+        )
+    return per_team
+
+
+def attach_raw_amounts(
+    salary_df: pd.DataFrame,
+    raw: dict[str, dict[str, dict[str, int]]],
+    season: str = _DEFAULT_SEASON,
+) -> pd.DataFrame:
+    """Attach per-team raw amounts to multi-stint rows, invariant-enforced.
+
+    THE INVARIANT: for every season a slug's league rows print, the sum of
+    the per-team raw amounts must EQUAL the blended league cell (Klay:
+    17,460,317 + 5,600,000 = 23,060,317). A mismatch means vintage skew or
+    a parse error — that slug gets NO raw amounts (falls back to today's
+    behavior) and a WARNING names the numbers. Never a silent pick.
+    """
+    if salary_df.empty or not raw:
+        out = salary_df.copy()
+        out["raw_amounts"] = None
+        return out
+    season_start = int(season[:4])
+
+    def league_cells(yearly: str) -> dict[str, int]:
+        cells: dict[str, int] = {}
+        for offset, part in enumerate(str(yearly).split(_YEARLY_SEP)):
+            if part.strip().isdigit() and int(part) > 0:
+                year = season_start + offset
+                cells[f"{year}-{(year + 1) % 100:02d}"] = int(part)
+        return cells
+
+    out = salary_df.copy()
+
+    def slug_verified(slug: str, team_raw: dict[str, dict[str, int]]) -> bool:
+        """The full invariant (review-hardened): checked against EVERY league
+        row of the slug (divergent sibling cells fail), empty/NaN cells FAIL
+        rather than vacuously pass, raw seasons must be a subset of the
+        league seasons (no raw-only season can attach), and every league
+        season's per-team sum must equal the cell."""
+        rows = out[out["bbref_slug"].fillna("").astype(str) == slug]
+        raw_seasons = {s for a in team_raw.values() for s in a}
+        for _, r in rows.iterrows():
+            cells = league_cells(r.get("yearly_salaries") or "")
+            if not cells:
+                logger.warning(
+                    "raw-amount invariant FAILED for %s: league row (%s) has "
+                    "no parseable cells — keeping today's blended behavior",
+                    slug,
+                    r.get("team"),
+                )
+                return False
+            if not raw_seasons <= set(cells):
+                logger.warning(
+                    "raw-amount invariant FAILED for %s: raw carries "
+                    "season(s) %s the league row does not print — vintage "
+                    "skew; keeping today's blended behavior",
+                    slug,
+                    sorted(raw_seasons - set(cells)),
+                )
+                return False
+            for season, cell in cells.items():
+                total = sum(a.get(season, 0) for a in team_raw.values())
+                if total != cell:
+                    logger.warning(
+                        "raw-amount invariant FAILED for %s %s: per-team sum "
+                        "%d != league cell %d — vintage skew or parse error; "
+                        "keeping today's blended behavior for this player",
+                        slug,
+                        season,
+                        total,
+                        cell,
+                    )
+                    return False
+        return True
+
+    attached: list[dict[str, int] | None] = []
+    verified: dict[str, bool] = {}
+    for _, row in out.iterrows():
+        slug = str(row.get("bbref_slug") or "")
+        team = str(row.get("team") or "")
+        team_raw = raw.get(slug, {})
+        if not slug or team not in team_raw:
+            attached.append(None)
+            continue
+        if slug not in verified:
+            verified[slug] = slug_verified(slug, team_raw)
+        attached.append(dict(team_raw[team]) if verified[slug] else None)
+    out["raw_amounts"] = attached
+    return out
 
 
 def get_player_salary(df: pd.DataFrame, player_name: str) -> dict | None:
