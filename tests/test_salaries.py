@@ -17,6 +17,7 @@ from nba_trade_analyzer.data.salaries import (
     get_player_salary,
     _parse_team_contract_amounts,
     attach_raw_amounts,
+    fetch_multi_stint_raw_amounts,
 )
 
 # A trimmed contracts table mirroring the live Basketball Reference markup:
@@ -411,6 +412,7 @@ def test_fetch_all_salaries_falls_back_to_csv_on_http_error(tmp_path):
 # guards stopped the write).
 # ---------------------------------------------------------------------------
 
+
 # Note the anchor is the LABEL, not the position: a table carrying 2026-27
 # at any y-column parses fine. "Missing" means a header from a future roll
 # (y1 = 2027-28, the July-2027 shape) or a mangled page.
@@ -425,7 +427,7 @@ def _header_without(season: str) -> str:
         ("2027-28", "2028-29"),
         ("2026-27", "2027-28"),
     ]:
-        out = out.replace(f'>{old}</td>', f'>{new}</td>')
+        out = out.replace(f">{old}</td>", f">{new}</td>")
     assert f">{season}</td>" not in out
     return out
 
@@ -633,19 +635,19 @@ def test_build_contract_roundtrips_from_get_player_salary(tmp_path):
 # raises rather than silently assuming y1 = current season (the rollover
 # bug class). The fixtures exercise the REAL mapping path, not a fallback.
 _TEAM_PAGE_THEAD = (
-    '<thead><tr>'
+    "<thead><tr>"
     '<th data-stat="player" scope="col">Player</th>'
     '<th data-stat="age_today" scope="col">Age</th>'
     '<th data-stat="y1" scope="col">2026-27</th>'
     '<th data-stat="y2" scope="col">2027-28</th>'
     '<th data-stat="y3" scope="col">2028-29</th>'
-    '</tr></thead>'
+    "</tr></thead>"
 )
 
 _TEAM_PAGE_TMPL = (
-    '<html><body><table id="contracts">' + _TEAM_PAGE_THEAD + '<tbody>'
-    '{rows}'
-    '</tbody></table></body></html>'
+    '<html><body><table id="contracts">' + _TEAM_PAGE_THEAD + "<tbody>"
+    "{rows}"
+    "</tbody></table></body></html>"
 )
 
 # Verbatim (whitespace-collapsed) rows from the live pages. Note the DAL row's
@@ -684,13 +686,15 @@ def test_team_page_without_season_headers_fails_loud():
     headerless = (
         '<html><body><table id="contracts"><thead></thead><tbody>'
         + _MIA_KLAY_TR
-        + '</tbody></table></body></html>'
+        + "</tbody></table></body></html>"
     )
     with _pytest.raises(RuntimeError):
         _parse_team_contract_amounts(headerless, {"thompkl01"}, season="2026-27")
 
     no_tbody = (
-        '<html><body><table id="contracts">' + _TEAM_PAGE_THEAD + '</table></body></html>'
+        '<html><body><table id="contracts">'
+        + _TEAM_PAGE_THEAD
+        + "</table></body></html>"
     )
     with _pytest.raises(RuntimeError):
         _parse_team_contract_amounts(no_tbody, {"thompkl01"}, season="2026-27")
@@ -706,16 +710,26 @@ def test_attach_raw_amounts_enforces_sum_invariant(caplog):
     df = pd.DataFrame(
         [
             {
-                "player_name": "Klay Thompson", "bbref_slug": "thompkl01",
-                "team": "DAL", "salary": 23_060_317, "years_remaining": 2,
-                "is_rookie_scale": False, "has_player_option": False,
-                "has_team_option": False, "yearly_salaries": "23060317|5880000",
+                "player_name": "Klay Thompson",
+                "bbref_slug": "thompkl01",
+                "team": "DAL",
+                "salary": 23_060_317,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": "23060317|5880000",
             },
             {
-                "player_name": "Klay Thompson", "bbref_slug": "thompkl01",
-                "team": "MIA", "salary": 23_060_317, "years_remaining": 2,
-                "is_rookie_scale": False, "has_player_option": True,
-                "has_team_option": False, "yearly_salaries": "23060317|5880000",
+                "player_name": "Klay Thompson",
+                "bbref_slug": "thompkl01",
+                "team": "MIA",
+                "salary": 23_060_317,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": True,
+                "has_team_option": False,
+                "yearly_salaries": "23060317|5880000",
             },
         ]
     )
@@ -748,10 +762,15 @@ def test_contract_rows_thread_raw_amounts_into_separation_input():
     from nba_trade_analyzer.ingest.runner import _contract_rows
 
     rec = {
-        "player_name": "Klay Thompson", "bbref_slug": "thompkl01",
-        "team": "MIA", "salary": 23_060_317, "years_remaining": 2,
-        "is_rookie_scale": False, "has_player_option": True,
-        "has_team_option": False, "yearly_salaries": "23060317|5880000",
+        "player_name": "Klay Thompson",
+        "bbref_slug": "thompkl01",
+        "team": "MIA",
+        "salary": 23_060_317,
+        "years_remaining": 2,
+        "is_rookie_scale": False,
+        "has_player_option": True,
+        "has_team_option": False,
+        "yearly_salaries": "23060317|5880000",
         "raw_amounts": {"2026-27": 5_600_000, "2027-28": 5_880_000},
     }
     rows = _contract_rows([rec], ["2026-27", "2027-28"])
@@ -760,3 +779,135 @@ def test_contract_rows_thread_raw_amounts_into_separation_input():
     rec2 = dict(rec)
     rec2.pop("raw_amounts")
     assert _contract_rows([rec2], ["2026-27"])[0].raw_amounts is None
+
+
+# ---------------------------------------------------------------------------
+# fetch_multi_stint_raw_amounts cache-write behavior (fix/ingest-
+# disagreement-log-and-cache-guard): only a COMPLETE and NON-EMPTY sweep may
+# be cached — a valid-markup sweep that yields no rows for the needed slugs
+# is parse drift and must be retried next run, not served for 24h.
+# ---------------------------------------------------------------------------
+
+
+def _multi_stint_frame() -> pd.DataFrame:
+    # Production-shaped league rows: one multi-stint slug (the real cached
+    # Klay values, identical blended cells on both stint rows).
+    return pd.DataFrame(
+        [
+            {
+                "player_name": "Klay Thompson",
+                "bbref_slug": "thompkl01",
+                "team": "DAL",
+                "salary": 23_060_317,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": "23060317|5880000",
+            },
+            {
+                "player_name": "Klay Thompson",
+                "bbref_slug": "thompkl01",
+                "team": "MIA",
+                "salary": 23_060_317,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": True,
+                "has_team_option": False,
+                "yearly_salaries": "23060317|5880000",
+            },
+        ]
+    )
+
+
+def _team_page_response(rows: str) -> httpx.Response:
+    return httpx.Response(
+        status_code=200,
+        text=_TEAM_PAGE_TMPL.format(rows=rows),
+        request=httpx.Request(
+            "GET", "https://www.basketball-reference.com/contracts/X.html"
+        ),
+    )
+
+
+def test_empty_complete_sweep_is_not_cached(tmp_path, caplog):
+    import logging
+
+    # Valid table markup on every page, but no rows for the needed slug —
+    # the sweep "succeeds" with nothing. Returns {}, caches NOTHING, and
+    # warns with the DISTINCT complete-but-empty diagnosis (not the
+    # incomplete-sweep message) — the branch this change exists to add.
+    cache = JsonCache(tmp_path)
+    other_row = _MIA_KLAY_TR.replace("thompkl01", "someoneel01").replace(
+        "Klay Thompson", "Someone Else"
+    )
+    with (
+        patch(
+            "nba_trade_analyzer.data.salaries.httpx.get",
+            return_value=_team_page_response(other_row),
+        ),
+        patch("nba_trade_analyzer.data.salaries.time.sleep"),
+        caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.salaries"),
+    ):
+        out = fetch_multi_stint_raw_amounts(
+            _multi_stint_frame(), season="2026-27", cache=cache
+        )
+    assert out == {}
+    assert cache.get("salaries_teamraw_2026-27") is None
+    assert any(
+        "no rows for any needed slug" in r.message and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+    assert not any("sweep incomplete" in r.message for r in caplog.records)
+
+
+def test_happy_path_sweep_is_cached(tmp_path):
+    # Real captured Klay rows on both team pages: result returned AND cached.
+    cache = JsonCache(tmp_path)
+    responses = {
+        "DAL": _team_page_response(_DAL_KLAY_TR),
+        "MIA": _team_page_response(_MIA_KLAY_TR),
+    }
+
+    def fake_get(url, **kwargs):
+        team = url.rsplit("/", 1)[-1].split(".")[0]
+        return responses[team]
+
+    with (
+        patch("nba_trade_analyzer.data.salaries.httpx.get", side_effect=fake_get),
+        patch("nba_trade_analyzer.data.salaries.time.sleep"),
+    ):
+        out = fetch_multi_stint_raw_amounts(
+            _multi_stint_frame(), season="2026-27", cache=cache
+        )
+    expected = {
+        "thompkl01": {
+            "DAL": {"2026-27": 17_460_317},
+            "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        }
+    }
+    assert out == expected
+    assert cache.get("salaries_teamraw_2026-27") == expected
+
+
+def test_partial_sweep_is_returned_but_not_cached(tmp_path):
+    # One team 500s: the partial result is USED this run but never cached,
+    # so the next run retries the failed team (pins existing behavior).
+    cache = JsonCache(tmp_path)
+
+    def fake_get(url, **kwargs):
+        team = url.rsplit("/", 1)[-1].split(".")[0]
+        if team == "DAL":
+            resp = httpx.Response(status_code=500, request=httpx.Request("GET", url))
+            raise httpx.HTTPStatusError("boom", request=resp.request, response=resp)
+        return _team_page_response(_MIA_KLAY_TR)
+
+    with (
+        patch("nba_trade_analyzer.data.salaries.httpx.get", side_effect=fake_get),
+        patch("nba_trade_analyzer.data.salaries.time.sleep"),
+    ):
+        out = fetch_multi_stint_raw_amounts(
+            _multi_stint_frame(), season="2026-27", cache=cache
+        )
+    assert out == {"thompkl01": {"MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000}}}
+    assert cache.get("salaries_teamraw_2026-27") is None

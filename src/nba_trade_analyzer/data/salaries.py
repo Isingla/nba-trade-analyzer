@@ -450,7 +450,9 @@ def fetch_all_salaries(
             raise
         fallback_path = csv_path or _csv_path(season)
         try:
-            csv_mtime = datetime.fromtimestamp(fallback_path.stat().st_mtime).date().isoformat()
+            csv_mtime = (
+                datetime.fromtimestamp(fallback_path.stat().st_mtime).date().isoformat()
+            )
         except OSError:
             csv_mtime = "unknown"
         print(
@@ -569,9 +571,7 @@ def fetch_multi_stint_raw_amounts(
     cache = cache or JsonCache()
     cache_key = f"salaries_teamraw_{season}"
     cached = cache.get(cache_key)
-    if isinstance(cached, dict) and all(
-        isinstance(v, dict) for v in cached.values()
-    ):
+    if isinstance(cached, dict) and all(isinstance(v, dict) for v in cached.values()):
         return cached
 
     if salary_df.empty or "bbref_slug" not in salary_df.columns:
@@ -623,8 +623,19 @@ def fetch_multi_stint_raw_amounts(
     # for 24h; the loud degrade became silent after the first run). A
     # partial result is used this run but NOT cached, so the next run
     # retries the failed teams.
-    if fetched_ok == set(teams_needed):
+    if per_team and fetched_ok == set(teams_needed):
         cache.set(cache_key, per_team, ttl_hours=_CACHE_TTL_HOURS)
+    elif not per_team and fetched_ok == set(teams_needed):
+        # COMPLETE but empty: every page fetched and parsed cleanly yet no
+        # needed slug appeared — parse/row drift, not a network problem (a
+        # markup change that breaks parsing raises and lands in the
+        # incomplete branch below instead).
+        logger.warning(
+            "team contracts sweep returned no rows for any needed slug "
+            "(all %d team(s) fetched OK) — result NOT cached, so the next "
+            "run retries; check for a team-page row-shape change",
+            len(fetched_ok),
+        )
     else:
         logger.warning(
             "team contracts sweep incomplete (%d/%d teams) — result used "
