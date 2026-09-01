@@ -126,6 +126,8 @@ PURE_DEAD_SINGLE_ROW_SLUGS = frozenset(
         "diakima01",  # Mamadi Diakite @ MEM
         "rubiori01",  # Ricky Rubio @ CLE
         "louzama01",  # Didi Louzada @ POR (±$1 stretch-split rounding member)
+        "whitmca01",  # Cam Whitmore @ CLE (waived 2026-08-28; stretched $1,819,437 ×3; BBRef+Spotrac+chrome-agent verified 2026-09-01)
+        "konchjo01",  # John Konchar @ MIN (traded UTA->MIN and waived 2026-08-29; stretched $2,055,000 ×3; BBRef+Spotrac verified 2026-09-01)
         "thompkl01",  # Klay Thompson @ DAL (buyout 2026-08-21; full $17.46M charge pending posted give-back terms)
     }
 )
