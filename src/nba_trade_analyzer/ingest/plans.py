@@ -308,7 +308,12 @@ def _resolve_kept_amounts(
     if kept.raw_amounts is None:
         return arithmetic
     if arithmetic.amounts != kept.raw_amounts:
-        logger.warning(
+        # INFO, not WARNING (2026-09-01): when raw is present it always wins,
+        # so a divergence here is a RESOLVED question — the persistent
+        # Klay/Lillard shapes fired this nightly at WARNING for a settled
+        # outcome. WARNING is reserved for unresolved states (the sum
+        # invariant upstream, which withholds raw entirely).
+        logger.info(
             "raw-vs-blend DISAGREEMENT for %s (%s) on %s: blend arithmetic "
             "%s vs team-page raw %s — raw is authoritative; arithmetic kept "
             "as cross-check only",
@@ -571,10 +576,16 @@ def separate_dead_money(
                 spotrac_says_active_here = (
                     spotrac_teams is not None and spotrac_teams.get(slug) == row.team
                 )
-                corroborated = spotrac_teams is not None and not spotrac_says_active_here
+                corroborated = (
+                    spotrac_teams is not None and not spotrac_says_active_here
+                )
                 if corroborated:
                     result.dropped.append(
-                        (slug, row.team, f"pure-dead single row ({matching_dead.player_raw})")
+                        (
+                            slug,
+                            row.team,
+                            f"pure-dead single row ({matching_dead.player_raw})",
+                        )
                     )
                     continue
                 result.flags.append(
@@ -605,9 +616,7 @@ def separate_dead_money(
             # active contract, and conflicting same-team charges are
             # ambiguous): the charge must OVERLAP the row's printed seasons
             # — _own_team_charge_overlap also refuses on conflicts.
-            stretch_overlap = _own_team_charge_overlap(
-                row, dead_rows, display_to_bbref
-            )
+            stretch_overlap = _own_team_charge_overlap(row, dead_rows, display_to_bbref)
             if (
                 stretch_overlap is not None
                 and spotrac_teams is not None
@@ -716,9 +725,7 @@ def separate_dead_money(
                 # from the original survivor so raw authority and its
                 # cross-check reach the founding Lillard/Beal path too
                 # (review finding: without this, raw never applied here).
-                original = next(
-                    (r for r in survivors if r.team == kept.team), None
-                )
+                original = next((r for r in survivors if r.team == kept.team), None)
                 if original is not None and original.raw_amounts is not None:
                     kept = replace(kept, raw_amounts=dict(original.raw_amounts))
                 arithmetic = _subtract_dead_blends(kept, dead_rows, display_to_bbref)
@@ -759,9 +766,7 @@ def separate_dead_money(
             spotrac_team = spotrac_teams.get(slug)
             corroborated = [r for r in survivors if r.team == spotrac_team]
             if len(corroborated) == 1 and (
-                _own_team_charge_overlap(
-                    corroborated[0], dead_rows, display_to_bbref
-                )
+                _own_team_charge_overlap(corroborated[0], dead_rows, display_to_bbref)
                 is None
             ):
                 fossils = [
@@ -776,7 +781,9 @@ def separate_dead_money(
                         # blended league cell.
                         _log_fossil_drop(
                             row,
-                            dict(row.raw_amounts) if row.raw_amounts else (overlap or {}),
+                            dict(row.raw_amounts)
+                            if row.raw_amounts
+                            else (overlap or {}),
                             result,
                         )
                     arithmetic = _subtract_dead_blends(
@@ -805,20 +812,12 @@ def separate_dead_money(
             kept_row = _resolve_kept_amounts(
                 kept_row, _subtract_dead_blends(kept_row, dead_rows, display_to_bbref)
             )
-        if len(survivors) > 1 and kept_row.raw_amounts is not None:
-            # Tier-3 with an invariant-VERIFIED per-team figure attached
-            # (review finding: the clean midseason-trade class — no dead
-            # money anywhere — was still shipping the blended league cell,
-            # an 8x overcount for KCP-shaped minimums). No arithmetic exists
-            # here to cross-check; raw is BBRef answering the per-team
-            # question directly.
-            kept_row = _resolve_kept_amounts(kept_row, kept_row)
-        # (Exactly-one-survivor decomposition now runs through
+        # (Exactly-one-survivor decomposition runs through
         # _resolve_kept_amounts above: the blend arithmetic computes as
         # before and raw, when attached, is authoritative over it. Tier-3
-        # multi-survivor rows stay excluded — dead money explained nothing
-        # there, and subtracting other-team charges from an ambiguous
-        # duplicate would be a guess.)
+        # multi-survivor rows stay excluded from SUBTRACTION — dead money
+        # explained nothing there, and subtracting other-team charges from
+        # an ambiguous duplicate would be a guess.)
         resolved_by_spotrac = False
         if len(survivors) > 1 and spotrac_teams is not None:
             opinion = spotrac_teams.get(slug)
@@ -827,6 +826,34 @@ def separate_dead_money(
                 if len(matches) == 1:
                     kept_row = matches[0]
                     resolved_by_spotrac = True
+        # The flag compares by IDENTITY against the ORIGINAL survivor object
+        # — captured BEFORE any raw replace() below creates a new object, or
+        # the kept team lists itself among its own duplicates (review
+        # finding, reproduced: other_teams=('MEM','PHI') with kept 'PHI').
+        kept_source = kept_row
+        if len(survivors) > 1 and kept_row.raw_amounts is not None:
+            # Tier-3 with an invariant-VERIFIED per-team figure attached
+            # (review finding: the clean midseason-trade class — no dead
+            # money anywhere — was still shipping the blended league cell,
+            # an 8x overcount for KCP-shaped minimums). Applied AFTER the
+            # Spotrac tie-break so raw lands on the FINAL kept row. There
+            # is no dead-money subtraction on this path, so there is no
+            # arithmetic to cross-check — stated, not fabricated. The
+            # "authoritative" claim is scoped: it settles the kept row's
+            # DOLLARS (BBRef's own per-team figure), never WHICH row is
+            # kept — that stays with the tie-break state logged here and
+            # carried on the DuplicateFlag.
+            logger.info(
+                "raw applied for %s (%s) on %s with no arithmetic "
+                "cross-check — tier-3 has no dead-money subtraction to "
+                "compare against; team-page raw is authoritative for this "
+                "row's dollars (which-row resolved by Spotrac: %s)",
+                kept_row.player_name,
+                kept_row.slug,
+                kept_row.team,
+                resolved_by_spotrac,
+            )
+            kept_row = replace(kept_row, amounts=dict(kept_row.raw_amounts))
 
         result.kept.append(kept_row)
         if len(survivors) > 1:
@@ -835,7 +862,9 @@ def separate_dead_money(
                     slug=slug,
                     player_name=kept_row.player_name,
                     kept_team=kept_row.team,
-                    other_teams=tuple(r.team for r in survivors if r is not kept_row),
+                    other_teams=tuple(
+                        r.team for r in survivors if r is not kept_source
+                    ),
                     resolved_by_spotrac=resolved_by_spotrac,
                 )
             )

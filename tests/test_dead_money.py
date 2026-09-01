@@ -583,6 +583,7 @@ def test_same_team_implausible_residual_is_not_separated(caplog):
 # corroboration keeps + flags (the minimum-salary coincidence guard).
 # ---------------------------------------------------------------------------
 
+
 def test_pure_dead_single_row_with_spotrac_corroboration_is_dropped():
     # T1 (inverts the old cell == charge half of the guardian test): cell
     # equals the own-team charge for the whole schedule, and Spotrac's
@@ -614,7 +615,9 @@ def test_same_team_cell_below_charge_is_not_separated():
 
     # Spotrac-active on the team: kept, same-team arithmetic untouched.
     result_active = separate_dead_money(
-        contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF,
+        contracts,
+        {"isaacjo01": [ISAAC_DEAD]},
+        DISPLAY_TO_BBREF,
         spotrac_teams={"isaacjo01": "ORL"},
     )
     assert result_active.kept[0].amounts == {"2026-27": 5000000}
@@ -633,7 +636,10 @@ def test_pure_dead_equality_without_corroboration_is_kept_and_flagged():
     for spotrac in (None, {"isaacjo01": "ORL"}):
         contracts = [_contract("isaacjo01", "ORL", {"2026-27": 8000000})]
         result = separate_dead_money(
-            contracts, {"isaacjo01": [ISAAC_DEAD]}, DISPLAY_TO_BBREF, spotrac_teams=spotrac
+            contracts,
+            {"isaacjo01": [ISAAC_DEAD]},
+            DISPLAY_TO_BBREF,
+            spotrac_teams=spotrac,
         )
         assert result.kept[0].amounts == {"2026-27": 8000000}
         assert result.dropped == []
@@ -707,16 +713,14 @@ def test_charge_covering_fewer_seasons_than_row_is_not_pure_dead():
     # 2026-08-31: with spotrac actives loaded and the player absent, Fix B
     # drops the row as stretched pure dead instead — and with no spotrac
     # data the old keep-caution holds.
-    contracts = [
-        _contract("someoso01", "POR", {"2026-27": 268032, "2027-28": 5000000})
-    ]
-    dead = DeadMoneyRow(
-        "Someone WAIVED", "Someone", "POR", {"2026-27": 268032}
-    )
+    contracts = [_contract("someoso01", "POR", {"2026-27": 268032, "2027-28": 5000000})]
+    dead = DeadMoneyRow("Someone WAIVED", "Someone", "POR", {"2026-27": 268032})
     result = separate_dead_money(
         contracts, {"someoso01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
     )
-    assert not any(why.startswith("pure-dead single row") for _, _, why in result.dropped)
+    assert not any(
+        why.startswith("pure-dead single row") for _, _, why in result.dropped
+    )
     assert any("stretched pure-dead" in why for _, _, why in result.dropped)
 
     result_none = separate_dead_money(
@@ -741,7 +745,9 @@ def test_partial_equality_is_not_a_pure_dead_candidate():
     result = separate_dead_money(
         contracts, {"louzadi01": [dead]}, DISPLAY_TO_BBREF, spotrac_teams={}
     )
-    assert not any(why.startswith("pure-dead single row") for _, _, why in result.dropped)
+    assert not any(
+        why.startswith("pure-dead single row") for _, _, why in result.dropped
+    )
     assert any("stretched pure-dead" in why for _, _, why in result.dropped)
 
     result_none = separate_dead_money(
@@ -988,20 +994,28 @@ def test_third_team_spotrac_is_not_fossil_corroboration():
     # fossil pass requires Spotrac to endorse a SPECIFIC surviving row.
     contracts = [
         ContractSeasonAmounts(
-            slug="thirdte01", player_name="Third Team", team="DAL",
+            slug="thirdte01",
+            player_name="Third Team",
+            team="DAL",
             amounts={"2026-27": 17_460_317},
         ),
         ContractSeasonAmounts(
-            slug="thirdte01", player_name="Third Team", team="MIA",
+            slug="thirdte01",
+            player_name="Third Team",
+            team="MIA",
             amounts={"2026-27": 5_600_000},
         ),
     ]
     dead = DeadMoneyRow(
-        player_raw="Third Team WAIVED", player_name="Third Team",
-        team="DAL", amounts={"2026-27": 7_660_317},
+        player_raw="Third Team WAIVED",
+        player_name="Third Team",
+        team="DAL",
+        amounts={"2026-27": 7_660_317},
     )
     result = separate_dead_money(
-        contracts, {"thirdte01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"thirdte01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"thirdte01": "LAL"},
     )
     assert len(result.kept) == 1
@@ -1017,18 +1031,28 @@ def test_both_teams_holding_dead_is_still_ambiguous():
     # keeps a team's own dead amount as active salary.
     contracts = [
         ContractSeasonAmounts(
-            slug="bothde01", player_name="Both Dead", team="MIL",
+            slug="bothde01",
+            player_name="Both Dead",
+            team="MIL",
             amounts={"2026-27": 10_000_000},
         ),
         ContractSeasonAmounts(
-            slug="bothde01", player_name="Both Dead", team="POR",
+            slug="bothde01",
+            player_name="Both Dead",
+            team="POR",
             amounts={"2026-27": 9_000_000},
         ),
     ]
-    dead_mil = DeadMoneyRow("Both Dead WAIVED", "Both Dead", "MIL", {"2026-27": 4_000_000})
-    dead_por = DeadMoneyRow("Both Dead WAIVED", "Both Dead", "POR", {"2026-27": 3_000_000})
+    dead_mil = DeadMoneyRow(
+        "Both Dead WAIVED", "Both Dead", "MIL", {"2026-27": 4_000_000}
+    )
+    dead_por = DeadMoneyRow(
+        "Both Dead WAIVED", "Both Dead", "POR", {"2026-27": 3_000_000}
+    )
     result = separate_dead_money(
-        contracts, {"bothde01": [dead_mil, dead_por]}, DISPLAY_TO_BBREF,
+        contracts,
+        {"bothde01": [dead_mil, dead_por]},
+        DISPLAY_TO_BBREF,
         spotrac_teams={"bothde01": "POR"},
     )
     assert len(result.kept) == 1
@@ -1042,21 +1066,31 @@ def test_three_row_group_with_uncharged_third_is_not_fossil_resolved():
     # keeps its flag — partial fossil resolution would be a guess about BOS.
     contracts = [
         ContractSeasonAmounts(
-            slug="threer01", player_name="Three Rows", team="MIL",
+            slug="threer01",
+            player_name="Three Rows",
+            team="MIL",
             amounts={"2026-27": 10_000_000},
         ),
         ContractSeasonAmounts(
-            slug="threer01", player_name="Three Rows", team="POR",
+            slug="threer01",
+            player_name="Three Rows",
+            team="POR",
             amounts={"2026-27": 9_000_000},
         ),
         ContractSeasonAmounts(
-            slug="threer01", player_name="Three Rows", team="BOS",
+            slug="threer01",
+            player_name="Three Rows",
+            team="BOS",
             amounts={"2026-27": 8_000_000},
         ),
     ]
-    dead = DeadMoneyRow("Three Rows WAIVED", "Three Rows", "MIL", {"2026-27": 4_000_000})
+    dead = DeadMoneyRow(
+        "Three Rows WAIVED", "Three Rows", "MIL", {"2026-27": 4_000_000}
+    )
     result = separate_dead_money(
-        contracts, {"threer01": [dead]}, DISPLAY_TO_BBREF,
+        contracts,
+        {"threer01": [dead]},
+        DISPLAY_TO_BBREF,
         spotrac_teams={"threer01": "POR"},
     )
     assert len(result.kept) == 1
@@ -1071,15 +1105,17 @@ def test_exact_pure_dead_keeps_its_reason_when_signed_elsewhere():
     # after it and only on NON-exact overlaps).
     contracts = [
         ContractSeasonAmounts(
-            slug="puredx01", player_name="Pure Dead", team="DAL",
+            slug="puredx01",
+            player_name="Pure Dead",
+            team="DAL",
             amounts={"2026-27": 7_660_317},
         ),
     ]
-    dead = DeadMoneyRow(
-        "Pure Dead WAIVED", "Pure Dead", "DAL", {"2026-27": 7_660_317}
-    )
+    dead = DeadMoneyRow("Pure Dead WAIVED", "Pure Dead", "DAL", {"2026-27": 7_660_317})
     result = separate_dead_money(
-        contracts, {"puredx01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"puredx01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"puredx01": "MIA"},
     )
     assert result.kept == []
@@ -1095,7 +1131,9 @@ def test_spotrac_absence_with_dead_money_is_stretched_pure_dead():
     # entirely (spotrac_teams=None, asserted below).
     contracts = [
         ContractSeasonAmounts(
-            slug="absent01", player_name="Absent Guy", team="DAL",
+            slug="absent01",
+            player_name="Absent Guy",
+            team="DAL",
             amounts={"2026-27": 17_460_317},
         ),
     ]
@@ -1120,11 +1158,15 @@ def test_fossil_row_printing_seasons_beyond_the_charge_drops_whole():
     # table is the fossil, not just the charged season.
     contracts = [
         ContractSeasonAmounts(
-            slug="widefo01", player_name="Wide Fossil", team="DAL",
+            slug="widefo01",
+            player_name="Wide Fossil",
+            team="DAL",
             amounts={"2026-27": 17_460_317, "2027-28": 18_000_000},
         ),
         ContractSeasonAmounts(
-            slug="widefo01", player_name="Wide Fossil", team="MIA",
+            slug="widefo01",
+            player_name="Wide Fossil",
+            team="MIA",
             amounts={"2026-27": 5_600_000},
         ),
     ]
@@ -1132,7 +1174,9 @@ def test_fossil_row_printing_seasons_beyond_the_charge_drops_whole():
         "Wide Fossil WAIVED", "Wide Fossil", "DAL", {"2026-27": 7_660_317}
     )
     result = separate_dead_money(
-        contracts, {"widefo01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"widefo01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"widefo01": "MIA"},
     )
     assert len(result.kept) == 1
@@ -1145,21 +1189,29 @@ def test_fossil_drop_is_logged_at_info(caplog):
 
     contracts = [
         ContractSeasonAmounts(
-            slug="thompkl01", player_name="Klay Thompson", team="DAL",
+            slug="thompkl01",
+            player_name="Klay Thompson",
+            team="DAL",
             amounts={"2026-27": 17_460_317},
         ),
         ContractSeasonAmounts(
-            slug="thompkl01", player_name="Klay Thompson", team="MIA",
+            slug="thompkl01",
+            player_name="Klay Thompson",
+            team="MIA",
             amounts={"2026-27": 5_600_000},
         ),
     ]
     dead = DeadMoneyRow(
-        player_raw="Klay Thompson WAIVED", player_name="Klay Thompson",
-        team="DAL", amounts={"2026-27": 7_660_317},
+        player_raw="Klay Thompson WAIVED",
+        player_name="Klay Thompson",
+        team="DAL",
+        amounts={"2026-27": 7_660_317},
     )
     with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.ingest.plans"):
         separate_dead_money(
-            contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+            contracts,
+            {"thompkl01": [dead]},
+            _FOSSIL_DISPLAY,
             spotrac_teams={"thompkl01": "MIA"},
         )
     hits = [r for r in caplog.records if "fossil" in r.message.lower()]
@@ -1174,16 +1226,22 @@ def test_same_team_resign_is_never_a_fossil():
     # blend decomposition still fires (10,449,421 − 8,000,000 = 2,449,421).
     contracts = [
         ContractSeasonAmounts(
-            slug="isaacjo01", player_name="Jonathan Isaac", team="ORL",
+            slug="isaacjo01",
+            player_name="Jonathan Isaac",
+            team="ORL",
             amounts={"2026-27": 10_449_421},
         ),
     ]
     dead = DeadMoneyRow(
-        player_raw="Jonathan Isaac WAIVED", player_name="Jonathan Isaac",
-        team="ORL", amounts={"2026-27": 8_000_000},
+        player_raw="Jonathan Isaac WAIVED",
+        player_name="Jonathan Isaac",
+        team="ORL",
+        amounts={"2026-27": 8_000_000},
     )
     result = separate_dead_money(
-        contracts, {"isaacjo01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"isaacjo01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"isaacjo01": "ORL"},
     )
     assert len(result.kept) == 1
@@ -1198,16 +1256,22 @@ def test_single_fossil_row_drops_entirely_no_phantom_blend():
     # is a fossil and drops entirely, leaving no salary row.
     contracts = [
         ContractSeasonAmounts(
-            slug="thompkl01", player_name="Klay Thompson", team="DAL",
+            slug="thompkl01",
+            player_name="Klay Thompson",
+            team="DAL",
             amounts={"2026-27": 17_460_317},
         ),
     ]
     dead = DeadMoneyRow(
-        player_raw="Klay Thompson WAIVED", player_name="Klay Thompson",
-        team="DAL", amounts={"2026-27": 7_660_317},
+        player_raw="Klay Thompson WAIVED",
+        player_name="Klay Thompson",
+        team="DAL",
+        amounts={"2026-27": 7_660_317},
     )
     result = separate_dead_money(
-        contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"thompkl01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"thompkl01": "MIA"},
     )
     assert result.kept == []
@@ -1225,7 +1289,10 @@ def test_single_fossil_row_drops_entirely_no_phantom_blend():
 
 def _blended(slug, name, team, amounts, raw=None):
     return ContractSeasonAmounts(
-        slug=slug, player_name=name, team=team, amounts=dict(amounts),
+        slug=slug,
+        player_name=name,
+        team=team,
+        amounts=dict(amounts),
         raw_amounts=dict(raw) if raw is not None else None,
     )
 
@@ -1248,7 +1315,9 @@ def test_klay_production_shape_raw_replaces_no_subtraction():
         "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
     )
     result = separate_dead_money(
-        contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"thompkl01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"thompkl01": "MIA"},
     )
     assert len(result.kept) == 1
@@ -1264,8 +1333,10 @@ def test_lillard_production_shape_raw_wins_and_blend_cross_checks():
     # (the 1,205,550-class artifacts die). The blend arithmetic agrees here,
     # so no disagreement flag.
     league = {
-        "2026-27": 35_915_403, "2027-28": 36_620_603,
-        "2028-29": 22_516_603, "2029-30": 22_516_603,
+        "2026-27": 35_915_403,
+        "2027-28": 36_620_603,
+        "2028-29": 22_516_603,
+        "2029-30": 22_516_603,
     }
     raw_mil = {s: 22_516_603 for s in league}
     raw_por = {"2026-27": 13_398_800, "2027-28": 14_104_000}
@@ -1274,11 +1345,15 @@ def test_lillard_production_shape_raw_wins_and_blend_cross_checks():
         _blended("lillada01", "Damian Lillard", "POR", league, raw_por),
     ]
     dead = DeadMoneyRow(
-        "Lillard Damian WAIVED", "Lillard Damian", "MIL",
+        "Lillard Damian WAIVED",
+        "Lillard Damian",
+        "MIL",
         {s: 22_516_603 for s in league},
     )
     result = separate_dead_money(
-        contracts, {"lillada01": [dead]}, DISPLAY_TO_BBREF,
+        contracts,
+        {"lillada01": [dead]},
+        DISPLAY_TO_BBREF,
         spotrac_teams={"lillada01": "POR"},
     )
     assert len(result.kept) == 1
@@ -1292,17 +1367,31 @@ def test_kcp_production_shape():
     # it as MEM 17,744,971 (the dead-adjusted figure) + PHI 2,449,421.
     league = {"2026-27": 20_194_392}
     contracts = [
-        _blended("caldwke01", "Kentavious Caldwell-Pope", "MEM", league,
-                 {"2026-27": 17_744_971}),
-        _blended("caldwke01", "Kentavious Caldwell-Pope", "PHI", league,
-                 {"2026-27": 2_449_421}),
+        _blended(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "MEM",
+            league,
+            {"2026-27": 17_744_971},
+        ),
+        _blended(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "PHI",
+            league,
+            {"2026-27": 2_449_421},
+        ),
     ]
     dead = DeadMoneyRow(
-        "Kentavious Caldwell-Pope WAIVED", "Kentavious Caldwell-Pope",
-        "MEM", {"2026-27": 17_744_971},
+        "Kentavious Caldwell-Pope WAIVED",
+        "Kentavious Caldwell-Pope",
+        "MEM",
+        {"2026-27": 17_744_971},
     )
     result = separate_dead_money(
-        contracts, {"caldwke01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"caldwke01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"caldwke01": "PHI"},
     )
     assert len(result.kept) == 1
@@ -1314,8 +1403,10 @@ def test_beal_production_shape_matches_lac_page():
     # The LAC page figure (6,424,800 / 6,746,040) EQUALS the blend arithmetic
     # here — raw and cross-check agree; outcome pinned to the page.
     league = {
-        "2026-27": 25_807_810, "2027-28": 26_129_050,
-        "2028-29": 19_383_010, "2029-30": 19_383_010,
+        "2026-27": 25_807_810,
+        "2027-28": 26_129_050,
+        "2028-29": 19_383_010,
+        "2029-30": 19_383_010,
     }
     raw_pho = {s: 19_383_010 for s in league}
     raw_lac = {"2026-27": 6_424_800, "2027-28": 6_746_040}
@@ -1327,7 +1418,9 @@ def test_beal_production_shape_matches_lac_page():
         "Bradley Beal", "Bradley Beal", "PHX", {s: 19_383_010 for s in league}
     )
     result = separate_dead_money(
-        contracts, {"bealbr01": [dead]}, DISPLAY_TO_BBREF,
+        contracts,
+        {"bealbr01": [dead]},
+        DISPLAY_TO_BBREF,
         spotrac_teams={"bealbr01": "LAC"},
     )
     kept = result.kept[0]
@@ -1346,7 +1439,9 @@ def test_raw_absent_falls_back_to_todays_behavior():
         "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
     )
     result = separate_dead_money(
-        contracts, {"thompkl01": [dead]}, _FOSSIL_DISPLAY,
+        contracts,
+        {"thompkl01": [dead]},
+        _FOSSIL_DISPLAY,
         spotrac_teams={"thompkl01": "MIA"},
     )
     # Today's (pre-raw) machinery: identical schedules, split fails (no
@@ -1369,15 +1464,164 @@ def test_whitmore_stretched_pure_dead_single_row_drops_to_zero(caplog):
         _blended("whitmca01", "Cam Whitmore", "CLE", {"2026-27": 5_458_310}, None),
     ]
     dead = DeadMoneyRow(
-        "Cam Whitmore WAIVED", "Cam Whitmore", "CLE",
+        "Cam Whitmore WAIVED",
+        "Cam Whitmore",
+        "CLE",
         {"2026-27": 1_091_662, "2027-28": 1_091_662, "2028-29": 1_091_662},
     )
     with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.ingest.plans"):
         result = separate_dead_money(
-            contracts, {"whitmca01": [dead]}, _FOSSIL_DISPLAY,
+            contracts,
+            {"whitmca01": [dead]},
+            _FOSSIL_DISPLAY,
             spotrac_teams={"someoneelse01": "LAL"},
         )
     assert result.kept == []
     assert any(t == "CLE" for _, t, why in result.dropped)
-    assert any("stretched" in r.message.lower() or "pure dead" in r.message.lower()
-               for r in caplog.records)
+    assert any(
+        "stretched" in r.message.lower() or "pure dead" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
+# DISAGREEMENT log severity (fix/ingest-disagreement-log-and-cache-guard):
+# raw is authoritative when present, so a resolved raw-vs-blend divergence is
+# INFORMATION, not a warning — the nightly Klay/Lillard WARN cried wolf on a
+# settled question. WARNING now means something is actually unresolved.
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_disagreement_logs_at_info_not_warning(caplog):
+    import logging
+
+    # Klay production shape (real cache + team-page figures): blend
+    # arithmetic (23,060,317 − 7,660,317 = 15,400,000) genuinely differs
+    # from raw (5,600,000) — the exact persistent case the log fires on.
+    contracts = [
+        _blended("thompkl01", "Klay Thompson", "DAL", KLAY_LEAGUE, KLAY_RAW_DAL),
+        _blended("thompkl01", "Klay Thompson", "MIA", KLAY_LEAGUE, KLAY_RAW_MIA),
+    ]
+    dead = DeadMoneyRow(
+        "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
+    )
+    with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.ingest.plans"):
+        result = separate_dead_money(
+            contracts,
+            {"thompkl01": [dead]},
+            _FOSSIL_DISPLAY,
+            spotrac_teams={"thompkl01": "MIA"},
+        )
+    assert result.kept[0].amounts == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+    lines = [r for r in caplog.records if "raw-vs-blend DISAGREEMENT" in r.message]
+    assert lines, "the resolved disagreement must still be logged (greppable)"
+    assert all(r.levelno == logging.INFO for r in lines)
+    assert not any(r.levelno == logging.WARNING for r in lines)
+
+
+def test_raw_absent_emits_no_disagreement_line(caplog):
+    import logging
+
+    contracts = [
+        _blended("thompkl01", "Klay Thompson", "DAL", KLAY_LEAGUE, None),
+        _blended("thompkl01", "Klay Thompson", "MIA", KLAY_LEAGUE, None),
+    ]
+    dead = DeadMoneyRow(
+        "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
+    )
+    with caplog.at_level(logging.DEBUG, logger="nba_trade_analyzer.ingest.plans"):
+        result = separate_dead_money(
+            contracts,
+            {"thompkl01": [dead]},
+            _FOSSIL_DISPLAY,
+            spotrac_teams={"thompkl01": "MIA"},
+        )
+    # Arithmetic result kept (today's behavior) and NO disagreement line at
+    # any level — there is nothing to compare raw against.
+    assert len(result.kept) == 1
+    assert not any("raw-vs-blend DISAGREEMENT" in r.message for r in caplog.records)
+
+
+def test_tier3_raw_application_has_no_fabricated_cross_check(caplog):
+    import logging
+
+    # KCP-shaped tier-3: NO dead-money rows anywhere, raw attached,
+    # identical blended league cells on both stints (production shape). Raw
+    # must apply, and NOTHING may log at WARNING from plans — the old call
+    # compared raw against the row's own blended cell, a comparison that is
+    # spurious by construction (no arithmetic exists on this path).
+    league = {"2026-27": 20_194_392}
+    contracts = [
+        _blended(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "MEM",
+            league,
+            {"2026-27": 17_744_971},
+        ),
+        _blended(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "PHI",
+            league,
+            {"2026-27": 2_449_421},
+        ),
+    ]
+    with caplog.at_level(logging.INFO, logger="nba_trade_analyzer.ingest.plans"):
+        result = separate_dead_money(
+            contracts,
+            {},
+            _FOSSIL_DISPLAY,
+            spotrac_teams={"caldwke01": "PHI"},
+        )
+    kept = result.kept[0]
+    assert kept.team == "PHI"
+    assert kept.amounts == {"2026-27": 2_449_421}
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+    # The application itself is stated, with its no-cross-check caveat.
+    assert any(
+        "no arithmetic" in r.message.lower() and r.levelno == logging.INFO
+        for r in caplog.records
+    )
+    # FLAG IDENTITY PIN (review regression, reproduced then fixed): the raw
+    # replace() creates a NEW kept object, and an identity comparison against
+    # it listed the kept team among its own duplicates —
+    # other_teams=('MEM', 'PHI') with kept 'PHI'. The flag must name the kept
+    # side once and the other side once, tie-break state carried.
+    [flag] = [f for f in result.flags if f.slug == "caldwke01"]
+    assert flag.kept_team == "PHI"
+    assert flag.other_teams == ("MEM",)
+    assert flag.resolved_by_spotrac is True
+
+
+def test_tier3_raw_with_silent_tie_break_keeps_file_first_and_flags_correctly():
+    # Same KCP production shape, spotrac_teams=None: the tie-break is silent,
+    # so the FILE-FIRST row (MEM) is kept and ITS verified raw applies — the
+    # log's authority claim is scoped to dollars, and the which-row ambiguity
+    # rides the flag (resolved_by_spotrac False), whose other_teams must name
+    # only the other side (the flag-identity regression listed both).
+    league = {"2026-27": 20_194_392}
+    contracts = [
+        _blended(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "MEM",
+            league,
+            {"2026-27": 17_744_971},
+        ),
+        _blended(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "PHI",
+            league,
+            {"2026-27": 2_449_421},
+        ),
+    ]
+    result = separate_dead_money(contracts, {}, _FOSSIL_DISPLAY, spotrac_teams=None)
+    kept = result.kept[0]
+    assert kept.team == "MEM"
+    assert kept.amounts == {"2026-27": 17_744_971}
+    [flag] = [f for f in result.flags if f.slug == "caldwke01"]
+    assert flag.kept_team == "MEM"
+    assert flag.other_teams == ("PHI",)
+    assert flag.resolved_by_spotrac is False
