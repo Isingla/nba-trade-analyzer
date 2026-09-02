@@ -487,7 +487,7 @@ _TEAM_FETCH_SLEEP_S = 3.0
 
 def _parse_team_contract_amounts(
     html: str, slugs: set[str], season: str = _DEFAULT_SEASON
-) -> dict[str, dict[str, int]]:
+) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, bool]]]:
     """Read a TEAM contracts page's raw per-season amounts for ``slugs``.
 
     The league table prints a COMBINED season total in every stint row for a
@@ -518,6 +518,11 @@ def _parse_team_contract_amounts(
     current_idx = _YEAR_STATS.index(_season_to_year_stat(table, season))
     season_start = int(season[:4])
     out: dict[str, dict[str, int]] = {}
+    # Option flags read from the SAME cells as the dollars — salary-pl /
+    # salary-tm classes, any-marked-season semantics to match the league
+    # parser's any(). Table cells ONLY: BBRef Player Notes prose (e.g.
+    # "2027-28 is a team option" with no marked cell) is never parsed.
+    flags: dict[str, dict[str, bool]] = {}
     body = table.find("tbody")
     if body is None:
         raise RuntimeError(
@@ -536,30 +541,48 @@ def _parse_team_contract_amounts(
         if slug not in slugs:
             continue
         amounts: dict[str, int] = {}
+        player_option = False
+        team_option = False
         for offset, stat in enumerate(_YEAR_STATS[current_idx:]):
             cell = tr.find("td", {"data-stat": stat})
+            # Flags read on EVERY window cell — true parity with the league
+            # parser's any(), which does not gate on amount (review finding:
+            # gating on a positive parse could actively CLEAR a real option
+            # whose cell dollars failed to parse, since raw overrides).
+            player_option = player_option or _cell_has_class(cell, _PLAYER_OPTION_CLASS)
+            team_option = team_option or _cell_has_class(cell, _TEAM_OPTION_CLASS)
             value = _cell_salary(cell)
             if value is not None and value > 0:
                 year = season_start + offset
                 amounts[f"{year}-{(year + 1) % 100:02d}"] = int(value)
         if amounts:
-            # First row wins per slug (the league dedupe's keep-first rule);
-            # a second same-team stint row would be byte-identical anyway.
-            out.setdefault(slug, amounts)
-    return out
+            # First row wins per slug (the league dedupe's keep-first rule).
+            # For DOLLARS a second same-team stint row is byte-identical; for
+            # FLAGS it may not be (a same-team waived-and-re-signed player's
+            # fossil row can carry an option class his new row lacks) — DOM
+            # order decides, a known residual reported in review; the sum
+            # invariant guards dollars only.
+            if slug not in out:
+                out[slug] = amounts
+                flags[slug] = {
+                    "player_option": player_option,
+                    "team_option": team_option,
+                }
+    return out, flags
 
 
 def fetch_multi_stint_raw_amounts(
     salary_df: pd.DataFrame,
     season: str = _DEFAULT_SEASON,
     cache: JsonCache | None = None,
-) -> dict[str, dict[str, dict[str, int]]]:
+) -> tuple[dict[str, dict[str, dict[str, int]]], dict[str, dict[str, dict[str, bool]]]]:
     """Fetch per-team RAW amounts for every multi-stint slug in the frame.
 
-    Returns ``{slug: {team: {season: dollars}}}``. Bounded fan-out: only the
-    teams involved in multi-stint slugs are fetched, one polite request per
-    team, cached under ``salaries_teamraw_{season}`` with the league cache's
-    TTL. Vintage skew between this cache and the league cache is caught at
+    Returns ``(amounts, flags)``: ``{slug: {team: {season: dollars}}}`` and
+    ``{slug: {team: {"player_option": bool, "team_option": bool}}}``. Bounded
+    fan-out: only the teams involved in multi-stint slugs are fetched, one
+    polite request per team, cached under ``salaries_teamraw_v2_{season}``
+    (an ``{"amounts", "flags"}`` envelope) with the league cache's TTL. Vintage skew between this cache and the league cache is caught at
     ATTACH time by the sum invariant (:func:`attach_raw_amounts`) — a raw
     set fetched against yesterday's league cells fails today's sums and
     falls back, never silently mixes.
@@ -569,13 +592,44 @@ def fetch_multi_stint_raw_amounts(
     those players (never worse than now).
     """
     cache = cache or JsonCache()
-    cache_key = f"salaries_teamraw_{season}"
+    # v2 KEY: the entry now carries {"amounts": ..., "flags": ...}. A new key
+    # (not a shape sniff) guarantees an old-format entry cached under the v1
+    # key this morning can never be misread — it simply never matches.
+    cache_key = f"salaries_teamraw_v2_{season}"
+    # One-time hygiene for the v1 -> v2 bump: JsonCache never prunes, so the
+    # superseded v1 entry would sit on disk forever. Best-effort unlink.
+    try:  # noqa: SIM105 — os-level cleanup must never fail the fetch
+        cache._path(f"salaries_teamraw_{season}").unlink(missing_ok=True)  # noqa: SLF001
+    except OSError:
+        pass
     cached = cache.get(cache_key)
-    if isinstance(cached, dict) and all(isinstance(v, dict) for v in cached.values()):
-        return cached
+
+    def _valid_envelope(c: object) -> bool:
+        # DEEP validation (review finding: the shallow check trusted inner
+        # shapes, so a corrupt entry crashed attach instead of re-fetching).
+        if not isinstance(c, dict):
+            return False
+        amounts, flags = c.get("amounts"), c.get("flags")
+        if not isinstance(amounts, dict) or not isinstance(flags, dict):
+            return False
+        for teams in amounts.values():
+            if not isinstance(teams, dict) or not all(
+                isinstance(a, dict) for a in teams.values()
+            ):
+                return False
+        for teams in flags.values():
+            if not isinstance(teams, dict) or not all(
+                isinstance(f, dict) and {"player_option", "team_option"} <= set(f)
+                for f in teams.values()
+            ):
+                return False
+        return True
+
+    if _valid_envelope(cached):
+        return cached["amounts"], cached["flags"]
 
     if salary_df.empty or "bbref_slug" not in salary_df.columns:
-        return {}
+        return {}, {}
     by_slug: dict[str, set[str]] = {}
     for _, row in salary_df.iterrows():
         slug = str(row.get("bbref_slug") or "")
@@ -587,11 +641,12 @@ def fetch_multi_stint_raw_amounts(
         # NOT cached (review finding): a slug-less fallback frame passing
         # through here would poison the cache with {} for a full TTL while
         # real multi-stint slugs exist.
-        return {}
+        return {}, {}
 
     teams_needed = sorted({t for teams in multi.values() for t in teams})
     slugs_needed = set(multi)
     per_team: dict[str, dict[str, dict[str, int]]] = {}
+    per_team_flags: dict[str, dict[str, dict[str, bool]]] = {}
     fetched_ok: set[str] = set()
     for i, team in enumerate(teams_needed):
         try:
@@ -604,7 +659,9 @@ def fetch_multi_stint_raw_amounts(
                 timeout=_HTTP_TIMEOUT,
             )
             resp.raise_for_status()
-            parsed = _parse_team_contract_amounts(resp.text, slugs_needed, season)
+            parsed, parsed_flags = _parse_team_contract_amounts(
+                resp.text, slugs_needed, season
+            )
         except (httpx.HTTPError, RuntimeError) as exc:
             logger.warning(
                 "team contracts fetch failed for %s (%s) — affected "
@@ -616,6 +673,7 @@ def fetch_multi_stint_raw_amounts(
         for slug, amounts in parsed.items():
             if team in multi.get(slug, set()):
                 per_team.setdefault(slug, {})[team] = amounts
+                per_team_flags.setdefault(slug, {})[team] = parsed_flags[slug]
         fetched_ok.add(team)
 
     # Cache ONLY a complete, successful sweep (review finding: caching a
@@ -624,7 +682,11 @@ def fetch_multi_stint_raw_amounts(
     # partial result is used this run but NOT cached, so the next run
     # retries the failed teams.
     if per_team and fetched_ok == set(teams_needed):
-        cache.set(cache_key, per_team, ttl_hours=_CACHE_TTL_HOURS)
+        cache.set(
+            cache_key,
+            {"amounts": per_team, "flags": per_team_flags},
+            ttl_hours=_CACHE_TTL_HOURS,
+        )
     elif not per_team and fetched_ok == set(teams_needed):
         # COMPLETE but empty: every page fetched and parsed cleanly yet no
         # needed slug appeared — parse/row drift, not a network problem (a
@@ -643,25 +705,47 @@ def fetch_multi_stint_raw_amounts(
             len(fetched_ok),
             len(teams_needed),
         )
-    return per_team
+    return per_team, per_team_flags
 
 
 def attach_raw_amounts(
     salary_df: pd.DataFrame,
-    raw: dict[str, dict[str, dict[str, int]]],
+    raw: dict[str, dict[str, dict[str, int]]]
+    | tuple[
+        dict[str, dict[str, dict[str, int]]], dict[str, dict[str, dict[str, bool]]]
+    ],
+    raw_flags: dict[str, dict[str, dict[str, bool]]] | None = None,
     season: str = _DEFAULT_SEASON,
 ) -> pd.DataFrame:
-    """Attach per-team raw amounts to multi-stint rows, invariant-enforced.
+    """Attach per-team raw amounts AND option flags, invariant-enforced.
 
     THE INVARIANT: for every season a slug's league rows print, the sum of
     the per-team raw amounts must EQUAL the blended league cell (Klay:
     17,460,317 + 5,600,000 = 23,060,317). A mismatch means vintage skew or
     a parse error — that slug gets NO raw amounts (falls back to today's
     behavior) and a WARNING names the numbers. Never a silent pick.
+
+    ONE GATE for flags too: ``raw_player_option`` / ``raw_team_option`` ride
+    the same verification — an invariant failure withholds dollars AND flags
+    together (the league flags stand), never a half-applied state.
+
+    ``raw`` also accepts ``fetch_multi_stint_raw_amounts``'s
+    ``(amounts, flags)`` tuple directly — the runner passes the fetch result
+    wholesale, and unpacking here keeps that call-site contract stable.
     """
+    if isinstance(raw, tuple):
+        if raw_flags is not None:
+            raise ValueError(
+                "attach_raw_amounts: pass EITHER the fetch result tuple as "
+                "`raw` OR separate raw/raw_flags dicts — both together would "
+                "silently discard one flags source"
+            )
+        raw, raw_flags = raw
     if salary_df.empty or not raw:
         out = salary_df.copy()
         out["raw_amounts"] = None
+        out["raw_player_option"] = None
+        out["raw_team_option"] = None
         return out
     season_start = int(season[:4])
 
@@ -718,6 +802,8 @@ def attach_raw_amounts(
         return True
 
     attached: list[dict[str, int] | None] = []
+    attached_po: list[bool | None] = []
+    attached_to: list[bool | None] = []
     verified: dict[str, bool] = {}
     for _, row in out.iterrows():
         slug = str(row.get("bbref_slug") or "")
@@ -725,11 +811,27 @@ def attach_raw_amounts(
         team_raw = raw.get(slug, {})
         if not slug or team not in team_raw:
             attached.append(None)
+            attached_po.append(None)
+            attached_to.append(None)
             continue
         if slug not in verified:
             verified[slug] = slug_verified(slug, team_raw)
-        attached.append(dict(team_raw[team]) if verified[slug] else None)
+        if verified[slug]:
+            attached.append(dict(team_raw[team]))
+            row_flags = (raw_flags or {}).get(slug, {}).get(team)
+            attached_po.append(
+                None if row_flags is None else bool(row_flags["player_option"])
+            )
+            attached_to.append(
+                None if row_flags is None else bool(row_flags["team_option"])
+            )
+        else:
+            attached.append(None)
+            attached_po.append(None)
+            attached_to.append(None)
     out["raw_amounts"] = attached
+    out["raw_player_option"] = attached_po
+    out["raw_team_option"] = attached_to
     return out
 
 

@@ -83,6 +83,32 @@ class RunResult:
     error: str | None = None
 
 
+def _raw_flag(rec: dict, field: str) -> bool | None:
+    """A team-page option flag off a parsed record: bool, or None for "no
+    opinion". Anything else (numpy scalar, pd.NA, a string) is TYPE DRIFT —
+    verified safe under the pinned pandas (to_dict boxes numpy scalars to
+    native bool), but if that ever changes, a silent None here would kill
+    the flag feature league-wide while looking like absent data. Warn, then
+    fall back."""
+    value = rec.get(field)
+    if value is None or isinstance(value, bool):
+        return value
+    try:
+        if value != value:  # NaN: attach's None through a float column
+            return None
+    except Exception:  # noqa: BLE001 — exotic types fall through to the warning
+        pass
+    logger.warning(
+        "raw flag %s for %s carries unexpected type %s (%r) — treating as "
+        "no team-page opinion; check the attach -> to_dict boundary",
+        field,
+        rec.get("bbref_slug") or rec.get("player_name") or "?",
+        type(value).__name__,
+        value,
+    )
+    return None
+
+
 def _contract_rows(salary_records: list[dict], seasons: list[str]) -> list[ContractSeasonAmounts]:
     out: list[ContractSeasonAmounts] = []
     for rec in salary_records:
@@ -104,9 +130,28 @@ def _contract_rows(salary_records: list[dict], seasons: list[str]) -> list[Contr
                     if isinstance(rec.get("raw_amounts"), dict)
                     else None
                 ),
+                # KNOWN INCONSISTENCY (F10, pending design call):
+                # is_rookie_scale was computed at league-parse time from the
+                # BLENDED row's has_team_option; the raw flag can later
+                # rewrite has_team_option in EITHER direction (plans.py's
+                # _resolve_kept_amounts and tier-3 seams — the overwrite
+                # happens THERE, this function only copies faithfully), and
+                # is_rookie_scale is never recomputed, so the pair can
+                # disagree both ways. Recomputation needs
+                # _detect_rookie_scale against raw dollars, raw-derived
+                # years_remaining and the post-override has_team_option —
+                # deliberately not guessed at here.
                 is_rookie_scale=bool(rec.get("is_rookie_scale", False)),
                 has_player_option=bool(rec.get("has_player_option", False)),
                 has_team_option=bool(rec.get("has_team_option", False)),
+                # Team-page option flags (attach_raw_amounts columns). None —
+                # absent field or attach's None — means no team-page opinion:
+                # league flags stand. True/False are applied by separation's
+                # raw-authoritative seams. _raw_flag warns on any OTHER type
+                # (numpy.bool_, pd.NA, strings) before falling back to None,
+                # so type drift is distinguishable from absent data.
+                raw_player_option=_raw_flag(rec, "raw_player_option"),
+                raw_team_option=_raw_flag(rec, "raw_team_option"),
             )
         )
     return out

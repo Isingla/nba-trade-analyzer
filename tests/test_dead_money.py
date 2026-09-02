@@ -1625,3 +1625,182 @@ def test_tier3_raw_with_silent_tie_break_keeps_file_first_and_flags_correctly():
     assert flag.kept_team == "MEM"
     assert flag.other_teams == ("PHI",)
     assert flag.resolved_by_spotrac is False
+
+
+# ---------------------------------------------------------------------------
+# Option flags from the team page (fix/multi-stint-option-flags-from-team-
+# page): flags travel with the raw dollars — when raw is authoritative for a
+# kept row's amounts, the team page's own option cells decide the flags too;
+# league flags stand only when raw is absent.
+# ---------------------------------------------------------------------------
+
+
+def _blended_flagged(
+    slug, name, team, amounts, raw, *, league_po, raw_po=None, raw_to=None
+):
+    return ContractSeasonAmounts(
+        slug=slug,
+        player_name=name,
+        team=team,
+        amounts=dict(amounts),
+        raw_amounts=dict(raw) if raw is not None else None,
+        has_player_option=league_po,
+        raw_player_option=raw_po,
+        raw_team_option=raw_to,
+    )
+
+
+def test_kcp_kept_phi_row_drops_the_inherited_league_po_flag():
+    # The real cached league rows BOTH carry has_player_option=True (the MEM
+    # blend's salary-pl stamped on the combined cell); the PHI team page's
+    # cell is plain. Raw present => flags from the team page: False.
+    league = {"2026-27": 20_194_392}
+    contracts = [
+        _blended_flagged(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "MEM",
+            league,
+            {"2026-27": 17_744_971},
+            league_po=True,
+            raw_po=True,
+            raw_to=False,
+        ),
+        _blended_flagged(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "PHI",
+            league,
+            {"2026-27": 2_449_421},
+            league_po=True,
+            raw_po=False,
+            raw_to=False,
+        ),
+    ]
+    result = separate_dead_money(
+        contracts, {}, _FOSSIL_DISPLAY, spotrac_teams={"caldwke01": "PHI"}
+    )
+    kept = result.kept[0]
+    assert kept.team == "PHI"
+    assert kept.amounts == {"2026-27": 2_449_421}
+    assert kept.has_player_option is False
+    assert kept.has_team_option is False
+
+
+def test_klay_kept_mia_row_takes_the_team_pages_real_po_flag():
+    # Klay's MIA page marks y2 salary-pl (the real 1+1): the kept row's flag
+    # comes from HIS OWN team page — True — through the fossil path.
+    contracts = [
+        _blended_flagged(
+            "thompkl01",
+            "Klay Thompson",
+            "DAL",
+            KLAY_LEAGUE,
+            KLAY_RAW_DAL,
+            league_po=True,
+            raw_po=False,
+            raw_to=False,
+        ),
+        _blended_flagged(
+            "thompkl01",
+            "Klay Thompson",
+            "MIA",
+            KLAY_LEAGUE,
+            KLAY_RAW_MIA,
+            league_po=True,
+            raw_po=True,
+            raw_to=False,
+        ),
+    ]
+    dead = DeadMoneyRow(
+        "Klay Thompson WAIVED", "Klay Thompson", "DAL", {"2026-27": 7_660_317}
+    )
+    result = separate_dead_money(
+        contracts,
+        {"thompkl01": [dead]},
+        _FOSSIL_DISPLAY,
+        spotrac_teams={"thompkl01": "MIA"},
+    )
+    kept = result.kept[0]
+    assert kept.team == "MIA"
+    assert kept.amounts == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+    assert kept.has_player_option is True
+    assert kept.has_team_option is False
+
+
+def test_raw_absent_league_flags_stand():
+    # No team-page opinion (raw None): the league flag is all we have — it
+    # stands unchanged, wrong or not. One gate, one fallback.
+    league = {"2026-27": 20_194_392}
+    contracts = [
+        _blended_flagged(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "MEM",
+            league,
+            None,
+            league_po=True,
+        ),
+        _blended_flagged(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "PHI",
+            league,
+            None,
+            league_po=True,
+        ),
+    ]
+    result = separate_dead_money(
+        contracts, {}, _FOSSIL_DISPLAY, spotrac_teams={"caldwke01": "PHI"}
+    )
+    assert result.kept[0].has_player_option is True
+
+
+def test_fossil_path_flag_override_is_non_vacuous():
+    # Review finding: the Klay fossil-path flag test was vacuous (league flag
+    # == raw flag on the kept row). Production-shaped non-vacuous variant —
+    # the KCP-with-dead-money shape: the blend stamps the DEAD team's PO
+    # class on BOTH league rows (league True), the kept team's own page is
+    # plain (raw False). Deleting the _resolve_kept_amounts flag_updates
+    # block must fail THIS test.
+    league = {"2026-27": 20_194_392}
+    contracts = [
+        _blended_flagged(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "MEM",
+            league,
+            {"2026-27": 17_744_971},
+            league_po=True,
+            raw_po=True,
+            raw_to=False,
+        ),
+        _blended_flagged(
+            "caldwke01",
+            "Kentavious Caldwell-Pope",
+            "PHI",
+            league,
+            {"2026-27": 2_449_421},
+            league_po=True,
+            raw_po=False,
+            raw_to=False,
+        ),
+    ]
+    dead = DeadMoneyRow(
+        "Kentavious Caldwell-Pope WAIVED",
+        "Kentavious Caldwell-Pope",
+        "MEM",
+        {"2026-27": 17_744_971},
+    )
+    result = separate_dead_money(
+        contracts,
+        {"caldwke01": [dead]},
+        _FOSSIL_DISPLAY,
+        spotrac_teams={"caldwke01": "PHI"},
+    )
+    kept = result.kept[0]
+    assert kept.team == "PHI"
+    assert kept.amounts == {"2026-27": 2_449_421}
+    # League said True (the inherited MEM blend class); the PHI page is
+    # plain — raw wins THROUGH _resolve_kept_amounts on this path.
+    assert kept.has_player_option is False
