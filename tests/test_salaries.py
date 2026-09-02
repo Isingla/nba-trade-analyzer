@@ -670,10 +670,10 @@ _MIA_KLAY_TR = (
 
 
 def test_parse_team_page_reads_raw_amounts_including_waived_section():
-    dal = _parse_team_contract_amounts(
+    dal, _dal_flags = _parse_team_contract_amounts(
         _TEAM_PAGE_TMPL.format(rows=_DAL_KLAY_TR), {"thompkl01"}, season="2026-27"
     )
-    mia = _parse_team_contract_amounts(
+    mia, _mia_flags = _parse_team_contract_amounts(
         _TEAM_PAGE_TMPL.format(rows=_MIA_KLAY_TR), {"thompkl01"}, season="2026-27"
     )
     assert dal == {"thompkl01": {"2026-27": 17_460_317}}
@@ -849,11 +849,12 @@ def test_empty_complete_sweep_is_not_cached(tmp_path, caplog):
         patch("nba_trade_analyzer.data.salaries.time.sleep"),
         caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.salaries"),
     ):
-        out = fetch_multi_stint_raw_amounts(
+        out, out_flags = fetch_multi_stint_raw_amounts(
             _multi_stint_frame(), season="2026-27", cache=cache
         )
     assert out == {}
-    assert cache.get("salaries_teamraw_2026-27") is None
+    assert out_flags == {}
+    assert cache.get("salaries_teamraw_v2_2026-27") is None
     assert any(
         "no rows for any needed slug" in r.message and r.levelno == logging.WARNING
         for r in caplog.records
@@ -877,7 +878,7 @@ def test_happy_path_sweep_is_cached(tmp_path):
         patch("nba_trade_analyzer.data.salaries.httpx.get", side_effect=fake_get),
         patch("nba_trade_analyzer.data.salaries.time.sleep"),
     ):
-        out = fetch_multi_stint_raw_amounts(
+        out, out_flags = fetch_multi_stint_raw_amounts(
             _multi_stint_frame(), season="2026-27", cache=cache
         )
     expected = {
@@ -886,8 +887,19 @@ def test_happy_path_sweep_is_cached(tmp_path):
             "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
         }
     }
+    expected_flags = {
+        "thompkl01": {
+            "DAL": {"player_option": False, "team_option": False},
+            # The real MIA row's salary-pl y2 cell — flags ride the sweep.
+            "MIA": {"player_option": True, "team_option": False},
+        }
+    }
     assert out == expected
-    assert cache.get("salaries_teamraw_2026-27") == expected
+    assert out_flags == expected_flags
+    assert cache.get("salaries_teamraw_v2_2026-27") == {
+        "amounts": expected,
+        "flags": expected_flags,
+    }
 
 
 def test_partial_sweep_is_returned_but_not_cached(tmp_path):
@@ -906,8 +918,214 @@ def test_partial_sweep_is_returned_but_not_cached(tmp_path):
         patch("nba_trade_analyzer.data.salaries.httpx.get", side_effect=fake_get),
         patch("nba_trade_analyzer.data.salaries.time.sleep"),
     ):
-        out = fetch_multi_stint_raw_amounts(
+        out, out_flags = fetch_multi_stint_raw_amounts(
             _multi_stint_frame(), season="2026-27", cache=cache
         )
     assert out == {"thompkl01": {"MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000}}}
-    assert cache.get("salaries_teamraw_2026-27") is None
+    assert out_flags == {
+        "thompkl01": {"MIA": {"player_option": True, "team_option": False}}
+    }
+    assert cache.get("salaries_teamraw_v2_2026-27") is None
+
+
+# ---------------------------------------------------------------------------
+# Team-page OPTION FLAGS (fix/multi-stint-option-flags-from-team-page): the
+# league table stamps the combined cell's option class onto BOTH stint rows
+# (KCP's dead-MEM player option surfaced on his kept PHI row), so flags are
+# raw-authoritative alongside dollars — one gate, one fallback. Table cells
+# only; BBRef Player Notes prose is never parsed.
+# ---------------------------------------------------------------------------
+
+_PHI_KCP_TR = (
+    # Real captured PHI row (2026-08-31): the $2,449,421 cell is PLAIN — no
+    # option class — while the league page flags him via the MEM blend.
+    '<tr><th class="left" csk="caldwke01" data-stat="player" scope="row">'
+    '<a href="/players/c/caldwke01.html">Kentavious Caldwell-Pope</a></th>'
+    '<td class="center" data-stat="age_today">33</td>'
+    '<td class="right" csk="2449421" data-stat="y1">$2,449,421</td>'
+    '<td class="right iz" data-stat="y2"></td></tr>'
+)
+
+
+def test_team_page_parse_reads_option_flags_plain_row_is_false_false():
+    _, flags = _parse_team_contract_amounts(
+        _TEAM_PAGE_TMPL.format(rows=_PHI_KCP_TR), {"caldwke01"}, season="2026-27"
+    )
+    assert flags == {"caldwke01": {"player_option": False, "team_option": False}}
+
+
+def test_team_page_parse_reads_player_option_from_marked_cell():
+    # Klay's real MIA row carries salary-pl on y2 — the live control: a
+    # CURRENT team's own marked cell must flag True.
+    _, flags = _parse_team_contract_amounts(
+        _TEAM_PAGE_TMPL.format(rows=_MIA_KLAY_TR), {"thompkl01"}, season="2026-27"
+    )
+    assert flags == {"thompkl01": {"player_option": True, "team_option": False}}
+
+
+def test_attach_invariant_fail_withholds_flags_with_dollars(caplog):
+    import logging
+
+    df = _multi_stint_frame()
+    skewed_raw = {
+        "thompkl01": {
+            "DAL": {"2026-27": 16_000_000},  # sum no longer matches the cell
+            "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        }
+    }
+    raw_flags = {
+        "thompkl01": {
+            "DAL": {"player_option": False, "team_option": False},
+            "MIA": {"player_option": True, "team_option": False},
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="nba_trade_analyzer.data.salaries"):
+        out = attach_raw_amounts(df, skewed_raw, raw_flags, season="2026-27")
+    for _, r in out.iterrows():
+        # ONE gate: dollars withheld -> flags withheld. No half-applied state.
+        assert r.get("raw_amounts") is None
+        assert r.get("raw_player_option") is None
+        assert r.get("raw_team_option") is None
+
+
+def test_attach_verified_flags_positive_path():
+    # Review finding: nothing asserted a True ever EXITS attach — a regression
+    # to always-None passed every test. The Klay envelope (sum-verified)
+    # must land raw_player_option True on the MIA row and False on DAL.
+    df = _multi_stint_frame()
+    raw = {
+        "thompkl01": {
+            "DAL": {"2026-27": 17_460_317},
+            "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        }
+    }
+    raw_flags = {
+        "thompkl01": {
+            "DAL": {"player_option": False, "team_option": False},
+            "MIA": {"player_option": True, "team_option": False},
+        }
+    }
+    out = attach_raw_amounts(df, raw, raw_flags, season="2026-27")
+    by_team = {r["team"]: r for _, r in out.iterrows()}
+    assert by_team["MIA"]["raw_player_option"] is True
+    assert by_team["MIA"]["raw_team_option"] is False
+    assert by_team["DAL"]["raw_player_option"] is False
+
+
+def test_attach_rejects_tuple_plus_explicit_flags():
+    df = _multi_stint_frame()
+    with pytest.raises(ValueError):
+        attach_raw_amounts(df, ({}, {}), {"x": {}}, season="2026-27")
+
+
+def test_team_page_flag_read_does_not_require_parsed_amount():
+    # Review finding: gating flags on a positive parsed amount could CLEAR a
+    # real option whose cell dollars failed to parse. A salary-pl cell with
+    # an unparseable figure must still flag True (league-any() parity).
+    row = (
+        '<tr><th class="left" csk="oddceld01" data-stat="player" scope="row">'
+        '<a href="/players/o/oddceld01.html">Odd Cell</a></th>'
+        '<td class="center" data-stat="age_today">30</td>'
+        '<td class="right" csk="5000000" data-stat="y1">$5,000,000</td>'
+        '<td class="right salary-pl" data-stat="y2">TBD</td></tr>'
+    )
+    amounts, flags = _parse_team_contract_amounts(
+        _TEAM_PAGE_TMPL.format(rows=row), {"oddceld01"}, season="2026-27"
+    )
+    assert amounts == {"oddceld01": {"2026-27": 5_000_000}}
+    assert flags == {"oddceld01": {"player_option": True, "team_option": False}}
+
+
+# ---------------------------------------------------------------------------
+# Runner threading of raw option flags (the F1 gap): without these two
+# fields passing through _contract_rows, the whole team-page flag feature is
+# dead in production — attach writes the columns, plans is ready to apply
+# them, and the bridge dropped them on the floor.
+# ---------------------------------------------------------------------------
+
+
+def test_contract_rows_thread_raw_option_flags():
+    from nba_trade_analyzer.ingest.runner import _contract_rows
+
+    rec = {
+        "player_name": "Klay Thompson",
+        "bbref_slug": "thompkl01",
+        "team": "MIA",
+        "salary": 23_060_317,
+        "years_remaining": 2,
+        "is_rookie_scale": False,
+        "has_player_option": True,
+        "has_team_option": False,
+        "yearly_salaries": "23060317|5880000",
+        "raw_amounts": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        "raw_player_option": True,
+        "raw_team_option": False,
+    }
+    row = _contract_rows([rec], ["2026-27", "2027-28"])[0]
+    assert row.raw_player_option is True
+    assert row.raw_team_option is False
+
+    # Older record shape (pre-flags): None/None — no team-page opinion,
+    # league flags stand. Exact keys popped (review: a startswith filter
+    # would over-match any future raw_player*/raw_team* field).
+    old_rec = dict(rec)
+    old_rec.pop("raw_player_option")
+    old_rec.pop("raw_team_option")
+    row2 = _contract_rows([old_rec], ["2026-27"])[0]
+    assert row2.raw_player_option is None
+    assert row2.raw_team_option is None
+
+
+def test_full_pipeline_klay_flags_via_real_attach_and_to_dict():
+    # THE seam this file owns end-to-end: the REAL attach_raw_amounts ->
+    # to_dict("records") -> _contract_rows -> separation path (the review
+    # caught the first version hand-writing dicts, baking in the exact type
+    # assumption — native bools surviving to_dict — it claimed to test).
+    # Separation-behavior details live in test_dead_money.py; this asserts
+    # the boundary: flags SURVIVE the frame round-trip and land applied.
+    from nba_trade_analyzer.data.dead_money import DeadMoneyRow
+    from nba_trade_analyzer.ingest.plans import separate_dead_money
+    from nba_trade_analyzer.ingest.runner import _contract_rows
+
+    df = _multi_stint_frame()
+    raw = {
+        "thompkl01": {
+            "DAL": {"2026-27": 17_460_317},
+            "MIA": {"2026-27": 5_600_000, "2027-28": 5_880_000},
+        }
+    }
+    raw_flags = {
+        "thompkl01": {
+            "DAL": {"player_option": False, "team_option": False},
+            "MIA": {"player_option": True, "team_option": False},
+        }
+    }
+    records = attach_raw_amounts(df, raw, raw_flags, season="2026-27").to_dict(
+        "records"
+    )
+    rows = _contract_rows(records, ["2026-27", "2027-28"])
+    by_team = {r.team: r for r in rows}
+    # The frame round-trip must deliver native bools/None, not NaN/numpy —
+    # the gate in _contract_rows maps anything else to None (with a warning).
+    assert by_team["MIA"].raw_player_option is True
+    assert by_team["DAL"].raw_player_option is False
+
+    result = separate_dead_money(
+        rows,
+        {
+            "thompkl01": [
+                DeadMoneyRow(
+                    "Klay Thompson WAIVED",
+                    "Klay Thompson",
+                    "DAL",
+                    {"2026-27": 7_660_317},
+                )
+            ]
+        },
+        {"PHX": "PHO", "DAL": "DAL", "MIA": "MIA"},
+        spotrac_teams={"thompkl01": "MIA"},
+    )
+    kept = result.kept[0]
+    assert kept.team == "MIA"
+    assert kept.amounts == {"2026-27": 5_600_000, "2027-28": 5_880_000}
+    assert kept.has_player_option is True

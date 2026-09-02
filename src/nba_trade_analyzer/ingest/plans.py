@@ -72,6 +72,13 @@ class ContractSeasonAmounts:
     # per-team sum equals the blended league cell). None = single-stint or
     # invariant failure — the pre-raw machinery applies unchanged.
     raw_amounts: dict[str, int] | None = None
+    # Team-page option flags, attached WITH raw_amounts under the same sum-
+    # invariant gate (None = no team-page opinion; league flags stand). The
+    # league table stamps the blended cell's option class on every stint row
+    # (KCP's dead-MEM player option surfaced on his kept PHI row), so when
+    # raw dollars are authoritative the flags are too.
+    raw_player_option: bool | None = None
+    raw_team_option: bool | None = None
     is_rookie_scale: bool = False
     has_player_option: bool = False
     has_team_option: bool = False
@@ -307,6 +314,14 @@ def _resolve_kept_amounts(
     """
     if kept.raw_amounts is None:
         return arithmetic
+    # Flags travel WITH the dollars: the team page's own cells decide the
+    # kept row's option flags whenever its raw is authoritative (table cells
+    # only — Player Notes prose is never parsed). None = no opinion.
+    flag_updates: dict[str, bool] = {}
+    if kept.raw_player_option is not None:
+        flag_updates["has_player_option"] = kept.raw_player_option
+    if kept.raw_team_option is not None:
+        flag_updates["has_team_option"] = kept.raw_team_option
     if arithmetic.amounts != kept.raw_amounts:
         # INFO, not WARNING (2026-09-01): when raw is present it always wins,
         # so a divergence here is a RESOLVED question — the persistent
@@ -323,7 +338,7 @@ def _resolve_kept_amounts(
             arithmetic.amounts,
             kept.raw_amounts,
         )
-    return replace(arithmetic, amounts=dict(kept.raw_amounts))
+    return replace(arithmetic, amounts=dict(kept.raw_amounts), **flag_updates)
 
 
 def _subtract_charge_totals(
@@ -727,7 +742,12 @@ def separate_dead_money(
                 # (review finding: without this, raw never applied here).
                 original = next((r for r in survivors if r.team == kept.team), None)
                 if original is not None and original.raw_amounts is not None:
-                    kept = replace(kept, raw_amounts=dict(original.raw_amounts))
+                    kept = replace(
+                        kept,
+                        raw_amounts=dict(original.raw_amounts),
+                        raw_player_option=original.raw_player_option,
+                        raw_team_option=original.raw_team_option,
+                    )
                 arithmetic = _subtract_dead_blends(kept, dead_rows, display_to_bbref)
                 result.kept.append(_resolve_kept_amounts(kept, arithmetic))
                 result.dropped.append(
@@ -853,7 +873,14 @@ def separate_dead_money(
                 kept_row.team,
                 resolved_by_spotrac,
             )
-            kept_row = replace(kept_row, amounts=dict(kept_row.raw_amounts))
+            tier3_flags: dict[str, bool] = {}
+            if kept_row.raw_player_option is not None:
+                tier3_flags["has_player_option"] = kept_row.raw_player_option
+            if kept_row.raw_team_option is not None:
+                tier3_flags["has_team_option"] = kept_row.raw_team_option
+            kept_row = replace(
+                kept_row, amounts=dict(kept_row.raw_amounts), **tier3_flags
+            )
 
         result.kept.append(kept_row)
         if len(survivors) > 1:
