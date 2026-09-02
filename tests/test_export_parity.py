@@ -202,9 +202,10 @@ def test_p2_quartet_plus_pure_dead_diff_passes():
     assert "pure-dead" in r.detail  # family visible in every PASS line
 
 
-def test_p2_pure_dead_family_membership_is_the_nine_ruled_slugs():
-    # Family membership pinned: 8 Spotrac-corroborated drops + thompkl01
-    # (DAL buyout 08-21, joined 08-23).
+def test_p2_pure_dead_family_membership_is_exactly_the_ruled_slugs():
+    # Family membership pinned to the ruled slugs: 8 Spotrac-corroborated
+    # drops + thompkl01 (DAL buyout 08-21, joined 08-23) + whitmca01 and
+    # konchjo01 (stretched waives, joined 09-01 — RECEIPT-2026-09-01).
     # rupertra01 aged out BEFORE the family existed and must never join it.
     assert parity.PURE_DEAD_SINGLE_ROW_SLUGS == frozenset(
         {
@@ -216,6 +217,8 @@ def test_p2_pure_dead_family_membership_is_the_nine_ruled_slugs():
             "diakima01",
             "rubiori01",
             "louzama01",
+            "whitmca01",
+            "konchjo01",
             "thompkl01",
         }
     )
