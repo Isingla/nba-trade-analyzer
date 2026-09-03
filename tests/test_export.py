@@ -719,6 +719,123 @@ def test_fallback_rows_carry_basis_in_export_payload(tmp_path, monkeypatch):
     assert export.projections["nowhema01"].epm_basis is None
 
 
+def test_export_carries_source_minutes_only_for_current_basis_rows(
+    tmp_path, monkeypatch
+):
+    # The site's "reduced mins" chip (ruled 2026-09-01: actual < 50% of
+    # projectedGames x projectedMpg) needs each player's ACTUAL current-season
+    # minutes and games — the mp/gp of the SAME row epm_basis is stamped from.
+    # A fallback-basis player's PRIOR-season row must not leak in as if it
+    # were current actuals, and a no-data player carries nothing. Shaped on
+    # Tatum's 2025-26 line: 521.85 minutes over 16 games.
+    import nba_trade_analyzer.export as export_mod
+
+    current = _api_row(101, "Current Star", 3.0, mpg=32.6)
+    current["gp"] = 16.0  # a float, as the API cache stores it
+    current["mp"] = 521.85
+    _seed_api_cache(tmp_path, API_ACTUALS_SEASON, [current])
+    _seed_api_cache(
+        tmp_path, API_ACTUALS_SEASON - 1, [_api_row(202, "Injured Star", 2.5, age=27)]
+    )
+    monkeypatch.setattr(
+        export_mod, "default_epm_frame", lambda: default_epm_frame(cache_dir=tmp_path)
+    )
+    salary_df = _salary_df(
+        [
+            {
+                "player_name": "Current Star",
+                "bbref_slug": "currsta01",
+                "team": "TST",
+                "salary": 10_000_000,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": [10_000_000, 11_000_000],
+            },
+            {
+                "player_name": "Injured Star",
+                "bbref_slug": "injusta01",
+                "team": "TST",
+                "salary": 40_000_000,
+                "years_remaining": 2,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": [40_000_000, 41_000_000],
+            },
+            {
+                "player_name": "Nowhere Man",
+                "bbref_slug": "nowhema01",
+                "team": "TST",
+                "salary": 2_000_000,
+                "years_remaining": 1,
+                "is_rookie_scale": False,
+                "has_player_option": False,
+                "has_team_option": False,
+                "yearly_salaries": [2_000_000],
+            },
+        ]
+    )
+    export = build_export(
+        salary_df=salary_df,
+        darko_df=_darko_df([]),
+        stats_df=_stats_df([]),
+        crosswalk=_crosswalk(
+            [
+                (101, "Current Star", "currsta01"),
+                (202, "Injured Star", "injusta01"),
+            ]
+        ),
+    )
+
+    # (a) current basis: the row's own mp/gp, basis unchanged.
+    current_proj = export.projections["currsta01"]
+    assert current_proj.epm_basis == "2025-26 actuals"
+    assert current_proj.source_minutes == 521.85
+    assert current_proj.source_games == 16
+    # (b) fallback basis: the prior row carries 1800 minutes / 60 games, and
+    # NONE of it may pass as 2025-26 actuals.
+    fallback_proj = export.projections["injusta01"]
+    assert fallback_proj.epm_basis == "2024-25 actuals (no 2025-26 season)"
+    assert fallback_proj.source_minutes is None
+    assert fallback_proj.source_games is None
+    # (c) no data anywhere: nothing.
+    nowhere_proj = export.projections["nowhema01"]
+    assert nowhere_proj.epm_basis is None
+    assert nowhere_proj.source_minutes is None
+    assert nowhere_proj.source_games is None
+
+    # (d) the payload keys, in the same camelCase as epmBasis, present and
+    # null (never 0) for the two None cases.
+    dumped = export.model_dump(by_alias=True)["projections"]
+    assert dumped["currsta01"]["sourceMinutes"] == 521.85
+    assert dumped["currsta01"]["sourceGames"] == 16
+    for slug in ("injusta01", "nowhema01"):
+        assert "sourceMinutes" in dumped[slug]
+        assert "sourceGames" in dumped[slug]
+        assert dumped[slug]["sourceMinutes"] is None
+        assert dumped[slug]["sourceGames"] is None
+
+
+def test_source_actuals_is_both_or_neither():
+    # Injected test frames omit gp/mp entirely, and a row may carry NaN in
+    # one of them: any such row yields None for BOTH, never half a line.
+    from nba_trade_analyzer.export import _source_actuals
+
+    assert _source_actuals(pd.Series({"epm": 1.0})) == (None, None)
+    assert _source_actuals(pd.Series({"mp": 521.85})) == (None, None)
+    assert _source_actuals(pd.Series({"mp": 521.85, "gp": float("nan")})) == (
+        None,
+        None,
+    )
+    assert _source_actuals(pd.Series({"mp": float("nan"), "gp": 16.0})) == (
+        None,
+        None,
+    )
+    assert _source_actuals(pd.Series({"mp": 521.85, "gp": 16.0})) == (521.85, 16)
+
+
 def test_build_export_default_path_routes_through_default_epm_frame(monkeypatch):
     # THE hermetic source-flip guard: with no injected epm_df, build_export
     # must take its frame from default_epm_frame (the API loader path). A

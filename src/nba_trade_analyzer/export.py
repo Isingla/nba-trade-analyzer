@@ -197,6 +197,14 @@ class DataballrPlayerProjection(_CamelModel):
     # season's, or — when he has no current row — the prior season's, said
     # explicitly so the site can tag it. None = no EPM row anywhere.
     epm_basis: str | None = None
+    # The ACTUAL minutes/games of the CURRENT-season row epm_basis is stamped
+    # from (ruled 2026-09-01): the site's "reduced mins" chip compares them
+    # to projectedGames x projectedMpg. None for a fallback-basis player —
+    # his row is the PRIOR season's and its minutes are not current actuals
+    # — and for a no-data player. Missing is None, never a stand-in 0: a 0
+    # here would read as "played none".
+    source_minutes: float | None = None
+    source_games: int | None = None
 
 
 class DataballrExportMetadata(_CamelModel):
@@ -748,6 +756,25 @@ def _project_player(
     return seasons
 
 
+def _source_actuals(epm_row: pd.Series) -> tuple[float | None, int | None]:
+    """The (minutes, games) actually played on a resolved EPM row.
+
+    Read only for a CURRENT-basis row (the caller gates on epm_basis), so
+    these are current-season actuals by construction — which holds only for
+    a frame from ``default_epm_frame``; an injected ``epm_df`` has no prior
+    ids, so every row there reads as current. ``.get`` + NaN guard because
+    injected test frames may omit gp/mp; either missing yields None for
+    BOTH — half an actuals line is not an actuals line.
+    """
+    mp = epm_row.get("mp")
+    gp = epm_row.get("gp")
+    if mp is None or gp is None or pd.isna(mp) or pd.isna(gp):
+        return None, None
+    # gp is a float in the API cache (16.0); round-then-int also survives a
+    # numeric string, where a bare int("16.0") would kill the export.
+    return float(mp), int(round(float(gp)))
+
+
 def _fetch_minutes_history(
     seasons: tuple[str, ...] = _HISTORY_SEASONS,
 ) -> dict[int, dict[str, list[float]]]:
@@ -1027,6 +1054,8 @@ def build_export(
         # bugs ("no row anywhere") stay visible instead of drowning in
         # legitimate injured/rookie absences.
         epm_basis: str | None = None
+        source_minutes: float | None = None
+        source_games: int | None = None
         if epm_identity is not None:
             # .get: injected test frames may omit player_id; a row without
             # one can never be a fallback row (prior ids are always real).
@@ -1044,6 +1073,7 @@ def build_export(
                 )
             else:
                 epm_basis = f"{_season_label(API_ACTUALS_SEASON)} actuals"
+                source_minutes, source_games = _source_actuals(epm_identity)
 
         engine_name = None
         if epm_identity is not None:
@@ -1091,6 +1121,8 @@ def build_export(
             age=age,
             seasons=seasons,
             epm_basis=epm_basis,
+            source_minutes=source_minutes,
+            source_games=source_games,
         )
 
     # Unmatched-player report: the export's identity join is the only recorded
